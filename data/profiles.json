@@ -1,0 +1,1587 @@
+[
+  {
+    "standard": "EN 10365",
+    "forming_process": "Hot-rolled",
+    "shape_category": "I & H Sections",
+    "profile_family": "Parallel Flange I-Beams",
+    "abbreviation": "IPE",
+    "geometry_type": "Parallel flanges",
+    "standard_designations": [
+      {
+        "designation": "IPE 80",
+        "h_mm": 80,
+        "b_mm": 46,
+        "tw_mm": 3.8,
+        "tf_mm": 5.2,
+        "r_mm": 5.0,
+        "mass_kg_m": 6.0
+      },
+      {
+        "designation": "IPE 100",
+        "h_mm": 100,
+        "b_mm": 55,
+        "tw_mm": 4.1,
+        "tf_mm": 5.7,
+        "r_mm": 7.0,
+        "mass_kg_m": 8.1
+      },
+      {
+        "designation": "IPE 120",
+        "h_mm": 120,
+        "b_mm": 64,
+        "tw_mm": 4.4,
+        "tf_mm": 6.3,
+        "r_mm": 7.0,
+        "mass_kg_m": 10.4
+      },
+      {
+        "designation": "IPE 140",
+        "h_mm": 140,
+        "b_mm": 73,
+        "tw_mm": 4.7,
+        "tf_mm": 6.9,
+        "r_mm": 7.0,
+        "mass_kg_m": 12.9
+      },
+      {
+        "designation": "IPE 160",
+        "h_mm": 160,
+        "b_mm": 82,
+        "tw_mm": 5.0,
+        "tf_mm": 7.4,
+        "r_mm": 9.0,
+        "mass_kg_m": 15.8
+      },
+      {
+        "designation": "IPE 180",
+        "h_mm": 180,
+        "b_mm": 91,
+        "tw_mm": 5.3,
+        "tf_mm": 8.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 18.8
+      },
+      {
+        "designation": "IPE 200",
+        "h_mm": 200,
+        "b_mm": 100,
+        "tw_mm": 5.6,
+        "tf_mm": 8.5,
+        "r_mm": 12.0,
+        "mass_kg_m": 22.4
+      },
+      {
+        "designation": "IPE 220",
+        "h_mm": 220,
+        "b_mm": 110,
+        "tw_mm": 5.9,
+        "tf_mm": 9.2,
+        "r_mm": 12.0,
+        "mass_kg_m": 26.2
+      },
+      {
+        "designation": "IPE 240",
+        "h_mm": 240,
+        "b_mm": 120,
+        "tw_mm": 6.2,
+        "tf_mm": 9.8,
+        "r_mm": 15.0,
+        "mass_kg_m": 30.7
+      },
+      {
+        "designation": "IPE 270",
+        "h_mm": 270,
+        "b_mm": 135,
+        "tw_mm": 6.6,
+        "tf_mm": 10.2,
+        "r_mm": 15.0,
+        "mass_kg_m": 36.1
+      },
+      {
+        "designation": "IPE 300",
+        "h_mm": 300,
+        "b_mm": 150,
+        "tw_mm": 7.1,
+        "tf_mm": 10.7,
+        "r_mm": 15.0,
+        "mass_kg_m": 42.2
+      },
+      {
+        "designation": "IPE 330",
+        "h_mm": 330,
+        "b_mm": 160,
+        "tw_mm": 7.5,
+        "tf_mm": 11.5,
+        "r_mm": 18.0,
+        "mass_kg_m": 49.1
+      },
+      {
+        "designation": "IPE 360",
+        "h_mm": 360,
+        "b_mm": 170,
+        "tw_mm": 8.0,
+        "tf_mm": 12.7,
+        "r_mm": 18.0,
+        "mass_kg_m": 57.1
+      },
+      {
+        "designation": "IPE 400",
+        "h_mm": 400,
+        "b_mm": 180,
+        "tw_mm": 8.6,
+        "tf_mm": 13.5,
+        "r_mm": 21.0,
+        "mass_kg_m": 66.3
+      },
+      {
+        "designation": "IPE 450",
+        "h_mm": 450,
+        "b_mm": 190,
+        "tw_mm": 9.4,
+        "tf_mm": 14.6,
+        "r_mm": 21.0,
+        "mass_kg_m": 77.6
+      },
+      {
+        "designation": "IPE 500",
+        "h_mm": 500,
+        "b_mm": 200,
+        "tw_mm": 10.2,
+        "tf_mm": 16.0,
+        "r_mm": 21.0,
+        "mass_kg_m": 90.7
+      },
+      {
+        "designation": "IPE 550",
+        "h_mm": 550,
+        "b_mm": 210,
+        "tw_mm": 11.1,
+        "tf_mm": 17.2,
+        "r_mm": 24.0,
+        "mass_kg_m": 106.0
+      },
+      {
+        "designation": "IPE 600",
+        "h_mm": 600,
+        "b_mm": 220,
+        "tw_mm": 12.0,
+        "tf_mm": 19.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 122.0
+      }
+    ]
+  },
+  {
+    "standard": "EN 10365",
+    "forming_process": "Hot-rolled",
+    "shape_category": "I & H Sections",
+    "profile_family": "Wide Flange Beams (Light)",
+    "abbreviation": "HEA",
+    "geometry_type": "Parallel flanges (wide flange, light weight)",
+    "standard_designations": [
+      {
+        "designation": "HEA 100",
+        "h_mm": 96,
+        "b_mm": 100,
+        "tw_mm": 5.0,
+        "tf_mm": 8.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 16.7
+      },
+      {
+        "designation": "HEA 120",
+        "h_mm": 114,
+        "b_mm": 120,
+        "tw_mm": 5.0,
+        "tf_mm": 8.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 19.9
+      },
+      {
+        "designation": "HEA 140",
+        "h_mm": 133,
+        "b_mm": 140,
+        "tw_mm": 5.5,
+        "tf_mm": 8.5,
+        "r_mm": 12.0,
+        "mass_kg_m": 24.7
+      },
+      {
+        "designation": "HEA 160",
+        "h_mm": 152,
+        "b_mm": 160,
+        "tw_mm": 6.0,
+        "tf_mm": 9.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 30.4
+      },
+      {
+        "designation": "HEA 180",
+        "h_mm": 171,
+        "b_mm": 180,
+        "tw_mm": 6.0,
+        "tf_mm": 9.5,
+        "r_mm": 15.0,
+        "mass_kg_m": 35.5
+      },
+      {
+        "designation": "HEA 200",
+        "h_mm": 190,
+        "b_mm": 200,
+        "tw_mm": 6.5,
+        "tf_mm": 10.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 42.3
+      },
+      {
+        "designation": "HEA 220",
+        "h_mm": 210,
+        "b_mm": 220,
+        "tw_mm": 7.0,
+        "tf_mm": 11.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 50.5
+      },
+      {
+        "designation": "HEA 240",
+        "h_mm": 230,
+        "b_mm": 240,
+        "tw_mm": 7.5,
+        "tf_mm": 12.0,
+        "r_mm": 21.0,
+        "mass_kg_m": 60.3
+      },
+      {
+        "designation": "HEA 260",
+        "h_mm": 250,
+        "b_mm": 260,
+        "tw_mm": 7.5,
+        "tf_mm": 12.5,
+        "r_mm": 24.0,
+        "mass_kg_m": 68.2
+      },
+      {
+        "designation": "HEA 280",
+        "h_mm": 270,
+        "b_mm": 280,
+        "tw_mm": 8.0,
+        "tf_mm": 13.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 76.4
+      },
+      {
+        "designation": "HEA 300",
+        "h_mm": 290,
+        "b_mm": 300,
+        "tw_mm": 8.5,
+        "tf_mm": 14.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 88.3
+      },
+      {
+        "designation": "HEA 320",
+        "h_mm": 310,
+        "b_mm": 300,
+        "tw_mm": 9.0,
+        "tf_mm": 15.5,
+        "r_mm": 27.0,
+        "mass_kg_m": 97.6
+      },
+      {
+        "designation": "HEA 340",
+        "h_mm": 330,
+        "b_mm": 300,
+        "tw_mm": 9.5,
+        "tf_mm": 16.5,
+        "r_mm": 27.0,
+        "mass_kg_m": 105.0
+      },
+      {
+        "designation": "HEA 360",
+        "h_mm": 350,
+        "b_mm": 300,
+        "tw_mm": 10.0,
+        "tf_mm": 17.5,
+        "r_mm": 27.0,
+        "mass_kg_m": 112.0
+      },
+      {
+        "designation": "HEA 400",
+        "h_mm": 390,
+        "b_mm": 300,
+        "tw_mm": 11.0,
+        "tf_mm": 19.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 125.0
+      },
+      {
+        "designation": "HEA 450",
+        "h_mm": 440,
+        "b_mm": 300,
+        "tw_mm": 11.5,
+        "tf_mm": 21.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 140.0
+      },
+      {
+        "designation": "HEA 500",
+        "h_mm": 490,
+        "b_mm": 300,
+        "tw_mm": 12.0,
+        "tf_mm": 23.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 155.0
+      },
+      {
+        "designation": "HEA 550",
+        "h_mm": 540,
+        "b_mm": 300,
+        "tw_mm": 12.5,
+        "tf_mm": 24.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 166.0
+      },
+      {
+        "designation": "HEA 600",
+        "h_mm": 590,
+        "b_mm": 300,
+        "tw_mm": 13.0,
+        "tf_mm": 25.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 178.0
+      }
+    ]
+  },
+  {
+    "standard": "EN 10365",
+    "forming_process": "Hot-rolled",
+    "shape_category": "I & H Sections",
+    "profile_family": "Wide Flange Beams (Medium)",
+    "abbreviation": "HEB",
+    "geometry_type": "Parallel flanges (wide flange, standard weight)",
+    "standard_designations": [
+      {
+        "designation": "HEB 100",
+        "h_mm": 100,
+        "b_mm": 100,
+        "tw_mm": 6.0,
+        "tf_mm": 10.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 20.4
+      },
+      {
+        "designation": "HEB 120",
+        "h_mm": 120,
+        "b_mm": 120,
+        "tw_mm": 6.5,
+        "tf_mm": 11.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 26.7
+      },
+      {
+        "designation": "HEB 140",
+        "h_mm": 140,
+        "b_mm": 140,
+        "tw_mm": 7.0,
+        "tf_mm": 12.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 33.7
+      },
+      {
+        "designation": "HEB 160",
+        "h_mm": 160,
+        "b_mm": 160,
+        "tw_mm": 8.0,
+        "tf_mm": 13.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 42.6
+      },
+      {
+        "designation": "HEB 180",
+        "h_mm": 180,
+        "b_mm": 180,
+        "tw_mm": 8.5,
+        "tf_mm": 14.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 51.2
+      },
+      {
+        "designation": "HEB 200",
+        "h_mm": 200,
+        "b_mm": 200,
+        "tw_mm": 9.0,
+        "tf_mm": 15.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 61.3
+      },
+      {
+        "designation": "HEB 220",
+        "h_mm": 220,
+        "b_mm": 220,
+        "tw_mm": 9.5,
+        "tf_mm": 16.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 71.5
+      },
+      {
+        "designation": "HEB 240",
+        "h_mm": 240,
+        "b_mm": 240,
+        "tw_mm": 10.0,
+        "tf_mm": 17.0,
+        "r_mm": 21.0,
+        "mass_kg_m": 83.2
+      },
+      {
+        "designation": "HEB 260",
+        "h_mm": 260,
+        "b_mm": 260,
+        "tw_mm": 10.0,
+        "tf_mm": 17.5,
+        "r_mm": 24.0,
+        "mass_kg_m": 93.0
+      },
+      {
+        "designation": "HEB 280",
+        "h_mm": 280,
+        "b_mm": 280,
+        "tw_mm": 10.5,
+        "tf_mm": 18.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 103.0
+      },
+      {
+        "designation": "HEB 300",
+        "h_mm": 300,
+        "b_mm": 300,
+        "tw_mm": 11.0,
+        "tf_mm": 19.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 117.0
+      },
+      {
+        "designation": "HEB 320",
+        "h_mm": 320,
+        "b_mm": 300,
+        "tw_mm": 11.5,
+        "tf_mm": 20.5,
+        "r_mm": 27.0,
+        "mass_kg_m": 127.0
+      },
+      {
+        "designation": "HEB 340",
+        "h_mm": 340,
+        "b_mm": 300,
+        "tw_mm": 12.0,
+        "tf_mm": 21.5,
+        "r_mm": 27.0,
+        "mass_kg_m": 134.0
+      },
+      {
+        "designation": "HEB 360",
+        "h_mm": 360,
+        "b_mm": 300,
+        "tw_mm": 12.5,
+        "tf_mm": 22.5,
+        "r_mm": 27.0,
+        "mass_kg_m": 142.0
+      },
+      {
+        "designation": "HEB 400",
+        "h_mm": 400,
+        "b_mm": 300,
+        "tw_mm": 13.5,
+        "tf_mm": 24.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 155.0
+      },
+      {
+        "designation": "HEB 450",
+        "h_mm": 450,
+        "b_mm": 300,
+        "tw_mm": 14.0,
+        "tf_mm": 26.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 171.0
+      },
+      {
+        "designation": "HEB 500",
+        "h_mm": 500,
+        "b_mm": 300,
+        "tw_mm": 14.5,
+        "tf_mm": 28.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 187.0
+      },
+      {
+        "designation": "HEB 550",
+        "h_mm": 550,
+        "b_mm": 300,
+        "tw_mm": 15.0,
+        "tf_mm": 29.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 199.0
+      },
+      {
+        "designation": "HEB 600",
+        "h_mm": 600,
+        "b_mm": 300,
+        "tw_mm": 15.5,
+        "tf_mm": 30.0,
+        "r_mm": 27.0,
+        "mass_kg_m": 212.0
+      }
+    ]
+  },
+  {
+    "standard": "EN 10365",
+    "forming_process": "Hot-rolled",
+    "shape_category": "Channels",
+    "profile_family": "Parallel Flange Channels",
+    "abbreviation": "UPE",
+    "geometry_type": "Parallel flanges",
+    "standard_designations": [
+      {
+        "designation": "UPE 80",
+        "h_mm": 80,
+        "b_mm": 50,
+        "tw_mm": 4.5,
+        "tf_mm": 7.0,
+        "r_mm": 10.0,
+        "mass_kg_m": 7.9
+      },
+      {
+        "designation": "UPE 100",
+        "h_mm": 100,
+        "b_mm": 55,
+        "tw_mm": 4.5,
+        "tf_mm": 7.5,
+        "r_mm": 10.0,
+        "mass_kg_m": 9.8
+      },
+      {
+        "designation": "UPE 120",
+        "h_mm": 120,
+        "b_mm": 60,
+        "tw_mm": 5.0,
+        "tf_mm": 8.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 12.1
+      },
+      {
+        "designation": "UPE 140",
+        "h_mm": 140,
+        "b_mm": 65,
+        "tw_mm": 5.0,
+        "tf_mm": 9.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 14.5
+      },
+      {
+        "designation": "UPE 160",
+        "h_mm": 160,
+        "b_mm": 70,
+        "tw_mm": 5.5,
+        "tf_mm": 9.5,
+        "r_mm": 12.0,
+        "mass_kg_m": 17.0
+      },
+      {
+        "designation": "UPE 180",
+        "h_mm": 180,
+        "b_mm": 75,
+        "tw_mm": 5.5,
+        "tf_mm": 10.5,
+        "r_mm": 12.0,
+        "mass_kg_m": 19.7
+      },
+      {
+        "designation": "UPE 200",
+        "h_mm": 200,
+        "b_mm": 80,
+        "tw_mm": 6.0,
+        "tf_mm": 11.0,
+        "r_mm": 13.0,
+        "mass_kg_m": 22.8
+      },
+      {
+        "designation": "UPE 220",
+        "h_mm": 220,
+        "b_mm": 85,
+        "tw_mm": 6.5,
+        "tf_mm": 12.0,
+        "r_mm": 13.0,
+        "mass_kg_m": 26.6
+      },
+      {
+        "designation": "UPE 240",
+        "h_mm": 240,
+        "b_mm": 90,
+        "tw_mm": 7.0,
+        "tf_mm": 12.5,
+        "r_mm": 15.0,
+        "mass_kg_m": 30.2
+      },
+      {
+        "designation": "UPE 270",
+        "h_mm": 270,
+        "b_mm": 95,
+        "tw_mm": 7.5,
+        "tf_mm": 13.5,
+        "r_mm": 15.0,
+        "mass_kg_m": 35.2
+      },
+      {
+        "designation": "UPE 300",
+        "h_mm": 300,
+        "b_mm": 100,
+        "tw_mm": 9.5,
+        "tf_mm": 15.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 44.4
+      },
+      {
+        "designation": "UPE 330",
+        "h_mm": 330,
+        "b_mm": 105,
+        "tw_mm": 11.0,
+        "tf_mm": 16.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 53.2
+      },
+      {
+        "designation": "UPE 360",
+        "h_mm": 360,
+        "b_mm": 110,
+        "tw_mm": 12.0,
+        "tf_mm": 17.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 61.2
+      },
+      {
+        "designation": "UPE 400",
+        "h_mm": 400,
+        "b_mm": 115,
+        "tw_mm": 13.5,
+        "tf_mm": 18.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 72.2
+      }
+    ]
+  },
+  {
+    "standard": "EN 10365",
+    "forming_process": "Hot-rolled",
+    "shape_category": "Channels",
+    "profile_family": "Taper Flange Channels",
+    "abbreviation": "UPN",
+    "geometry_type": "Tapered internal flanges (8% slope)",
+    "standard_designations": [
+      {
+        "designation": "UPN 80",
+        "h_mm": 80,
+        "b_mm": 45,
+        "tw_mm": 6.0,
+        "tf_mm": 8.0,
+        "r_mm": 8.0,
+        "mass_kg_m": 8.6
+      },
+      {
+        "designation": "UPN 100",
+        "h_mm": 100,
+        "b_mm": 50,
+        "tw_mm": 6.0,
+        "tf_mm": 8.5,
+        "r_mm": 8.5,
+        "mass_kg_m": 10.6
+      },
+      {
+        "designation": "UPN 120",
+        "h_mm": 120,
+        "b_mm": 55,
+        "tw_mm": 7.0,
+        "tf_mm": 9.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 13.4
+      },
+      {
+        "designation": "UPN 140",
+        "h_mm": 140,
+        "b_mm": 60,
+        "tw_mm": 7.0,
+        "tf_mm": 10.0,
+        "r_mm": 10.0,
+        "mass_kg_m": 16.0
+      },
+      {
+        "designation": "UPN 160",
+        "h_mm": 160,
+        "b_mm": 65,
+        "tw_mm": 7.5,
+        "tf_mm": 10.5,
+        "r_mm": 10.5,
+        "mass_kg_m": 18.8
+      },
+      {
+        "designation": "UPN 180",
+        "h_mm": 180,
+        "b_mm": 70,
+        "tw_mm": 8.0,
+        "tf_mm": 11.0,
+        "r_mm": 11.0,
+        "mass_kg_m": 22.0
+      },
+      {
+        "designation": "UPN 200",
+        "h_mm": 200,
+        "b_mm": 75,
+        "tw_mm": 8.5,
+        "tf_mm": 11.5,
+        "r_mm": 11.5,
+        "mass_kg_m": 25.3
+      },
+      {
+        "designation": "UPN 220",
+        "h_mm": 220,
+        "b_mm": 80,
+        "tw_mm": 9.0,
+        "tf_mm": 12.5,
+        "r_mm": 12.5,
+        "mass_kg_m": 29.4
+      },
+      {
+        "designation": "UPN 240",
+        "h_mm": 240,
+        "b_mm": 85,
+        "tw_mm": 9.5,
+        "tf_mm": 13.0,
+        "r_mm": 13.0,
+        "mass_kg_m": 33.2
+      },
+      {
+        "designation": "UPN 260",
+        "h_mm": 260,
+        "b_mm": 90,
+        "tw_mm": 10.0,
+        "tf_mm": 14.0,
+        "r_mm": 14.0,
+        "mass_kg_m": 37.9
+      },
+      {
+        "designation": "UPN 280",
+        "h_mm": 280,
+        "b_mm": 95,
+        "tw_mm": 10.0,
+        "tf_mm": 15.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 41.8
+      },
+      {
+        "designation": "UPN 300",
+        "h_mm": 300,
+        "b_mm": 100,
+        "tw_mm": 10.0,
+        "tf_mm": 16.0,
+        "r_mm": 16.0,
+        "mass_kg_m": 46.2
+      }
+    ]
+  },
+  {
+    "standard": "EN 10210 / EN 10219",
+    "forming_process": "Hot-finished / Cold-formed",
+    "shape_category": "Hollow Sections",
+    "profile_family": "Square Hollow Sections",
+    "abbreviation": "SHS",
+    "geometry_type": "Equal square (h x h)",
+    "standard_designations": [
+      {
+        "designation": "40x40x2.0",
+        "h_mm": 40,
+        "b_mm": 40,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 2.37
+      },
+      {
+        "designation": "40x40x3.0",
+        "h_mm": 40,
+        "b_mm": 40,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 3.41
+      },
+      {
+        "designation": "40x40x4.0",
+        "h_mm": 40,
+        "b_mm": 40,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 4.34
+      },
+      {
+        "designation": "50x50x2.0",
+        "h_mm": 50,
+        "b_mm": 50,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 3.01
+      },
+      {
+        "designation": "50x50x3.0",
+        "h_mm": 50,
+        "b_mm": 50,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 4.35
+      },
+      {
+        "designation": "50x50x4.0",
+        "h_mm": 50,
+        "b_mm": 50,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 5.6
+      },
+      {
+        "designation": "50x50x5.0",
+        "h_mm": 50,
+        "b_mm": 50,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 6.73
+      },
+      {
+        "designation": "60x60x3.0",
+        "h_mm": 60,
+        "b_mm": 60,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 5.29
+      },
+      {
+        "designation": "60x60x4.0",
+        "h_mm": 60,
+        "b_mm": 60,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 6.85
+      },
+      {
+        "designation": "60x60x5.0",
+        "h_mm": 60,
+        "b_mm": 60,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 8.3
+      },
+      {
+        "designation": "80x80x3.0",
+        "h_mm": 80,
+        "b_mm": 80,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 7.18
+      },
+      {
+        "designation": "80x80x4.0",
+        "h_mm": 80,
+        "b_mm": 80,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 9.36
+      },
+      {
+        "designation": "80x80x5.0",
+        "h_mm": 80,
+        "b_mm": 80,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 11.4
+      },
+      {
+        "designation": "80x80x6.0",
+        "h_mm": 80,
+        "b_mm": 80,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 13.4
+      },
+      {
+        "designation": "100x100x4.0",
+        "h_mm": 100,
+        "b_mm": 100,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 11.9
+      },
+      {
+        "designation": "100x100x5.0",
+        "h_mm": 100,
+        "b_mm": 100,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 14.6
+      },
+      {
+        "designation": "100x100x6.0",
+        "h_mm": 100,
+        "b_mm": 100,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 17.2
+      },
+      {
+        "designation": "100x100x8.0",
+        "h_mm": 100,
+        "b_mm": 100,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 22.2
+      },
+      {
+        "designation": "100x100x10.0",
+        "h_mm": 100,
+        "b_mm": 100,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 26.8
+      },
+      {
+        "designation": "120x120x5.0",
+        "h_mm": 120,
+        "b_mm": 120,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 17.7
+      },
+      {
+        "designation": "120x120x6.0",
+        "h_mm": 120,
+        "b_mm": 120,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 21.0,
+        "I_x_cm4": 450.0
+      },
+      {
+        "designation": "120x120x8.0",
+        "h_mm": 120,
+        "b_mm": 120,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 27.2
+      },
+      {
+        "designation": "120x120x10.0",
+        "h_mm": 120,
+        "b_mm": 120,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 33.1
+      },
+      {
+        "designation": "150x150x6.0",
+        "h_mm": 150,
+        "b_mm": 150,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 26.6
+      },
+      {
+        "designation": "150x150x8.0",
+        "h_mm": 150,
+        "b_mm": 150,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 34.7
+      },
+      {
+        "designation": "150x150x10.0",
+        "h_mm": 150,
+        "b_mm": 150,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 42.5
+      },
+      {
+        "designation": "150x150x12.5",
+        "h_mm": 150,
+        "b_mm": 150,
+        "t_mm": 12.5,
+        "r_mm": 30.0,
+        "mass_kg_m": 51.7
+      },
+      {
+        "designation": "200x200x6.0",
+        "h_mm": 200,
+        "b_mm": 200,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 36.0
+      },
+      {
+        "designation": "200x200x8.0",
+        "h_mm": 200,
+        "b_mm": 200,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 47.3
+      },
+      {
+        "designation": "200x200x10.0",
+        "h_mm": 200,
+        "b_mm": 200,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 58.2
+      },
+      {
+        "designation": "200x200x12.5",
+        "h_mm": 200,
+        "b_mm": 200,
+        "t_mm": 12.5,
+        "r_mm": 30.0,
+        "mass_kg_m": 71.3
+      },
+      {
+        "designation": "200x200x16.0",
+        "h_mm": 200,
+        "b_mm": 200,
+        "t_mm": 16.0,
+        "r_mm": 38.4,
+        "mass_kg_m": 88.3
+      }
+    ]
+  },
+  {
+    "standard": "EN 10210 / EN 10219",
+    "forming_process": "Hot-finished / Cold-formed",
+    "shape_category": "Hollow Sections",
+    "profile_family": "Rectangular Hollow Sections",
+    "abbreviation": "RHS",
+    "geometry_type": "Unequal rectangle (h x b)",
+    "standard_designations": [
+      {
+        "designation": "50x30x2.0",
+        "h_mm": 50,
+        "b_mm": 30,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 2.38
+      },
+      {
+        "designation": "50x30x3.0",
+        "h_mm": 50,
+        "b_mm": 30,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 3.41
+      },
+      {
+        "designation": "60x40x2.0",
+        "h_mm": 60,
+        "b_mm": 40,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 3.01
+      },
+      {
+        "designation": "60x40x3.0",
+        "h_mm": 60,
+        "b_mm": 40,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 4.35
+      },
+      {
+        "designation": "60x40x4.0",
+        "h_mm": 60,
+        "b_mm": 40,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 5.6
+      },
+      {
+        "designation": "70x50x3.0",
+        "h_mm": 70,
+        "b_mm": 50,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 5.29
+      },
+      {
+        "designation": "70x50x4.0",
+        "h_mm": 70,
+        "b_mm": 50,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 6.85
+      },
+      {
+        "designation": "70x50x5.0",
+        "h_mm": 70,
+        "b_mm": 50,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 8.3
+      },
+      {
+        "designation": "80x40x3.0",
+        "h_mm": 80,
+        "b_mm": 40,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 5.29
+      },
+      {
+        "designation": "80x40x4.0",
+        "h_mm": 80,
+        "b_mm": 40,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 6.85
+      },
+      {
+        "designation": "80x40x5.0",
+        "h_mm": 80,
+        "b_mm": 40,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 8.3
+      },
+      {
+        "designation": "90x50x3.0",
+        "h_mm": 90,
+        "b_mm": 50,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 6.23
+      },
+      {
+        "designation": "90x50x4.0",
+        "h_mm": 90,
+        "b_mm": 50,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 8.11
+      },
+      {
+        "designation": "90x50x5.0",
+        "h_mm": 90,
+        "b_mm": 50,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 9.87
+      },
+      {
+        "designation": "100x50x3.0",
+        "h_mm": 100,
+        "b_mm": 50,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 6.7
+      },
+      {
+        "designation": "100x50x4.0",
+        "h_mm": 100,
+        "b_mm": 50,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 8.73
+      },
+      {
+        "designation": "100x50x5.0",
+        "h_mm": 100,
+        "b_mm": 50,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 10.6
+      },
+      {
+        "designation": "100x50x6.0",
+        "h_mm": 100,
+        "b_mm": 50,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 12.5
+      },
+      {
+        "designation": "120x60x4.0",
+        "h_mm": 120,
+        "b_mm": 60,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 10.6
+      },
+      {
+        "designation": "120x60x5.0",
+        "h_mm": 120,
+        "b_mm": 60,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 13.0
+      },
+      {
+        "designation": "120x60x6.0",
+        "h_mm": 120,
+        "b_mm": 60,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 15.3
+      },
+      {
+        "designation": "120x60x8.0",
+        "h_mm": 120,
+        "b_mm": 60,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 19.7
+      },
+      {
+        "designation": "150x100x4.0",
+        "h_mm": 150,
+        "b_mm": 100,
+        "t_mm": 4.0,
+        "r_mm": 12.0,
+        "mass_kg_m": 15.1
+      },
+      {
+        "designation": "150x100x5.0",
+        "h_mm": 150,
+        "b_mm": 100,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 18.6
+      },
+      {
+        "designation": "150x100x6.0",
+        "h_mm": 150,
+        "b_mm": 100,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 22.0
+      },
+      {
+        "designation": "150x100x8.0",
+        "h_mm": 150,
+        "b_mm": 100,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 28.5
+      },
+      {
+        "designation": "150x100x10.0",
+        "h_mm": 150,
+        "b_mm": 100,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 34.6
+      },
+      {
+        "designation": "200x100x5.0",
+        "h_mm": 200,
+        "b_mm": 100,
+        "t_mm": 5.0,
+        "r_mm": 15.0,
+        "mass_kg_m": 22.5
+      },
+      {
+        "designation": "200x100x6.0",
+        "h_mm": 200,
+        "b_mm": 100,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 26.6
+      },
+      {
+        "designation": "200x100x8.0",
+        "h_mm": 200,
+        "b_mm": 100,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 34.7
+      },
+      {
+        "designation": "200x100x10.0",
+        "h_mm": 200,
+        "b_mm": 100,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 42.5
+      },
+      {
+        "designation": "250x150x6.0",
+        "h_mm": 250,
+        "b_mm": 150,
+        "t_mm": 6.0,
+        "r_mm": 18.0,
+        "mass_kg_m": 36.0
+      },
+      {
+        "designation": "250x150x8.0",
+        "h_mm": 250,
+        "b_mm": 150,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 47.3
+      },
+      {
+        "designation": "250x150x10.0",
+        "h_mm": 250,
+        "b_mm": 150,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 58.2
+      },
+      {
+        "designation": "250x150x12.5",
+        "h_mm": 250,
+        "b_mm": 150,
+        "t_mm": 12.5,
+        "r_mm": 30.0,
+        "mass_kg_m": 71.3
+      },
+      {
+        "designation": "300x200x8.0",
+        "h_mm": 300,
+        "b_mm": 200,
+        "t_mm": 8.0,
+        "r_mm": 19.2,
+        "mass_kg_m": 59.8
+      },
+      {
+        "designation": "300x200x10.0",
+        "h_mm": 300,
+        "b_mm": 200,
+        "t_mm": 10.0,
+        "r_mm": 24.0,
+        "mass_kg_m": 73.9
+      },
+      {
+        "designation": "300x200x12.5",
+        "h_mm": 300,
+        "b_mm": 200,
+        "t_mm": 12.5,
+        "r_mm": 30.0,
+        "mass_kg_m": 90.9
+      },
+      {
+        "designation": "300x200x16.0",
+        "h_mm": 300,
+        "b_mm": 200,
+        "t_mm": 16.0,
+        "r_mm": 38.4,
+        "mass_kg_m": 113.0
+      }
+    ]
+  },
+  {
+    "standard": "EN 10210 / EN 10219",
+    "forming_process": "Hot-finished / Cold-formed",
+    "shape_category": "Hollow Sections",
+    "profile_family": "Circular Hollow Sections",
+    "abbreviation": "CHS",
+    "geometry_type": "Round / Cylindrical (OD x t)",
+    "standard_designations": [
+      {
+        "designation": "42.4x2.6",
+        "od_mm": 42.4,
+        "t_mm": 2.6,
+        "mass_kg_m": 2.55
+      },
+      {
+        "designation": "42.4x3.2",
+        "od_mm": 42.4,
+        "t_mm": 3.2,
+        "mass_kg_m": 3.09
+      },
+      {
+        "designation": "48.3x2.6",
+        "od_mm": 48.3,
+        "t_mm": 2.6,
+        "mass_kg_m": 2.93
+      },
+      {
+        "designation": "48.3x3.2",
+        "od_mm": 48.3,
+        "t_mm": 3.2,
+        "mass_kg_m": 3.56
+      },
+      {
+        "designation": "48.3x4.0",
+        "od_mm": 48.3,
+        "t_mm": 4.0,
+        "mass_kg_m": 4.37
+      },
+      {
+        "designation": "60.3x2.9",
+        "od_mm": 60.3,
+        "t_mm": 2.9,
+        "mass_kg_m": 4.11
+      },
+      {
+        "designation": "60.3x3.6",
+        "od_mm": 60.3,
+        "t_mm": 3.6,
+        "mass_kg_m": 5.03
+      },
+      {
+        "designation": "60.3x4.5",
+        "od_mm": 60.3,
+        "t_mm": 4.5,
+        "mass_kg_m": 6.19
+      },
+      {
+        "designation": "76.1x3.2",
+        "od_mm": 76.1,
+        "t_mm": 3.2,
+        "mass_kg_m": 5.75
+      },
+      {
+        "designation": "76.1x4.0",
+        "od_mm": 76.1,
+        "t_mm": 4.0,
+        "mass_kg_m": 7.11
+      },
+      {
+        "designation": "76.1x5.0",
+        "od_mm": 76.1,
+        "t_mm": 5.0,
+        "mass_kg_m": 8.77
+      },
+      {
+        "designation": "88.9x3.2",
+        "od_mm": 88.9,
+        "t_mm": 3.2,
+        "mass_kg_m": 6.76
+      },
+      {
+        "designation": "88.9x4.0",
+        "od_mm": 88.9,
+        "t_mm": 4.0,
+        "mass_kg_m": 8.38
+      },
+      {
+        "designation": "88.9x5.0",
+        "od_mm": 88.9,
+        "t_mm": 5.0,
+        "mass_kg_m": 10.3
+      },
+      {
+        "designation": "88.9x6.3",
+        "od_mm": 88.9,
+        "t_mm": 6.3,
+        "mass_kg_m": 12.8
+      },
+      {
+        "designation": "114.3x3.6",
+        "od_mm": 114.3,
+        "t_mm": 3.6,
+        "mass_kg_m": 9.83
+      },
+      {
+        "designation": "114.3x4.5",
+        "od_mm": 114.3,
+        "t_mm": 4.5,
+        "mass_kg_m": 12.2
+      },
+      {
+        "designation": "114.3x6.3",
+        "od_mm": 114.3,
+        "t_mm": 6.3,
+        "mass_kg_m": 16.8
+      },
+      {
+        "designation": "114.3x8.8",
+        "od_mm": 114.3,
+        "t_mm": 8.8,
+        "mass_kg_m": 22.9
+      },
+      {
+        "designation": "139.7x4.0",
+        "od_mm": 139.7,
+        "t_mm": 4.0,
+        "mass_kg_m": 13.4
+      },
+      {
+        "designation": "139.7x6.3",
+        "od_mm": 139.7,
+        "t_mm": 6.3,
+        "mass_kg_m": 20.7
+      },
+      {
+        "designation": "139.7x8.0",
+        "od_mm": 139.7,
+        "t_mm": 8.0,
+        "mass_kg_m": 26.0
+      },
+      {
+        "designation": "139.7x10.0",
+        "od_mm": 139.7,
+        "t_mm": 10.0,
+        "mass_kg_m": 32.0
+      },
+      {
+        "designation": "168.3x4.5",
+        "od_mm": 168.3,
+        "t_mm": 4.5,
+        "mass_kg_m": 18.2
+      },
+      {
+        "designation": "168.3x6.3",
+        "od_mm": 168.3,
+        "t_mm": 6.3,
+        "mass_kg_m": 25.2
+      },
+      {
+        "designation": "168.3x8.0",
+        "od_mm": 168.3,
+        "t_mm": 8.0,
+        "mass_kg_m": 31.6
+      },
+      {
+        "designation": "168.3x10.0",
+        "od_mm": 168.3,
+        "t_mm": 10.0,
+        "mass_kg_m": 39.0
+      },
+      {
+        "designation": "168.3x12.5",
+        "od_mm": 168.3,
+        "t_mm": 12.5,
+        "mass_kg_m": 48.0
+      },
+      {
+        "designation": "219.1x6.3",
+        "od_mm": 219.1,
+        "t_mm": 6.3,
+        "mass_kg_m": 33.1
+      },
+      {
+        "designation": "219.1x8.0",
+        "od_mm": 219.1,
+        "t_mm": 8.0,
+        "mass_kg_m": 41.6
+      },
+      {
+        "designation": "219.1x10.0",
+        "od_mm": 219.1,
+        "t_mm": 10.0,
+        "mass_kg_m": 51.6
+      },
+      {
+        "designation": "219.1x12.5",
+        "od_mm": 219.1,
+        "t_mm": 12.5,
+        "mass_kg_m": 63.7
+      },
+      {
+        "designation": "219.1x16.0",
+        "od_mm": 219.1,
+        "t_mm": 16.0,
+        "mass_kg_m": 80.1
+      }
+    ]
+  }
+]
