@@ -181,5 +181,151 @@ class TestDropdownHelpers(unittest.TestCase):
         self.assertEqual(entry._dropdown_index(DD()), 1)
 
 
+class _Args:
+    """Minimal stand-in for InputChangedEventArgs / SelectionEventArgs."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def _make_dialog():
+    """Build a FakeCommand whose inputs mirror command_created's layout."""
+    cmd = adsk_stub.FakeCommand()
+    inputs = cmd.commandInputs
+    inputs.addSelectionInput('path', 'Lines', '')
+    inputs.addDropDownCommandInput('family', 'Profile', 0)
+    inputs.addDropDownCommandInput('designation', 'Designation', 0)
+    tbl = inputs.addTableCommandInput('params', 'Per Line', 4, '1:3:3:3')
+    sync = inputs.addBoolValueInput('sync_all', 'Sync all', True, '', True)
+    tbl.addToolbarCommandInput(sync)
+    return cmd, inputs, tbl
+
+
+class TestPerLineTable(unittest.TestCase):
+    def setUp(self):
+        adsk_stub.reset()
+        entry._row_ids = []
+        entry._uid_counter[0] = 0
+        entry._FAMILIES = prof.annotate_families(prof.load_profiles())
+
+    def _pick(self, inputs, lines):
+        sel = inputs.itemById('path')
+        for ln in lines:
+            sel.addSelection(ln)
+        return sel
+
+    def test_sync_table_rows_one_row_per_line(self):
+        _cmd, inputs, tbl = _make_dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
+        entry._sync_table_rows(inputs, lines)
+        self.assertEqual(len(entry._row_ids), 2)
+        self.assertEqual(tbl.rowCount, 2)
+
+    def test_sync_table_rows_shrinks(self):
+        _cmd, inputs, tbl = _make_dialog()
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 3)
+        self.assertEqual(len(entry._row_ids), 3)
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        self.assertEqual(len(entry._row_ids), 1)
+        self.assertEqual(tbl.rowCount, 1)
+
+    def test_sync_table_rows_preserves_existing(self):
+        _cmd, inputs, tbl = _make_dialog()
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        first_id = entry._row_ids[0]['rot']
+        inputs.itemById(first_id).value = 0.25
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine(), adsk_stub.FakeLine()])
+        # Row 0 keeps its identity and value; a new row 1 is appended.
+        self.assertEqual(entry._row_ids[0]['rot'], first_id)
+        self.assertAlmostEqual(inputs.itemById(first_id).value, 0.25)
+        self.assertEqual(len(entry._row_ids), 2)
+
+    def test_cell_column_mapping(self):
+        self.assertEqual(entry._cell_column('rot_5'), 'rot')
+        self.assertEqual(entry._cell_column('os_5'), 'os')
+        self.assertEqual(entry._cell_column('oe_5'), 'oe')
+        self.assertIsNone(entry._cell_column('num_5'))
+        self.assertIsNone(entry._cell_column('family'))
+
+    def test_row_params_reads_per_row_values(self):
+        _cmd, inputs, tbl = _make_dialog()
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
+        inputs.itemById(entry._row_ids[0]['rot']).value = 0.5
+        inputs.itemById(entry._row_ids[1]['os']).value = 2.0
+        self.assertEqual(entry._row_params(inputs, 0)[0], 0.5)
+        self.assertEqual(entry._row_params(inputs, 1)[1], 2.0)
+        # A row past the table defaults to zeros.
+        self.assertEqual(entry._row_params(inputs, 9), (0.0, 0.0, 0.0))
+
+    def test_sync_all_propagates_rotation(self):
+        _cmd, inputs, tbl = _make_dialog()
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 3)
+        rot0 = inputs.itemById(entry._row_ids[0]['rot'])
+        rot0.value = 0.75
+        entry.command_input_changed(_Args(input=rot0, inputs=inputs))
+        for r in (1, 2):
+            self.assertAlmostEqual(
+                inputs.itemById(entry._row_ids[r]['rot']).value, 0.75)
+
+    def test_sync_all_propagates_offset(self):
+        _cmd, inputs, tbl = _make_dialog()
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
+        os1 = inputs.itemById(entry._row_ids[1]['os'])
+        os1.value = 3.0
+        entry.command_input_changed(_Args(input=os1, inputs=inputs))
+        self.assertAlmostEqual(
+            inputs.itemById(entry._row_ids[0]['os']).value, 3.0)
+
+    def test_no_propagation_when_unsynced(self):
+        _cmd, inputs, tbl = _make_dialog()
+        inputs.itemById('sync_all').value = False
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
+        rot0 = inputs.itemById(entry._row_ids[0]['rot'])
+        rot0.value = 0.9
+        entry.command_input_changed(_Args(input=rot0, inputs=inputs))
+        self.assertAlmostEqual(
+            inputs.itemById(entry._row_ids[1]['rot']).value, 0.0)
+
+    def test_synced_manipulators_only_row_zero(self):
+        _cmd, inputs, tbl = _make_dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
+        entry._sync_table_rows(inputs, lines)
+        entry._update_manipulators(inputs, lines)
+        self.assertEqual(inputs.itemById(entry._row_ids[0]['rot']).manipulatorCount, 1)
+        self.assertEqual(inputs.itemById(entry._row_ids[1]['rot']).manipulatorCount, 0)
+        # Row 1's cells stay VISIBLE (a table row hides when all its cells are
+        # invisible), but its on-canvas manipulator is disabled so only row 0
+        # shows a wheel/arrows when Sync all is on.
+        self.assertTrue(inputs.itemById(entry._row_ids[1]['rot']).isVisible)
+        self.assertFalse(inputs.itemById(entry._row_ids[1]['rot']).isEnabled)
+
+    def test_unsynced_manipulators_anchor_each_row(self):
+        _cmd, inputs, tbl = _make_dialog()
+        inputs.itemById('sync_all').value = False
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
+        entry._sync_table_rows(inputs, lines)
+        entry._update_manipulators(inputs, lines)
+        for r in (0, 1):
+            self.assertEqual(
+                inputs.itemById(entry._row_ids[r]['rot']).manipulatorCount, 1)
+            self.assertTrue(
+                inputs.itemById(entry._row_ids[r]['rot']).isVisible)
+        # Row 1's offset-start arrow anchors to line 1's start (0,0,0) but its
+        # rotation wheel origin equals that line's start point.
+        mo = inputs.itemById(entry._row_ids[1]['rot']).manipulatorOrigin
+        self.assertEqual((round(mo.x, 3), round(mo.y, 3), round(mo.z, 3)),
+                         (0.0, 0.0, 0.0))
+
+    def test_select_builds_rows_and_anchors(self):
+        cmd, inputs, tbl = _make_dialog()
+        sel = self._pick(inputs, [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))])
+        entry.command_select(_Args(activeInput=sel))
+        self.assertEqual(len(entry._row_ids), 1)
+        self.assertEqual(inputs.itemById(entry._row_ids[0]['rot']).manipulatorCount, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -247,6 +247,175 @@ class FakeRoot:
         self.features = FakeFeatures()
 
 
+# --- command-input fakes (for driving the dialog event handlers) ----------- #
+class FakeInput:
+    """A generic value input: angle/distance/text/bool all share this shape."""
+
+    def __init__(self, id, kind, value=0.0):
+        self.id = id
+        self.kind = kind
+        self._value = value
+        self.isVisible = True
+        self.isEnabled = True
+        self.hasMinimumValue = True
+        self.hasMaximumValue = True
+        self.manipulatorOrigin = None
+        self.manipulatorCount = 0
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, v):
+        self._value = v
+        _record("input.value.set", self.id, v)
+
+    def setManipulator(self, *args):
+        _record("input.setManipulator", self.id, *args)
+        self.manipulatorOrigin = args[0]
+        self.manipulatorCount += 1
+        return True
+
+
+class FakeListItems:
+    def __init__(self):
+        self._items = []
+
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return self._items[i]
+
+    def add(self, name, isSelected=False, subItem=""):
+        self._items.append(FakeInput(f"_li{id(self)}_{name}", "li", isSelected))
+        return self._items[-1]
+
+    def clear(self):
+        self._items = []
+
+
+class FakeDropDown(FakeInput):
+    def __init__(self, id):
+        super().__init__(id, "dropdown", 0)
+        self.listItems = FakeListItems()
+
+
+class FakeSelectionItem:
+    def __init__(self, entity):
+        self.entity = entity
+
+
+class FakeSelection(FakeInput):
+    def __init__(self, id, parent=None):
+        super().__init__(id, "selection", 0)
+        self._ents = []
+        self.parentCommand = parent
+
+    @property
+    def selectionCount(self):
+        return len(self._ents)
+
+    def selection(self, i):
+        return FakeSelectionItem(self._ents[i])
+
+    def addSelection(self, entity):
+        self._ents.append(entity)
+        return True
+
+    def clearSelection(self):
+        self._ents = []
+
+    def addSelectionFilter(self, kind):
+        return True
+
+    def setSelectionLimits(self, minc, maxc):
+        return True
+
+
+class FakeTable:
+    def __init__(self, id, ncols, ratio):
+        self.id = id
+        self.numberOfColumns = ncols
+        self.ratio = ratio
+        self._rows = 0
+        self._cells = {}
+        self._toolbar = []
+
+    def addCommandInput(self, inp, row, col, rowSpan=0, columnSpan=0):
+        _record("table.addCommandInput", inp.id, row, col)
+        self._cells[(row, col)] = inp
+        self._rows = max(self._rows, row + 1)
+        return True
+
+    def addToolbarCommandInput(self, inp):
+        _record("table.addToolbarCommandInput", inp.id)
+        self._toolbar.append(inp)
+        return True
+
+    def deleteRow(self, row):
+        _record("table.deleteRow", row)
+        for (r, c) in list(self._cells):
+            if r == row:
+                del self._cells[(r, c)]
+        self._rows = max(0, self._rows - 1)
+        return True
+
+    @property
+    def rowCount(self):
+        return self._rows
+
+    def getPosition(self, inp):
+        for (r, c), v in self._cells.items():
+            if v is inp:
+                return (True, r, c, 0, 0)
+        return (False, -1, -1, 0, 0)
+
+
+class FakeCommand:
+    def __init__(self):
+        self.commandInputs = FakeCommandInputs(self)
+
+
+class FakeCommandInputs:
+    def __init__(self, command=None):
+        self._by_id = {}
+        self._command = command
+
+    def _add(self, inp):
+        self._by_id[inp.id] = inp
+        return inp
+
+    def itemById(self, id):
+        return self._by_id.get(id)
+
+    def addSelectionInput(self, id, name, desc):
+        return self._add(FakeSelection(id, self._command))
+
+    def addDropDownCommandInput(self, id, name, style):
+        return self._add(FakeDropDown(id))
+
+    def addTableCommandInput(self, id, name, ncols, ratio):
+        return self._add(FakeTable(id, ncols, ratio))
+
+    def addBoolCommandInput(self, id, name, value):
+        return self._add(FakeInput(id, "bool", value))
+
+    def addBoolValueInput(self, id, name, isCheckBox, resourceFolder, initialValue):
+        return self._add(FakeInput(id, "bool", initialValue))
+
+    def addTextBoxCommandInput(self, id, name, text, nlines, readonly):
+        return self._add(FakeInput(id, "text", text))
+
+    def addAngleValueCommandInput(self, id, name, vi):
+        return self._add(FakeInput(id, "angle", 0.0))
+
+    def addDistanceValueCommandInput(self, id, name, vi):
+        return self._add(FakeInput(id, "distance", 0.0))
+
+
 # --- install into sys.modules ---------------------------------------------- #
 def install():
     adsk = types.ModuleType("adsk")

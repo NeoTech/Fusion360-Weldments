@@ -39,6 +39,22 @@ PREVIEW_OPACITY = 0.4
 # list is sufficient.
 _preview_objs = []
 
+# Re-entrancy guard for the "Sync all" propagation: setting a table cell's value
+# programmatically can re-fire inputChanged, which would otherwise recurse.
+_syncing = False
+
+# One entry per table row, in row order: a dict of that row's cell input ids
+# {'num','rot','os','oe'}.  Kept in sync with the selection by
+# _sync_table_rows(); the ids carry a monotonic uid so a deleted-then-recreated
+# row never collides with a lingering input.
+_row_ids = []
+_uid_counter = [0]
+
+
+def _new_uid():
+    _uid_counter[0] += 1
+    return _uid_counter[0]
+
 
 # --------------------------------------------------------------------------- #
 # Add-in lifecycle
@@ -111,27 +127,21 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     inputs.addDropDownCommandInput(
         'designation', 'Designation', adsk.core.DropDownStyles.TextListDropDownStyle)
 
-    # 4. Rotation of the profile about the selected line (its own axis).
-    #    Hidden until a line is picked: with no anchor, Fusion would draw the
-    #    wheel at its default origin (0,0,0). _update_rotation_manipulator
-    #    reveals it once it has been anchored to the selected line.
-    ang: adsk.core.AngleValueCommandInput = inputs.addAngleValueCommandInput(
-        'rotation', 'Rotation', adsk.core.ValueInput.createByString('0 deg'))
-    ang.hasMinimumValue = False
-    ang.hasMaximumValue = False
-    ang.isVisible = False
-
-    # 5. Signed offsets along the line.  Both default to 0 = the full line
-    #    length.  Offset Start moves where the profile is created from (positive
-    #    trims into the line, negative extends before its start); Offset End
-    #    moves the far end the same way.  Hidden until a line is picked -- with
-    #    no anchor Fusion would draw their arrows at the default origin (0,0,0).
-    ofs: adsk.core.DistanceValueCommandInput = inputs.addDistanceValueCommandInput(
-        'offset_start', 'Offset Start', adsk.core.ValueInput.createByString('0 mm'))
-    ofe: adsk.core.DistanceValueCommandInput = inputs.addDistanceValueCommandInput(
-        'offset_end', 'Offset End', adsk.core.ValueInput.createByString('0 mm'))
-    ofs.isVisible = False
-    ofe.isVisible = False
+    # 4. Per-line rotation + offset table.  One row per selected sketch line,
+    #    with columns [#, Rotation, Offset Start, Offset End].  A "Sync all"
+    #    checkbox lives in the table toolbar: when checked (default) editing any
+    #    row propagates its value to every row and the manipulators anchor to
+    #    the first line; when unchecked each row keeps its own values and gets
+    #    its own manipulators anchored to that row's line.  The table starts
+    #    empty; _sync_table_rows() adds a row per line as the selection changes.
+    tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
+        'params', 'Per Line', 4, '1:3:3:3')
+    sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
+        'sync_all', 'Sync all', True, '', True)
+    tbl.addToolbarCommandInput(sync)
+    # Fresh dialog: no rows yet (they are added as lines are selected).
+    global _row_ids
+    _row_ids = []
 
     _rebuild_designations(inputs)
 
@@ -175,12 +185,11 @@ def _rebuild_designations(inputs):
 # Events
 # --------------------------------------------------------------------------- #
 def _resolve(inputs):
-    """Resolve the current dialog inputs to
-    (root, selection, geom, label, angle, offset_start, offset_end).
+    """Resolve the current dialog inputs to (root, selection, geom, label).
 
-    ``angle`` is the profile rotation (radians) about the selected line.
-    ``offset_start``/``offset_end`` are signed distances (cm) along the line.
-    Returns None when the designation is not (yet) valid.
+    The per-line rotation/offset values live in the params table and are read
+    separately via :func:`_row_params`.  Returns None when the designation is
+    not (yet) valid.
     """
     family = _selected_family(inputs)
     if not family:
@@ -194,15 +203,26 @@ def _resolve(inputs):
     designation['_abbreviation'] = family['abbreviation']
     geom = prof.section_geometry(designation)
     sel: adsk.core.SelectionCommandInput = inputs.itemById('path')
-    ang: adsk.core.AngleValueCommandInput = inputs.itemById('rotation')
-    angle_rad = ang.value if ang else 0.0
-    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_start')
-    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_end')
-    offset_start = ofs.value if ofs else 0.0
-    offset_end = ofe.value if ofe else 0.0
     design = adsk.fusion.Design.cast(app.activeProduct)
-    return (design.rootComponent, sel, geom, designation['designation'],
-            angle_rad, offset_start, offset_end)
+    return (design.rootComponent, sel, geom, designation['designation'])
+
+
+def _row_params(inputs, r):
+    """Return (angle_rad, offset_start, offset_end) for table row ``r``.
+
+    Reads the row's own Rotation / Offset Start / Offset End cells (looked up by
+    the ids recorded in ``_row_ids[r]``).  A row index past the current table
+    (or a not-yet-built row) defaults to 0, i.e. no rotation and full length.
+    """
+    if r >= len(_row_ids):
+        return (0.0, 0.0, 0.0)
+    ids = _row_ids[r]
+    ang: adsk.core.AngleValueCommandInput = inputs.itemById(ids['rot'])
+    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById(ids['os'])
+    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById(ids['oe'])
+    return (ang.value if ang else 0.0,
+            ofs.value if ofs else 0.0,
+            ofe.value if ofe else 0.0)
 
 
 def _clear_preview():
@@ -244,99 +264,195 @@ def _restore_selection(sel, saved):
         pass
 
 
+def _selected_lines(inputs):
+    """The entities currently picked in the path selection (may be empty)."""
+    sel = inputs.itemById('path')
+    return _snapshot_selection(sel) if sel else []
+
+
+def _cell_column(input_id):
+    """Map a table-cell input id (rot_/os_/oe_<uid>) to its column key.
+
+    Returns 'rot', 'os' or 'oe' for the editable value columns, or None for the
+    read-only row-number column and every non-table input.
+    """
+    for col in ('rot', 'os', 'oe'):
+        if input_id.startswith(col + '_'):
+            return col
+    return None
+
+
 def command_input_changed(args: adsk.core.InputChangedEventArgs):
-    # Only rebuild the designation list here.  The preview itself is torn down
-    # and rebuilt in executePreview (which Fusion fires right after this event),
-    # so we deliberately do NOT clear it here -- clearing here would drop the
-    # user's line selection before executePreview can preserve it.
-    if args.input.id == 'family':
+    # Rebuild the designation list when the family changes.  The preview itself
+    # is torn down and rebuilt in executePreview (which Fusion fires right after
+    # this event), so we deliberately do NOT clear it here -- clearing here would
+    # drop the user's line selection before executePreview can preserve it.
+    global _syncing
+    inp = args.input
+    if inp.id == 'family':
         _rebuild_designations(args.inputs)
+        return
+    # Toggling Sync all changes which rows show their manipulators.
+    if inp.id == 'sync_all':
+        _update_manipulators(args.inputs, _selected_lines(args.inputs))
+        return
+    # A table cell was edited.  With Sync all on, mirror the value into every
+    # other row so the controls stay universal.  The _syncing guard stops the
+    # programmatic writes below from re-firing this handler.
+    if _syncing:
+        return
+    col = _cell_column(inp.id)
+    if col is None:
+        return
+    sync: adsk.core.BoolValueCommandInput = args.inputs.itemById('sync_all')
+    if not (sync and sync.value):
+        return
+    _syncing = True
+    try:
+        value = inp.value
+        for ids in _row_ids:
+            other = args.inputs.itemById(ids[col])
+            if other is not None and other.id != inp.id:
+                other.value = value
+    finally:
+        _syncing = False
 
 
 def command_select(args: adsk.core.SelectionEventArgs):
-    """Anchor the manipulators the instant a line is picked.
+    """Match the table rows to the selection and anchor manipulators on the click.
 
-    This fires on the actual click -- before the preview redraw -- so the
-    rotation wheel and the offset arrows are already positioned on the selected
-    line when they first appear.  Anchoring inside executePreview is too late:
-    setManipulator only takes effect on the following redraw, so they would
-    briefly show at their default origin (0,0,0), i.e. the sketch's first point.
+    This fires on the actual click -- before the preview redraw -- so the table
+    gains/loses a row and the rotation wheel / offset arrows are already
+    positioned on the selected line(s) when they first appear.  Anchoring inside
+    executePreview is too late: setManipulator only takes effect on the
+    following redraw, so they would briefly show at their default origin
+    (0,0,0), i.e. the sketch's first point.
     """
     sel = args.activeInput
     if sel is None or sel.id != 'path':
         return
     lines = [sel.selection(i).entity for i in range(sel.selectionCount)]
     inputs = sel.parentCommand.commandInputs
-    _update_rotation_manipulator(inputs, lines)
-    _update_offset_manipulators(inputs, lines)
+    _sync_table_rows(inputs, lines)
+    _update_manipulators(inputs, lines)
 
 
-def _update_offset_manipulators(inputs, lines):
-    """Anchor the Offset Start / End arrows to the selected line's endpoints.
+def _sync_table_rows(inputs, lines):
+    """Grow/shrink the params table so it has exactly one row per line.
 
-    Offset Start sits at the line's start point and Offset End at its end point,
-    both pointing along the line direction, so dragging an arrow moves that end
-    of the profile in/out exactly as the numeric offset does.  Without this,
-    Fusion draws them at the default origin (0,0,0) -- the wrong vertex.
+    Rows are matched by position: row r drives line r.  Existing rows keep
+    their values; new rows are appended with 0 defaults; rows past the current
+    line count are deleted from the end.  Each row's cell inputs get unique ids
+    (from a monotonic counter) so a deleted-then-recreated row never collides
+    with a lingering input.
     """
-    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_start')
-    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_end')
-    if ofs is None or ofe is None:
+    tbl: adsk.core.TableCommandInput = inputs.itemById('params')
+    if tbl is None:
         return
-    if not lines:
-        ofs.isVisible = False
-        ofe.isVisible = False
+    n = len(lines)
+    while len(_row_ids) > n:
+        _row_ids.pop()
+        try:
+            tbl.deleteRow(len(_row_ids))
+        except Exception:
+            pass
+    while len(_row_ids) < n:
+        r = len(_row_ids)
+        uid = _new_uid()
+        ids = {'num': f'num_{uid}', 'rot': f'rot_{uid}',
+               'os': f'os_{uid}', 'oe': f'oe_{uid}'}
+        num = inputs.addTextBoxCommandInput(
+            ids['num'], '', str(r + 1), 1, True)
+        rot = inputs.addAngleValueCommandInput(
+            ids['rot'], '', adsk.core.ValueInput.createByString('0 deg'))
+        os_ = inputs.addDistanceValueCommandInput(
+            ids['os'], '', adsk.core.ValueInput.createByString('0 mm'))
+        oe_ = inputs.addDistanceValueCommandInput(
+            ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
+        rot.hasMinimumValue = False
+        rot.hasMaximumValue = False
+        tbl.addCommandInput(num, r, 0)
+        tbl.addCommandInput(rot, r, 1)
+        tbl.addCommandInput(os_, r, 2)
+        tbl.addCommandInput(oe_, r, 3)
+        _row_ids.append(ids)
+
+
+def _update_manipulators(inputs, lines):
+    """Show/anchor each row's rotation wheel and offset arrows.
+
+    Synced (default): only row 0's manipulators are shown, anchored to line 0,
+    because editing any row propagates to all -- one universal set of handles.
+    Unsynced: row r's manipulators anchor to line r, so every created element
+    carries its own wheel and arrows on the canvas.
+    """
+    sync: adsk.core.BoolValueCommandInput = inputs.itemById('sync_all')
+    synced = bool(sync and sync.value)
+    ref = _selection_reference(lines) if lines else None
+    for r, ids in enumerate(_row_ids):
+        if synced:
+            anchor = lines[0] if lines else None
+            show = (r == 0)
+        else:
+            anchor = lines[r] if r < len(lines) else None
+            show = anchor is not None
+        _apply_row_manipulators(
+            inputs.itemById(ids['rot']), inputs.itemById(ids['os']),
+            inputs.itemById(ids['oe']), anchor, ref, show)
+
+
+def _apply_row_manipulators(ang, ofs, ofe, line, ref, show):
+    """Show one row's cells and (optionally) anchor its wheel + arrows on ``line``.
+
+    The wheel sits in the profile plane (normal = line direction) at the line
+    start so dragging spins the profile about its own axis; the Offset Start
+    arrow sits at the line start and the Offset End arrow at its end, both along
+    the line direction.
+
+    A table row auto-hides when ALL of its cells are invisible, so the cells are
+    always kept isVisible=True -- otherwise only the first row would show.  The
+    on-canvas manipulator is toggled separately via isEnabled (the docs: the
+    manipulator draws only when isVisible AND isEnabled are both true).  When
+    ``show`` is False (or there is no line) the handles are disabled so they
+    never strand at the default origin (0,0,0), while the row still shows.
+    """
+    for inp in (ang, ofs, ofe):
+        if inp is not None:
+            try:
+                inp.isVisible = True
+            except Exception:
+                pass
+    if not show or line is None:
+        for inp in (ang, ofs, ofe):
+            if inp is not None:
+                try:
+                    inp.isEnabled = False
+                except Exception:
+                    pass
         return
     try:
-        world = lines[0].worldGeometry
+        world = line.worldGeometry
         start = world.startPoint
         end = world.endPoint
         direction = (end.x - start.x, end.y - start.y, end.z - start.z)
         dir_vec = adsk.core.Vector3D.create(*prof._norm(direction))
-        ofs.setManipulator(
-            adsk.core.Point3D.create(start.x, start.y, start.z), dir_vec)
-        ofe.setManipulator(
-            adsk.core.Point3D.create(end.x, end.y, end.z), dir_vec)
-        ofs.isVisible = True
-        ofs.isEnabled = True
-        ofe.isVisible = True
-        ofe.isEnabled = True
+        if ang is not None:
+            axis_u, axis_v = prof.compute_basis(direction, ref)
+            ang.setManipulator(
+                adsk.core.Point3D.create(start.x, start.y, start.z),
+                adsk.core.Vector3D.create(*axis_u),
+                adsk.core.Vector3D.create(*axis_v))
+            ang.isEnabled = True
+        if ofs is not None:
+            ofs.setManipulator(
+                adsk.core.Point3D.create(start.x, start.y, start.z), dir_vec)
+            ofs.isEnabled = True
+        if ofe is not None:
+            ofe.setManipulator(
+                adsk.core.Point3D.create(end.x, end.y, end.z), dir_vec)
+            ofe.isEnabled = True
     except Exception:
-        futil.handle_error(f'{CMD_NAME} offset manipulators')
-
-
-def _update_rotation_manipulator(inputs, lines):
-    """Anchor the rotation wheel to the (first) selected line.
-
-    Without this, Fusion draws the angle manipulator at its default origin
-    (0,0,0) with fixed X/Y directions -- the "random point" away from the
-    geometry.  We place the wheel in the profile's own plane (normal = the line
-    direction) centred on the line's start point, so dragging it spins the
-    profile about that line exactly as the Rotation value does.
-    """
-    ang: adsk.core.AngleValueCommandInput = inputs.itemById('rotation')
-    if ang is None:
-        return
-    if not lines:
-        # No line to anchor to -- keep the wheel hidden rather than leaving it
-        # stranded at its last (or default) position.
-        ang.isVisible = False
-        return
-    try:
-        world = lines[0].worldGeometry
-        start = world.startPoint
-        end = world.endPoint
-        direction = (end.x - start.x, end.y - start.y, end.z - start.z)
-        axis_u, axis_v = prof.compute_basis(
-            direction, prof.selection_reference([_line_direction(l) for l in lines]))
-        ang.setManipulator(
-            adsk.core.Point3D.create(start.x, start.y, start.z),
-            adsk.core.Vector3D.create(*axis_u),
-            adsk.core.Vector3D.create(*axis_v))
-        ang.isVisible = True
-        ang.isEnabled = True
-    except Exception:
-        futil.handle_error(f'{CMD_NAME} rotation manipulator')
+        futil.handle_error(f'{CMD_NAME} row manipulators')
 
 
 def command_execute_preview(args: adsk.core.CommandEventArgs):
@@ -348,15 +464,16 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     # restore the selection at the end rather than trusting the live count.
     saved = _snapshot_selection(sel)
     _clear_preview()
-    _update_rotation_manipulator(inputs, saved)
-    _update_offset_manipulators(inputs, saved)
+    _sync_table_rows(inputs, saved)
+    _update_manipulators(inputs, saved)
     resolved = _resolve(inputs)
     if not resolved:
         _restore_selection(sel, saved)
         return
-    root, _sel, geom, label, angle, off_s, off_e = resolved
+    root, _sel, geom, label = resolved
     ref = _selection_reference(saved)
-    for line in saved:
+    for i, line in enumerate(saved):
+        angle, off_s, off_e = _row_params(inputs, i)
         objs = _build_weldment(root, line, geom, label, angle, ref, off_s, off_e,
                                preview=True)
         if objs:
@@ -379,11 +496,12 @@ def command_execute(args: adsk.core.CommandEventArgs):
     resolved = _resolve(inputs)
     if not resolved:
         return
-    root, _sel, geom, label, angle, off_s, off_e = resolved
+    root, _sel, geom, label = resolved
     ref = _selection_reference(saved)
 
     created = 0
-    for line in saved:
+    for i, line in enumerate(saved):
+        angle, off_s, off_e = _row_params(inputs, i)
         if _build_weldment(root, line, geom, label, angle, ref, off_s, off_e):
             created += 1
 
@@ -396,7 +514,8 @@ def command_destroy(args: adsk.core.CommandEventArgs):
     # On cancel (destroy without a preceding execute) the preview is still live;
     # remove it.  After OK, _preview_objs is already empty so this is a no-op.
     _clear_preview()
-    global local_handlers
+    global _row_ids, local_handlers
+    _row_ids = []
     local_handlers = []
 
 
