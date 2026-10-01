@@ -161,12 +161,39 @@ class FakeConstructionPlane:
         return True
 
 
+class FakeSketchLines:
+    """Records added lines and supports count/item (needed for a revolve axis)."""
+
+    def __init__(self):
+        self._lines = []
+
+    def addByTwoPoints(self, p1, p2):
+        _record("SketchLines.addByTwoPoints", p1, p2)
+        node = _Node("sketchLine")
+        self._lines.append(node)
+        return node
+
+    @property
+    def count(self):
+        return len(self._lines)
+
+    def item(self, i):
+        return self._lines[i]
+
+
+class FakeSketchCurves:
+    def __init__(self):
+        self.sketchLines = FakeSketchLines()
+        self.sketchArcs = _Node("sketch.sketchCurves.sketchArcs")
+        self.sketchCircles = _Node("sketch.sketchCurves.sketchCircles")
+
+
 class FakeSketch:
     def __init__(self):
         self.name = ""
         self.transform = Matrix3D()
         self._profiles = _Collection([_Node("profile")])
-        self.sketchCurves = _Node("sketch.sketchCurves")
+        self.sketchCurves = FakeSketchCurves()
 
     def deleteMe(self):
         _record("Sketch.deleteMe")
@@ -236,8 +263,25 @@ class FakeExtrudeFeatures:
         return _Node("feature")
 
 
+class FakeRevolveInput:
+    def setAngleExtent(self, is_symmetric, angle):
+        _record("RevolveFeatureInput.setAngleExtent", is_symmetric, angle)
+        return True
+
+
+class FakeRevolveFeatures:
+    def createInput(self, profile, axis, operation):
+        _record("RevolveFeatures.createInput", operation)
+        return FakeRevolveInput()
+
+    def add(self, ri):
+        _record("RevolveFeatures.add")
+        return _Node("feature")
+
+
 class FakeFeatures:
     extrudeFeatures = FakeExtrudeFeatures()
+    revolveFeatures = FakeRevolveFeatures()
 
 
 class FakeRoot:

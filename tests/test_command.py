@@ -50,6 +50,8 @@ _make_package("Weldments.commands.weldment", os.path.join(ROOT, "commands", "wel
 import importlib  # noqa: E402
 entry = importlib.import_module("Weldments.commands.weldment.entry")
 prof = importlib.import_module("Weldments.lib.profiles")
+jt = importlib.import_module("Weldments.lib.joints")
+bd = importlib.import_module("Weldments.lib.bending_dies")
 
 
 def _names():
@@ -437,6 +439,77 @@ class TestJointColumn(unittest.TestCase):
         offs = entry._joint_offsets(inputs, lines, geom)
         self.assertEqual(offs[0], (0.0, 0.0))          # runs through
         self.assertLess(offs[1][1], 0.0)               # incoming member trimmed
+
+
+class TestBendBuild(unittest.TestCase):
+    """Swept-bend arc construction (revolve) + die-radius wiring."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.root = adsk_stub.FakeRoot()
+        families = prof.annotate_families(prof.load_profiles())
+        self.shs = next(f for f in families if f['abbreviation'] == 'SHS')
+        self.geom = prof.section_geometry(prof.designations(self.shs)[0])
+        entry._DIES = bd.load_bending_dies()
+        entry._FAMILIES = families
+
+    def _shs_dialog(self):
+        """A dialog whose family dropdown is populated and set to SHS."""
+        _cmd, inputs, tbl = _make_dialog()
+        fam = inputs.itemById('family')
+        for label in prof.family_labels(entry._FAMILIES):
+            fam.listItems.add(label, False)
+        for i in range(fam.listItems.count):
+            fam.listItems.item(i).isSelected = fam.listItems.item(i).name.startswith('SHS')
+        return inputs
+
+    def test_bend_arc_revolve_is_new_body(self):
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        plans = jt.bend_plan(lines, ['bend', 'bend'], [150.0, 150.0])
+        self.assertEqual(len(plans), 1)
+        idx, _role, tangent = plans[0]['tangent'][0]
+        objs = entry._build_bend_arc(self.root, lines[idx], tangent, plans[0],
+                                     self.geom, ref=None)
+        self.assertIsInstance(objs, tuple)
+        fusion = adsk_stub.sys.modules["adsk.fusion"]
+        ci = [c for c in adsk_stub.CALLS if c[0] == "RevolveFeatures.createInput"]
+        self.assertEqual(ci[0][1][0], fusion.FeatureOperations.NewBodyFeatureOperation)
+        self.assertIn("RevolveFeatures.add", _names())
+
+    def test_bend_arc_revolve_angle_equals_theta(self):
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        plans = jt.bend_plan(lines, ['bend', 'bend'], [150.0, 150.0])
+        idx, _role, tangent = plans[0]['tangent'][0]
+        entry._build_bend_arc(self.root, lines[idx], tangent, plans[0],
+                              self.geom, ref=None)
+        ae = [c for c in adsk_stub.CALLS if c[0] == "RevolveFeatureInput.setAngleExtent"]
+        self.assertAlmostEqual(ae[0][1][1].value, plans[0]['theta'])
+
+    def test_bend_radii_from_die(self):
+        # A bend leg resolves to the catalogue CLR; a non-bend leg to 0.
+        des = dict(prof.designations(self.shs)[0])
+        des['_abbreviation'] = 'SHS'
+        inputs = self._shs_dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        for r in (0, 1):
+            dd = inputs.itemById(entry._row_ids[r]['joint'])
+            for i in range(dd.listItems.count):
+                dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Bend'
+        radii = entry._bend_radii(inputs, lines, des)
+        self.assertTrue(all(x > 0 for x in radii))
+
+    def test_build_bend_arcs_returns_one_per_corner(self):
+        des = dict(prof.designations(self.shs)[0])
+        des['_abbreviation'] = 'SHS'
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        objs = entry._build_bend_arcs(self.root, lines, ['bend', 'bend'],
+                                      [150.0, 150.0], self.geom, ref=None)
+        self.assertEqual(len(objs), 1)   # one rounded corner
 
 
 if __name__ == "__main__":

@@ -151,6 +151,58 @@ class TestMiterJoint(unittest.TestCase):
         self.assertAlmostEqual(offs[1][0], 0.0)
 
 
+class TestSweptBend(unittest.TestCase):
+    def test_turn_angle_right_angle(self):
+        # Members pointing +X and +Y away from the vertex -> 90 deg turn.
+        self.assertAlmostEqual(jt.bend_turn_angle((1, 0, 0), (0, 1, 0)), math.pi / 2)
+
+    def test_turn_angle_straight_is_zero(self):
+        # Collinear run (opposite outward dirs) -> no turn.
+        self.assertAlmostEqual(jt.bend_turn_angle((1, 0, 0), (-1, 0, 0)), 0.0)
+
+    def test_setback_90_equals_radius(self):
+        # SB = R*tan(45) = R.  R=100 mm -> 10 cm.
+        self.assertAlmostEqual(jt.bend_setback(100.0, math.pi / 2), 10.0)
+
+    def test_arc_length_90(self):
+        # L = R*theta = 100 mm * pi/2 -> 15.708 cm.
+        self.assertAlmostEqual(jt.bend_arc_length(100.0, math.pi / 2),
+                               100.0 * math.pi / 2 * jt.MM_TO_CM)
+
+    def test_bend_plan_90_corner(self):
+        # Two legs meeting at the origin (+X and +Y), both 'bend', R=100 mm.
+        lines = [FakeLine((0, 0, 0), (30, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 30, 0))]
+        plans = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0])
+        self.assertEqual(len(plans), 1)
+        p = plans[0]
+        self.assertAlmostEqual(p['theta'], math.pi / 2)
+        # Center sits at (R, R) = (10, 10) cm inside the turn.
+        self.assertAlmostEqual(p['center'][0], 10.0)
+        self.assertAlmostEqual(p['center'][1], 10.0)
+        # Tangent points are R back along each leg from the vertex: (10,0,0)/(0,10,0).
+        t = {i: pt for i, _r, pt in p['tangent']}
+        self.assertAlmostEqual(t[0][0], 10.0)
+        self.assertAlmostEqual(t[0][1], 0.0)
+        self.assertAlmostEqual(t[1][0], 0.0)
+        self.assertAlmostEqual(t[1][1], 10.0)
+
+    def test_bend_plan_requires_both_bend(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        # Only one leg asks for a bend -> no swept corner.
+        self.assertEqual(jt.bend_plan(lines, ['bend', 'none'], [100.0, 100.0]), [])
+
+    def test_bend_offsets_trim_legs(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        offs = jt.corner_offsets(lines, [_rect(40), _rect(40)],
+                                 ['bend', 'bend'], clr_by_line=[100.0, 100.0])
+        # Each leg starts at the corner -> offset_start pushed +SB (10 cm) inward.
+        self.assertAlmostEqual(offs[0][0], 10.0)
+        self.assertAlmostEqual(offs[1][0], 10.0)
+
+
 class TestFamilyFiltering(unittest.TestCase):
     def test_joints_for_family(self):
         self.assertEqual(jt.joints_for_family({'joints': ['none', 'butt', 'miter']}),

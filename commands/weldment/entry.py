@@ -6,6 +6,7 @@ import adsk.fusion
 from ...lib import fusionAddInUtils as futil
 from ...lib import profiles as prof
 from ...lib import joints as jt
+from ...lib import bending_dies as bd
 from ... import config
 
 app = adsk.core.Application.get()
@@ -29,6 +30,9 @@ local_handlers = []
 
 # Module-level cache of the loaded catalogue (populated on start()).
 _FAMILIES = []
+
+# Module-level cache of the bending-die catalogue (populated on start()).
+_DIES = {"units": "mm", "dies": []}
 
 # Opacity (0-1) used to ghost the live preview body so it reads as transient.
 PREVIEW_OPACITY = 0.4
@@ -61,12 +65,17 @@ def _new_uid():
 # Add-in lifecycle
 # --------------------------------------------------------------------------- #
 def start():
-    global _FAMILIES
+    global _FAMILIES, _DIES
     try:
         _FAMILIES = prof.annotate_families(prof.load_profiles())
     except Exception:
         _FAMILIES = []
         futil.handle_error(f'{CMD_NAME} load profiles')
+    try:
+        _DIES = bd.load_bending_dies()
+    except Exception:
+        _DIES = {"units": "mm", "dies": []}
+        futil.handle_error(f'{CMD_NAME} load bending dies')
 
     cmd_def = ui.commandDefinitions.addButtonDefinition(
         CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
@@ -225,7 +234,7 @@ def _rebuild_joints(inputs):
 # Events
 # --------------------------------------------------------------------------- #
 def _resolve(inputs):
-    """Resolve the current dialog inputs to (root, selection, geom, label).
+    """Resolve the current dialog inputs to (root, selection, geom, label, designation).
 
     The per-line rotation/offset values live in the params table and are read
     separately via :func:`_row_params`.  Returns None when the designation is
@@ -244,7 +253,8 @@ def _resolve(inputs):
     geom = prof.section_geometry(designation)
     sel: adsk.core.SelectionCommandInput = inputs.itemById('path')
     design = adsk.fusion.Design.cast(app.activeProduct)
-    return (design.rootComponent, sel, geom, designation['designation'])
+    return (design.rootComponent, sel, geom, designation['designation'],
+            designation)
 
 
 def _row_params(inputs, r):
@@ -278,20 +288,65 @@ def _row_joint(inputs, r):
     return 'none'
 
 
-def _joint_offsets(inputs, lines, geom):
+def _row_joints(inputs, lines):
+    """The joint id chosen for each line (index-aligned with ``lines``)."""
+    return [_row_joint(inputs, i) for i in range(len(lines))]
+
+
+def _joint_offsets(inputs, lines, geom, clr_by_line=None):
     """Per-line (offset_start, offset_end) in cm from the chosen corner joints.
 
     Auto-detects the corners among ``lines`` and turns each row's joint type into
     the length trim that removes the corner overlap (see lib/joints).  The
     result is added to the user's manual start/end offsets in the build loop.
     """
-    joints = [_row_joint(inputs, i) for i in range(len(lines))]
+    joints = _row_joints(inputs, lines)
     geoms = [geom for _ in lines]
     try:
-        return jt.corner_offsets(lines, geoms, joints)
+        return jt.corner_offsets(lines, geoms, joints, clr_by_line=clr_by_line)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint offsets')
         return [(0.0, 0.0) for _ in lines]
+
+
+def _bend_radii(inputs, lines, designation):
+    """Per-line die centerline radius (mm) for ``bend`` legs (0 where not bending).
+
+    A leg only gets a radius when its joint is ``bend`` and the designation
+    resolves to a die in the catalogue; otherwise 0 (no swept arc there).
+    """
+    abbr = designation.get('_abbreviation') if designation else None
+    radii = []
+    for i in range(len(lines)):
+        if _row_joint(inputs, i) == 'bend' and abbr:
+            die = bd.die_for_designation(_DIES, designation, abbr)
+            radii.append(die['nominal_CLR_mm'] if die else 0.0)
+        else:
+            radii.append(0.0)
+    return radii
+
+
+def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref, preview=False):
+    """Build the swept-bend arc bodies for every ``bend`` corner among ``lines``.
+
+    Returns a list of (feature, sketch, plane) tuples for the caller to track.
+    Legs whose joint is ``bend`` were already trimmed to their tangent points by
+    :func:`_joint_offsets`; here the arc that fills each rounded corner is
+    revolved into place, once per corner (built from that corner's first leg).
+    """
+    objs = []
+    try:
+        plans = jt.bend_plan(lines, joints, clr_by_line)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} bend plan')
+        return objs
+    for plan in plans:
+        idx, _role, tangent = plan['tangent'][0]
+        arc = _build_bend_arc(root, lines[idx], tangent, plan, geom, ref,
+                              preview=preview)
+        if arc:
+            objs.append(arc)
+    return objs
 
 
 def _clear_preview():
@@ -558,9 +613,10 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     if not resolved:
         _restore_selection(sel, saved)
         return
-    root, _sel, geom, label = resolved
+    root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
-    joint_offs = _joint_offsets(inputs, saved, geom)
+    clr_by_line = _bend_radii(inputs, saved, designation)
+    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line)
     for i, line in enumerate(saved):
         angle, off_s, off_e = _row_params(inputs, i)
         js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
@@ -568,6 +624,9 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
                                off_s + js, off_e + je, preview=True)
         if objs:
             _preview_objs.append(objs)
+    _preview_objs.extend(
+        _build_bend_arcs(root, saved, _row_joints(inputs, saved),
+                         clr_by_line, geom, ref, preview=True))
     # Make sure the user's lines are still highlighted after the churn.
     _restore_selection(sel, saved)
 
@@ -584,9 +643,10 @@ def command_execute(args: adsk.core.CommandEventArgs):
     resolved = _resolve(inputs)
     if not resolved:
         return
-    root, _sel, geom, label = resolved
+    root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
-    joint_offs = _joint_offsets(inputs, saved, geom)
+    clr_by_line = _bend_radii(inputs, saved, designation)
+    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line)
 
     created = 0
     for i, line in enumerate(saved):
@@ -595,6 +655,8 @@ def command_execute(args: adsk.core.CommandEventArgs):
         if _build_weldment(root, line, geom, label, angle, ref,
                            off_s + js, off_e + je):
             created += 1
+    created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
+                                    clr_by_line, geom, ref))
 
     if created == 0:
         ui.messageBox('No weldments were created. Select 3D sketch line(s) first.')
@@ -624,6 +686,86 @@ def _line_direction(line):
 def _selection_reference(lines):
     """Shared profile "up" reference for a whole selection (see selection_reference)."""
     return prof.selection_reference([_line_direction(l) for l in lines])
+
+
+def _draw_model_line(sketch, p_from, p_to):
+    """Add a sketch line between two model-space points (cm tuples)."""
+    to_sheet = sketch.transform.copy()
+    to_sheet.invert()
+    a = adsk.core.Point3D.create(*p_from)
+    a.transformBy(to_sheet)
+    b = adsk.core.Point3D.create(*p_to)
+    b.transformBy(to_sheet)
+    return sketch.sketchCurves.sketchLines.addByTwoPoints(a, b)
+
+
+def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False):
+    """Build one swept-bend arc body by revolving the section about the bend axis.
+
+    ``plan`` is a dict from :func:`lib.joints.bend_plan` (center, axis, theta);
+    ``tangent`` is this leg's tangent point (cm) where the arc meets the leg.
+    The section is placed at the tangent point T on a plane normal to the leg,
+    then revolved by ``theta`` about the bend axis (which lies in that plane,
+    through the arc centre C, at distance R from T).  Returns
+    ``(feature, sketch, plane)`` or ``None``.
+    """
+    try:
+        world = leg_line.worldGeometry
+        start_pt = world.startPoint
+        leg_dir = _line_direction(leg_line)
+        center = plan['center']
+        axis = plan['axis']
+        theta = plan['theta']
+
+        # Offset of the tangent point from the leg's own start, along the leg.
+        off = prof._dot(prof._sub(tangent,
+                                  (start_pt.x, start_pt.y, start_pt.z)), leg_dir)
+
+        path = adsk.fusion.Path.create(
+            leg_line, adsk.fusion.ChainedCurveOptions.noChainedCurves)
+        cp_input = root.constructionPlanes.createInput()
+        cp_input.setByPath(
+            path, adsk.fusion.PathDistanceTypes.PhysicalPathDistanceType,
+            adsk.core.ValueInput.createByReal(off))
+        plane = root.constructionPlanes.add(cp_input)
+
+        axis_u, axis_v = prof.compute_basis(leg_dir, ref)
+        sketch = root.sketches.add(plane)
+        sketch.name = 'WeldBend'
+
+        # Section centred on the tangent point T (in this plane, at distance R
+        # from the bend axis).  Revolving it about the axis sweeps the arc; if
+        # it were centred on C it would sit on the axis and sweep nothing.
+        _draw_section(sketch, tangent, axis_u, axis_v, geom)
+        # Revolve axis: a sketch line through C along `axis` (in-plane, since
+        # the bend axis is perpendicular to the leg direction).
+        span = max(plan.get('radius_cm', 1.0), 1.0) * 2.0
+        _draw_model_line(sketch,
+                         jt._add(center, jt._scale(axis, -span)),
+                         jt._add(center, jt._scale(axis, span)))
+
+        if sketch.profiles.count == 0:
+            futil.log(f'{CMD_NAME} No closed profile found in bend sketch')
+            plane.deleteMe()
+            return None
+
+        lines = sketch.sketchCurves.sketchLines
+        rev_input = root.features.revolveFeatures.createInput(
+            sketch.profiles.item(0), lines.item(lines.count - 1),
+            adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        rev_input.setAngleExtent(False, adsk.core.ValueInput.createByReal(abs(theta)))
+        feature = root.features.revolveFeatures.add(rev_input)
+
+        if preview:
+            try:
+                for bi in range(feature.bodies.count):
+                    feature.bodies.item(bi).opacity = PREVIEW_OPACITY
+            except Exception:
+                pass
+        return (feature, sketch, plane)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} build bend arc')
+        return None
 
 
 def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
