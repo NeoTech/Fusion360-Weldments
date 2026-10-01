@@ -425,9 +425,10 @@ class TestJointColumn(unittest.TestCase):
             self.assertEqual(entry._row_joint(inputs, r), 'miter')
 
     def test_joint_offsets_applied_to_line(self):
-        # Phase 4: butt/miter/cope no longer trim axially -- they are realised
-        # by real boolean cuts (corner_cuts).  An L-frame whose row 1 butts into
-        # row 0 therefore yields zero axial offsets but a body-saddle cut.
+        # A butt is a pure axial trim (no boolean): the incoming member stops
+        # short at the through member's near face and the through member
+        # extends past the vertex for a flush corner.  For two SHS members the
+        # trim/grow is each section's half-depth.
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'SHS')
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
@@ -439,15 +440,14 @@ class TestJointColumn(unittest.TestCase):
         family = entry._selected_family(inputs)
         geom = prof.section_geometry(prof.designations(family)[0])
         offs = entry._joint_offsets(inputs, lines, geom)
-        self.assertEqual(offs[0], (0.0, 0.0))          # runs through
-        self.assertEqual(offs[1], (0.0, 0.0))          # no axial trim any more
-        # The cut is planned instead: member 1 saddles against member 0's body.
+        half = jt.member_depth(geom) * jt.MM_TO_CM / 2.0
+        self.assertAlmostEqual(offs[0][0], -half)   # through member extends
+        self.assertEqual(offs[0][1], 0.0)
+        self.assertEqual(offs[1][0], 0.0)
+        self.assertAlmostEqual(offs[1][1], -half)   # butt member stops short
+        # No boolean cut is planned for a butt.
         joints = [entry._row_joint(inputs, r) for r in range(len(lines))]
-        cuts = jt.corner_cuts(lines, joints)
-        self.assertEqual(len(cuts), 1)
-        self.assertEqual(cuts[0]['member'], 1)
-        self.assertEqual(cuts[0]['kind'], 'body')
-        self.assertEqual(cuts[0]['tool'], 0)
+        self.assertEqual(jt.corner_cuts(lines, joints), [])
 
 
 class TestBendBuild(unittest.TestCase):
@@ -575,10 +575,20 @@ class TestCornerCutBuild(unittest.TestCase):
         self.assertEqual(len(cuts), 10)
         self.assertTrue(all('Combine' in f.objectType for f in cuts[0::5]))
 
-    def test_butt_combines_incoming_member(self):
+    def test_butt_builds_no_cut(self):
+        # A butt is a pure axial trim (handled in corner_offsets), so the cut
+        # stage must not boolean anything.
         objs, idx = self._build()
         cuts = entry._apply_corner_cuts(self.root, self.lines,
                                         ['none', 'butt'], objs, idx, 0)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertNotIn('CombineFeatures.add', names)
+        self.assertEqual(cuts, [])
+
+    def test_cope_combines_incoming_member(self):
+        objs, idx = self._build()
+        cuts = entry._apply_corner_cuts(self.root, self.lines,
+                                        ['none', 'cope'], objs, idx, 0)
         names = [c[0] for c in adsk_stub.CALLS]
         self.assertEqual(names.count('CombineFeatures.add'), 1)
         # Cut with the neighbour's body, keeping the tool.

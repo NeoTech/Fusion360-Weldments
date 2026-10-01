@@ -255,16 +255,49 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None):
                     offs[idx] = (offs[idx][0], offs[idx][1] + sb)
                 else:
                     offs[idx] = (offs[idx][0] - sb, offs[idx][1])
-            # ``butt``/``cope`` are realised by a neighbour-body saddle cut
-            # (see :func:`corner_cuts`), not an axial trim, so they contribute
-            # no offset here -- the member runs to the vertex and the saddle
-            # shapes its end face against the through-member.
+            elif jid == 'butt':
+                # A butt is a pure axial trim -- NO boolean.  This member stops
+                # short so its flat end lands on the through neighbour's NEAR
+                # face, and the neighbour is extended past the vertex so the
+                # corner reads flush.  Because the end stops at the near face it
+                # never enters the neighbour's hollow interior, so no cut is
+                # ever needed (that is what :func:`corner_cuts`' ``cope`` is
+                # for).  Distances are divided by sin(phi) to project the
+                # perpendicular half-depths onto this member's axis.
+                sinp = _sin_between(dirs[k], dirs[other_k])
+                if sinp <= 1e-6:
+                    continue
+                d_other = (member_depth(geoms[other])
+                           if other < len(geoms) else 0.0)
+                d_own = member_depth(geoms[idx]) if idx < len(geoms) else 0.0
+                trim = (d_other * 0.5) * MM_TO_CM / sinp   # this member stops short ...
+                grow = (d_own * 0.5) * MM_TO_CM / sinp     # ... neighbour extends ...
+                if role == 'end':
+                    offs[idx] = (offs[idx][0], offs[idx][1] - trim)
+                else:
+                    offs[idx] = (offs[idx][0] + trim, offs[idx][1])
+                # Extend the through neighbour for a flush corner, but only if
+                # it is not itself a butt member (a butt never extends).
+                if joint_by_line[other] != 'butt':
+                    orole = members[other_k][1]
+                    if orole == 'end':
+                        offs[other] = (offs[other][0], offs[other][1] + grow)
+                    else:
+                        offs[other] = (offs[other][0] - grow, offs[other][1])
+            # ``cope`` is realised by a neighbour-body saddle cut (see
+            # :func:`corner_cuts`), so it contributes no offset here.
     return offs
 
 
 def _angle_between(a, b):
     d = max(-1.0, min(1.0, _dot(_norm(a), _norm(b))))
     return math.acos(d)
+
+
+def _sin_between(a, b):
+    """|sin| of the angle between ``a`` and ``b`` (0 when collinear)."""
+    na, nb = _norm(a), _norm(b)
+    return math.sqrt(max(0.0, 1.0 - _dot(na, nb) ** 2))
 
 
 # --------------------------------------------------------------------------- #
@@ -283,12 +316,15 @@ def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL):
     corner ``point`` whose ``normal`` is the bisector between the two members;
     keep the half on the ``keep`` side (the member's own outward direction).
 
-    ``kind='body'`` (butt/cope): split ``member``'s body with the *neighbour's*
+    ``kind='body'`` (cope only): split ``member``'s body with the *neighbour's*
     body (``tool``) so the incoming member is saddled to the through-member's
     surface; keep the half away from the neighbour (``keep``).
 
-    A corner is cut only when the member's joint is ``miter``/``butt``/``cope``
-    and exactly two members meet there; ``none``/``bend`` corners are skipped.
+    A ``butt`` corner produces NO cut: it is a pure axial trim handled entirely
+    by :func:`corner_offsets` (the incoming member stops at the through
+    member's near face, so its flat end never enters the interior).  A corner
+    is cut only when the member's joint is ``miter``/``cope`` and exactly two
+    members meet there; ``none``/``butt``/``bend`` corners are skipped.
     """
     cuts = []
     for corner in detect_corners(lines, tol):
@@ -303,7 +339,7 @@ def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL):
         out1 = d1 if r1 == 'start' else _scale(d1, -1)
         for k, (idx, role) in enumerate(members):
             jid = joint_by_line[idx] if idx < len(joint_by_line) else 'none'
-            if jid not in ('miter', 'butt', 'cope'):
+            if jid not in ('miter', 'cope'):
                 continue
             other = members[1 - k][0]
             own = (out0, out1)[k]

@@ -20,10 +20,16 @@ swept tube **bends** driven by bend-die data.
 | id      | Meaning (geometry) |
 |---------|--------------------|
 | `none`  | Beam runs full length to the vertex (current default). |
-| `butt`  | One member runs through; the other stops short by the through-member's section depth. |
+| `butt`  | **Pure axial trim, no boolean.** The member marked `butt` stops short at the through neighbour's near face; the neighbour extends past the vertex so the corner reads flush. Because the end stops at the near face it never enters an open section's interior, so no cut is ever needed. |
 | `miter` | Both members cut at the bisector so mating faces coincide (45 deg each at a 90 deg corner). |
-| `cope`  | One member's end notched/saddled to fit over the other's outer face. |
+| `cope`  | One member's end notched/saddled to fit over the other's outer face (the boolean saddle — kept for when a real notch is wanted). |
 | `bend`  | Continuous swept centerline arc of radius CLR replaces the sharp corner (needs bend-die data). |
+
+> **Butt redesign (post-Phase 4b):** butt was initially a neighbour-body
+> combine-cut, but that boolean-notched an incoming member into an open
+> section's hollow C (wrong). A butt is now realised entirely by
+> :func:`lib.joints.corner_offsets` (trim + extend); :func:`corner_cuts` emits
+> a cut only for `miter` (plane) and `cope` (body).
 
 ## Which joints per family (physical reality)
 
