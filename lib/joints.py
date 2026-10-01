@@ -357,6 +357,20 @@ def _wall_cm(geom):
     return None
 
 
+def _depth_cm(depth_by_line, idx):
+    """Extra cope/saddle penetration (cm) for line ``idx`` from a mm list.
+
+    ``cope_depth_by_line[idx]`` is the user's fishmouth depth in millimetres
+    (how far past the default stopping face the saddled/cope end bites into the
+    neighbour); it is converted to the cm the offsets work in.  Absent/None/
+    out-of-range yields 0.0 (the default depth).
+    """
+    if not depth_by_line or idx >= len(depth_by_line):
+        return 0.0
+    d = depth_by_line[idx]
+    return (d or 0.0) * MM_TO_CM
+
+
 def _butt_through(members, joint_by_line, through_by_line):
     """Index of the member that runs THROUGH at a butt corner (or None).
 
@@ -391,7 +405,8 @@ def _butt_through(members, joint_by_line, through_by_line):
 
 
 def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
-                   through_by_line=None, bases=None, saddle_by_line=None):
+                   through_by_line=None, bases=None, saddle_by_line=None,
+                   cope_depth_by_line=None):
     """Compute ``(offset_start, offset_end)`` in cm for every line.
 
     ``geoms[i]`` is the section geometry of line ``i`` (from
@@ -405,10 +420,13 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
     booleans (scalar or ``(start, end)``) refining a butt: Through marks the end
     that runs through the corner; Saddle makes the other end's face conform to
     the neighbour (a boolean notch) instead of a flat square.
-    ``bases[i]`` (optional) is line ``i``'s placed ``(axis_u, axis_v)`` section
-    basis (see :func:`profiles.compute_basis`); when supplied the butt/cope trim
-    uses the neighbour's *directional* half-extent along the incoming axis (an
-    I-beam's flange width, not its web depth).  When omitted it falls back to the
+    ``cope_depth_by_line[i]`` (optional) is a per-line extra depth (mm) that a
+    saddled/cope end bites INTO the neighbour beyond its default stopping face,
+    deepening the fishmouth; 0 (or absent) keeps the default.  ``bases[i]``
+    (optional) is line ``i``'s placed ``(axis_u, axis_v)`` section basis (see
+    :func:`profiles.compute_basis`); when supplied the butt/cope trim uses the
+    neighbour's *directional* half-extent along the incoming axis (an I-beam's
+    flange width, not its web depth).  When omitted it falls back to the
     isotropic :func:`member_depth`/2.
 
     The result is a list of ``(offset_start, offset_end)`` tuples, one per line,
@@ -490,6 +508,8 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                     reach = -trim + (_wall_cm(g_t) or 0.0)
                 else:
                     reach = trim
+                if saddled:
+                    reach += _depth_cm(cope_depth_by_line, O)
                 if orole == 'end':
                     offs[O] = (offs[O][0], offs[O][1] + reach)
                 else:
@@ -567,6 +587,8 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
             reach = -trim + (_wall_cm(g_tool) or 0.0)
         else:
             reach = trim
+        if saddled:
+            reach += _depth_cm(cope_depth_by_line, idx)
         if role == 'end':
             offs[idx] = (offs[idx][0], offs[idx][1] + reach)
         else:
@@ -723,12 +745,15 @@ def _outward(line, role):
     return (-d[0], -d[1], -d[2]) if role == 'end' else d
 
 
-def bend_plan(lines, joint_by_line, clr_by_line, tol=_CORNER_TOL):
+def bend_plan(lines, joint_by_line, clr_by_line, inverse_by_line=None,
+              tol=_CORNER_TOL):
     """Plan every swept-bend corner among ``lines``.
 
     ``clr_by_line[i]`` is the die centerline radius (mm) to use at line ``i``'s
     end; a corner bends only when both members request ``bend`` and a radius is
-    available.  Returns a list of corner dicts::
+    available.  ``inverse_by_line[i]`` (optional, scalar or ``(start, end)``)
+    flips the sweep direction of line ``i``'s bend.  Returns a list of corner
+    dicts::
 
         {'point': V, 'center': C, 'axis': a, 'theta': turn_rad,
          'tangent': [(line_index, role, T), ...], 'arc_length': L}
@@ -736,6 +761,12 @@ def bend_plan(lines, joint_by_line, clr_by_line, tol=_CORNER_TOL):
     ``center`` sits on the inside of the turn at ``V + (R/cos(theta/2)) *
     normalize(u+v)``; ``axis`` is the bend-plane normal (revolve axis); each
     ``tangent`` entry gives the trimmed end point of one leg.
+
+    The arc centre is symmetric in the two legs, but the revolve axis is their
+    cross product ``u x v``, which changes sign when the two lines meeting at
+    the corner are picked in the opposite order -- so the same physical corner
+    sweeps +90 or -90 purely by selection order.  When either leg requests
+    ``inverse`` the axis is negated, flipping the sweep to the other side.
     """
     plans = []
     for corner in detect_corners(lines, tol):
@@ -760,6 +791,12 @@ def bend_plan(lines, joint_by_line, clr_by_line, tol=_CORNER_TOL):
         dist = (clr * MM_TO_CM) / math.cos(theta / 2.0)
         center = _add(V, _scale(bis, dist))
         axis = _norm(_cross(u, v))
+        # Inverse on either leg flips the revolve axis (and thus the sweep
+        # direction) so a corner built from reversed selection order bends the
+        # same way as one built in the natural order.
+        if inverse_by_line and any(
+                flag_at(inverse_by_line, idx, role) for idx, role in members):
+            axis = _scale(axis, -1)
         tangent = [(i0, r0, _add(V, _scale(u, sb))),
                    (i1, r1, _add(V, _scale(v, sb)))]
         plans.append({'point': V, 'center': center, 'axis': axis,

@@ -63,9 +63,10 @@ _syncing = False
 _row_ids = []
 _uid_counter = [0]
 
-# Column titles for the header row (row 0), matching the table's 8 columns.
+# Column titles for the header row (row 0), matching the table's 11 columns.
 _TABLE_HEADERS = ('#', 'Joint Start', 'Joint End', 'Through', 'Saddle',
-                  'Rotation', 'Offset Start', 'Offset End')
+                  'Rotation', 'Offset Start', 'Offset End',
+                  'Inverse', 'Bend Die', 'Cope Depth')
 
 
 def _new_uid():
@@ -184,7 +185,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     #    header row; _sync_table_rows() adds a data row per line as the selection
     #    changes.
     tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
-        'params', 'Per Line', 8, '1:3:3:1:1:2:2:2')
+        'params', 'Per Line', 11, '1:3:3:1:1:2:2:2:1:3:2')
     sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
         'sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
@@ -268,6 +269,133 @@ def _rebuild_joints(inputs):
                     if dd.listItems.item(i).name == prev_label:
                         dd.listItems.item(i).isSelected = True
                         break
+
+
+# --------------------------------------------------------------------------- #
+# Bend / cope per-line columns
+# --------------------------------------------------------------------------- #
+def _current_designation(inputs):
+    """The selected designation dict (with '_abbreviation'), or None if invalid."""
+    family = _selected_family(inputs)
+    if not family:
+        return None
+    des: adsk.core.DropDownCommandInput = inputs.itemById('designation')
+    idx = _dropdown_index(des)
+    designations = prof.designations(family)
+    if idx < 0 or idx >= len(designations):
+        return None
+    d = dict(designations[idx])
+    d['_abbreviation'] = family['abbreviation']
+    return d
+
+
+def _die_label(die):
+    """Dropdown label for a die: its id plus the centerline radius it produces."""
+    return f"{die['die_id']} (R{die.get('nominal_CLR_mm', 0.0):g})"
+
+
+def _populate_die_dropdown(dd, inputs):
+    """Fill one row's Bend Die dropdown with the dies that fit the designation.
+
+    A tube size is formable on several dies (different CLRs) and a shop may own
+    a different one than the default, so every compatible die is offered, sorted
+    by ascending CLR; the tightest (first) is pre-selected to match the previous
+    automatic behaviour.
+    """
+    dd.listItems.clear()
+    des = _current_designation(inputs)
+    if not des:
+        return
+    for die in bd.dies_for_designation(_DIES, des, des['_abbreviation']):
+        dd.listItems.add(_die_label(die), False)
+    if dd.listItems.count > 0:
+        dd.listItems.item(0).isSelected = True
+
+
+def _rebuild_dies(inputs):
+    """Re-populate every row's Bend Die dropdown for the current designation.
+
+    Called when the designation changes: the compatible dies (and their CLRs)
+    depend on the tube size.  Rows whose previously-selected die is still offered
+    keep it; otherwise the tightest die becomes the default.
+    """
+    for ids in _row_ids:
+        dd: adsk.core.DropDownCommandInput = inputs.itemById(ids['die'])
+        if dd is None:
+            continue
+        prev = _dropdown_index(dd)
+        prev_label = (dd.listItems.item(prev).name
+                      if 0 <= prev < dd.listItems.count else None)
+        _populate_die_dropdown(dd, inputs)
+        if prev_label is not None:
+            for i in range(dd.listItems.count):
+                if dd.listItems.item(i).name == prev_label:
+                    dd.listItems.item(i).isSelected = True
+                    break
+
+
+def _row_has_bend(inputs, r):
+    """True when either end of row ``r`` is a swept Bend."""
+    if r >= len(_row_ids):
+        return False
+    return 'bend' in (_row_joint_at(inputs, r, 'joint_s'),
+                      _row_joint_at(inputs, r, 'joint_e'))
+
+
+def _row_has_cope(inputs, r):
+    """True when row ``r`` has a cope/saddle end that bites into a neighbour.
+
+    Either end is a Cope, or a Butt with the Saddle checkbox on -- the cases
+    where the cope/fishmouth depth applies.
+    """
+    if r >= len(_row_ids):
+        return False
+    js = _row_joint_at(inputs, r, 'joint_s')
+    je = _row_joint_at(inputs, r, 'joint_e')
+    if 'cope' in (js, je):
+        return True
+    sa: adsk.core.BoolValueCommandInput = inputs.itemById(_row_ids[r]['saddle'])
+    return bool(sa and sa.value) and 'butt' in (js, je)
+
+
+def _update_bend_columns(inputs):
+    """Enable each row's Inverse / Bend Die only for bends, Cope Depth for copes.
+
+    These three columns are meaningless unless the row actually bends or copes,
+    so their cells are greyed out otherwise (kept visible so the row does not
+    collapse).  Called after rows are built and whenever a joint or saddle cell
+    changes.
+    """
+    for r, ids in enumerate(_row_ids):
+        bend = _row_has_bend(inputs, r)
+        for key in ('inv', 'die'):
+            cell = inputs.itemById(ids[key])
+            if cell is not None:
+                cell.isEnabled = bend
+        cope = _row_has_cope(inputs, r)
+        cd = inputs.itemById(ids['cd'])
+        if cd is not None:
+            cd.isEnabled = cope
+
+
+def _row_inverses(inputs, lines):
+    """The per-line Inverse flag (index-aligned with ``lines``)."""
+    out = []
+    for i in range(len(lines)):
+        inv = (inputs.itemById(_row_ids[i]['inv'])
+               if i < len(_row_ids) else None)
+        out.append(bool(inv and inv.value))
+    return out
+
+
+def _row_cope_depths(inputs, lines):
+    """The per-line cope/saddle extra depth in mm (index-aligned with ``lines``)."""
+    out = []
+    for i in range(len(lines)):
+        cd = (inputs.itemById(_row_ids[i]['cd'])
+              if i < len(_row_ids) else None)
+        out.append(cd.value if cd else 0.0)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -370,15 +498,17 @@ def _row_saddle(inputs, lines):
     return [_row_flags(inputs, i)[1] for i in range(len(lines))]
 
 
-def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None):
+def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
+                   cope_depth_by_line=None):
     """Per-line (offset_start, offset_end) in cm from the chosen corner joints.
 
     Auto-detects the corners among ``lines`` and turns each row's joint type into
     the length trim that removes the corner overlap (see lib/joints).  ``ref`` is
     the shared profile "up" reference; when given, each line's placed section
     basis is computed so a butt/cope trim stops at the neighbour's *directional*
-    face (an I-beam's flange width, not its web depth).  The result is added to
-    the user's manual start/end offsets in the build loop.
+    face (an I-beam's flange width, not its web depth).  ``cope_depth_by_line``
+    (mm) deepens each saddled/cope end's bite into the neighbour.  The result is
+    added to the user's manual start/end offsets in the build loop.
     """
     joints = _row_joints(inputs, lines)
     through = _row_through(inputs, lines)
@@ -393,17 +523,42 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None):
     try:
         return jt.corner_offsets(lines, geoms, joints, clr_by_line=clr_by_line,
                                  through_by_line=through, bases=bases,
-                                 saddle_by_line=saddle)
+                                 saddle_by_line=saddle,
+                                 cope_depth_by_line=cope_depth_by_line)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint offsets')
         return [(0.0, 0.0) for _ in lines]
 
 
+def _row_die_clr(inputs, r, designation):
+    """Centerline radius (mm) of the die chosen in row ``r``'s Bend Die dropdown.
+
+    Resolves the selected dropdown label back to a catalogue die; falls back to
+    the automatic best die for the designation when the row has no dropdown (or
+    nothing is selected), preserving the pre-dropdown behaviour.
+    """
+    abbr = designation.get('_abbreviation') if designation else None
+    if r < len(_row_ids):
+        dd: adsk.core.DropDownCommandInput = inputs.itemById(_row_ids[r]['die'])
+        if dd is not None:
+            idx = _dropdown_index(dd)
+            if 0 <= idx < dd.listItems.count:
+                label = dd.listItems.item(idx).name
+                for die in bd.dies_for_designation(_DIES, designation, abbr):
+                    if _die_label(die) == label:
+                        return die['nominal_CLR_mm']
+    if abbr:
+        die = bd.die_for_designation(_DIES, designation, abbr)
+        return die['nominal_CLR_mm'] if die else 0.0
+    return 0.0
+
+
 def _bend_radii(inputs, lines, designation):
     """Per-line die centerline radius (mm) for ``bend`` legs (0 where not bending).
 
-    A leg only gets a radius when one of its ends is ``bend`` and the designation
-    resolves to a die in the catalogue; otherwise 0 (no swept arc there).
+    A leg only gets a radius when one of its ends is ``bend``; the value is the
+    die picked in that row's Bend Die dropdown (or the automatic best die when
+    no dropdown selection is available).  Non-bend legs get 0 (no swept arc).
     """
     abbr = designation.get('_abbreviation') if designation else None
     radii = []
@@ -411,24 +566,28 @@ def _bend_radii(inputs, lines, designation):
         ends = (_row_joint_at(inputs, i, 'joint_s'),
                 _row_joint_at(inputs, i, 'joint_e'))
         if 'bend' in ends and abbr:
-            die = bd.die_for_designation(_DIES, designation, abbr)
-            radii.append(die['nominal_CLR_mm'] if die else 0.0)
+            radii.append(_row_die_clr(inputs, i, designation))
         else:
             radii.append(0.0)
     return radii
 
 
-def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref, preview=False):
+def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
+                     inverse_by_line=None, preview=False):
     """Build the swept-bend arc bodies for every ``bend`` corner among ``lines``.
 
     Returns a list of (feature, sketch, plane) tuples for the caller to track.
     Legs whose joint is ``bend`` were already trimmed to their tangent points by
     :func:`_joint_offsets`; here the arc that fills each rounded corner is
     revolved into place, once per corner (built from that corner's first leg).
+    ``inverse_by_line`` flips a corner's sweep direction (see
+    :func:`lib.joints.bend_plan`) for corners whose legs were picked in reverse
+    order.
     """
     objs = []
     try:
-        plans = jt.bend_plan(lines, joints, clr_by_line)
+        plans = jt.bend_plan(lines, joints, clr_by_line,
+                             inverse_by_line=inverse_by_line)
     except Exception:
         futil.handle_error(f'{CMD_NAME} bend plan')
         return objs
@@ -496,11 +655,12 @@ def _selected_lines(inputs):
 def _cell_column(input_id):
     """Map a table-cell input id to its column key.
 
-    Returns 'joint_s', 'joint_e', 'through', 'saddle', 'rot', 'os' or 'oe' for
-    the editable value columns, or None for the read-only row-number / header
-    cells and every non-table input.
+    Returns 'joint_s', 'joint_e', 'through', 'saddle', 'rot', 'os', 'oe', 'inv',
+    'die' or 'cd' for the editable value columns, or None for the read-only
+    row-number / header cells and every non-table input.
     """
-    for col in ('joint_s', 'joint_e', 'through', 'saddle', 'rot', 'os', 'oe'):
+    for col in ('joint_s', 'joint_e', 'through', 'saddle', 'rot', 'os', 'oe',
+                'inv', 'die', 'cd'):
         if input_id.startswith(col + '_'):
             return col
     return None
@@ -516,6 +676,12 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
     if inp.id == 'family':
         _rebuild_designations(args.inputs)
         _rebuild_joints(args.inputs)
+        _rebuild_dies(args.inputs)
+        return
+    # The compatible dies depend on the tube size, so changing the designation
+    # re-populates every row's Bend Die dropdown.
+    if inp.id == 'designation':
+        _rebuild_dies(args.inputs)
         return
     # Toggling Sync all changes which rows show their manipulators.
     if inp.id == 'sync_all':
@@ -529,12 +695,17 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
     col = _cell_column(inp.id)
     if col is None:
         return
+    # A joint or saddle cell changed: the Inverse / Bend Die / Cope Depth columns
+    # are only meaningful for rows that actually bend or cope, so refresh their
+    # enabled state.  (Runs regardless of Sync all.)
+    if col in ('joint_s', 'joint_e', 'saddle'):
+        _update_bend_columns(args.inputs)
     sync: adsk.core.BoolValueCommandInput = args.inputs.itemById('sync_all')
     if not (sync and sync.value):
         return
     _syncing = True
     try:
-        if col in ('joint_s', 'joint_e'):
+        if col in ('joint_s', 'joint_e', 'die'):
             # Dropdowns carry no .value; propagate the selected option by label,
             # within the same column (start stays start, end stays end).
             idx = _dropdown_index(inp)
@@ -601,7 +772,9 @@ def _sync_table_rows(inputs, lines):
         ids = {'num': f'num_{uid}', 'joint_s': f'joint_s_{uid}',
                'joint_e': f'joint_e_{uid}',
                'through': f'through_{uid}', 'saddle': f'saddle_{uid}',
-               'rot': f'rot_{uid}', 'os': f'os_{uid}', 'oe': f'oe_{uid}'}
+               'rot': f'rot_{uid}', 'os': f'os_{uid}', 'oe': f'oe_{uid}',
+               'inv': f'inv_{uid}', 'die': f'die_{uid}',
+               'cd': f'cd_{uid}'}
         num = inputs.addTextBoxCommandInput(
             ids['num'], '', str(r + 1), 1, True)
         # Joint Start / Joint End: the corner treatment for each END of this
@@ -635,6 +808,28 @@ def _sync_table_rows(inputs, lines):
             ids['os'], '', adsk.core.ValueInput.createByString('0 mm'))
         oe_ = inputs.addDistanceValueCommandInput(
             ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
+        # Inverse: flips this line's swept-bend direction.  The arc centre is
+        # symmetric in the two legs but the revolve axis is their cross product,
+        # so a corner whose lines were picked in reverse order sweeps the wrong
+        # way (+90 instead of -90); this checkbox negates the axis.  Meaningful
+        # only when one of the line's ends is a Bend, so it is enabled solely in
+        # that case (see _update_bend_columns).
+        inv = inputs.addBoolValueInput(ids['inv'], '', True, '', False)
+        inv.description = 'Flip the bend sweep direction (reversed line order)'
+        # Bend Die: the tooling used for this line's bend.  A tube size is
+        # formable on several dies (different CLRs) and a shop may own a
+        # different one than the default, so the compatible dies for the current
+        # designation are offered here; the selection sets the centerline radius.
+        die = inputs.addDropDownCommandInput(
+            ids['die'], '', adsk.core.DropDownStyles.TextListDropDownStyle)
+        _populate_die_dropdown(die, inputs)
+        die.description = 'Bending die (centerline radius) for this line'
+        # Cope Depth: how far (mm) a saddled/cope end bites INTO the neighbour
+        # beyond its default stopping face -- deepening the fishmouth.  Only
+        # meaningful when an end is saddled/copes, so it is enabled in that case.
+        cd = inputs.addFloatSpinnerCommandInput(
+            ids['cd'], '', 'mm', 0, 100, 1, 0)
+        cd.description = 'Extra depth a cope/saddle bites into the neighbour'
         tbl.addCommandInput(num, r + 1, 0)
         tbl.addCommandInput(joint_s, r + 1, 1)
         tbl.addCommandInput(joint_e, r + 1, 2)
@@ -643,12 +838,16 @@ def _sync_table_rows(inputs, lines):
         tbl.addCommandInput(rot, r + 1, 5)
         tbl.addCommandInput(os_, r + 1, 6)
         tbl.addCommandInput(oe_, r + 1, 7)
+        tbl.addCommandInput(inv, r + 1, 8)
+        tbl.addCommandInput(die, r + 1, 9)
+        tbl.addCommandInput(cd, r + 1, 10)
         _row_ids.append(ids)
     # "Sync all" only means something once there are 2+ rows to keep in step, so
     # hide the toolbar checkbox otherwise rather than float a lone control.
     sync: adsk.core.BoolValueCommandInput = inputs.itemById('sync_all')
     if sync is not None:
         sync.isVisible = len(_row_ids) >= 2
+    _update_bend_columns(inputs)
 
 
 def _update_manipulators(inputs, lines):
@@ -738,7 +937,10 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
     clr_by_line = _bend_radii(inputs, saved, designation)
-    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref)
+    cope_depths = _row_cope_depths(inputs, saved)
+    inverses = _row_inverses(inputs, saved)
+    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref,
+                                cope_depth_by_line=cope_depths)
     objs, feat_idx = [], []
     f_start = root.features.count
     for i, line in enumerate(saved):
@@ -753,7 +955,8 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
             _preview_objs.append(built)
     _preview_objs.extend(
         _build_bend_arcs(root, saved, _row_joints(inputs, saved),
-                         clr_by_line, geom, ref, preview=True))
+                         clr_by_line, geom, ref, inverse_by_line=inverses,
+                         preview=True))
     _preview_cuts.extend(
         _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                            feat_idx, f_start,
@@ -778,7 +981,10 @@ def command_execute(args: adsk.core.CommandEventArgs):
     root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
     clr_by_line = _bend_radii(inputs, saved, designation)
-    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref)
+    cope_depths = _row_cope_depths(inputs, saved)
+    inverses = _row_inverses(inputs, saved)
+    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref,
+                                cope_depth_by_line=cope_depths)
 
     created = 0
     objs, feat_idx = [], []
@@ -794,7 +1000,8 @@ def command_execute(args: adsk.core.CommandEventArgs):
         objs.append(built)
         feat_idx.append(idx if built else None)
     created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
-                                    clr_by_line, geom, ref))
+                                    clr_by_line, geom, ref,
+                                    inverse_by_line=inverses))
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),

@@ -84,6 +84,30 @@ class TestMatching(unittest.TestCase):
         die = bd.die_for_designation(CATALOGUE, {"od_mm": 60.3, "t_mm": 2.9}, "CHS")
         self.assertEqual(die["nominal_CLR_mm"], 120.0)
 
+    def test_dies_for_designation_lists_all_matches(self):
+        # A size that sits on the overlap of two dies returns BOTH, sorted by
+        # ascending CLR -- the tightest first -- so the command can offer them.
+        dies = bd.dies_for_designation(CATALOGUE, {"od_mm": 60.3, "t_mm": 2.9}, "CHS")
+        self.assertEqual([d["nominal_CLR_mm"] for d in dies], [120.0, 228.0])
+
+    def test_dies_for_designation_single_match(self):
+        # A 42.4 OD is covered by only the R120 die.
+        dies = bd.dies_for_designation(CATALOGUE, {"od_mm": 42.4, "t_mm": 2.6}, "CHS")
+        self.assertEqual([d["die_id"] for d in dies], ["CHS-R120"])
+
+    def test_dies_for_designation_open_section_empty(self):
+        # An IPE has no od/h/b a groove matches -> no dies at all.
+        self.assertEqual(
+            bd.dies_for_designation(CATALOGUE, {"h_mm": 200, "b_mm": 100,
+                                                "tw_mm": 5.6}, "IPE"), [])
+
+    def test_best_die_is_tightest_of_all_matches(self):
+        # die_for_designation must agree with the first of dies_for_designation.
+        des = {"od_mm": 60.3, "t_mm": 2.9}
+        best = bd.die_for_designation(CATALOGUE, des, "CHS")
+        matches = bd.dies_for_designation(CATALOGUE, des, "CHS")
+        self.assertIs(best, matches[0])
+
     def test_clr_cm_conversion(self):
         self.assertAlmostEqual(bd.clr_cm({"nominal_CLR_mm": 150.0}), 15.0)
         self.assertEqual(bd.clr_cm(None), 0.0)

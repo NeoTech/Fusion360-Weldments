@@ -198,8 +198,9 @@ def _make_dialog():
     inputs.addDropDownCommandInput('family', 'Profile', 0)
     inputs.addDropDownCommandInput('designation', 'Designation', 0)
     # Rotation + start/end offsets are per-line table cells (columns 5-7), not
-    # separate global inputs.
-    tbl = inputs.addTableCommandInput('params', 'Per Line', 8, '1:3:3:1:1:2:2:2')
+    # separate global inputs.  Columns 8-10 are Inverse / Bend Die / Cope Depth.
+    tbl = inputs.addTableCommandInput(
+        'params', 'Per Line', 11, '1:3:3:1:1:2:2:2:1:3:2')
     sync = inputs.addBoolValueInput('sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
     entry._make_header_row(inputs, tbl)   # row 0 = read-only column titles
@@ -244,6 +245,9 @@ class TestPerLineTable(unittest.TestCase):
         self.assertEqual(inputs.itemById('hdr_5').value, 'Rotation')
         self.assertEqual(inputs.itemById('hdr_6').value, 'Offset Start')
         self.assertEqual(inputs.itemById('hdr_7').value, 'Offset End')
+        self.assertEqual(inputs.itemById('hdr_8').value, 'Inverse')
+        self.assertEqual(inputs.itemById('hdr_9').value, 'Bend Die')
+        self.assertEqual(inputs.itemById('hdr_10').value, 'Cope Depth')
 
     def test_sync_table_rows_shrinks(self):
         _cmd, inputs, tbl = _make_dialog()
@@ -275,6 +279,9 @@ class TestPerLineTable(unittest.TestCase):
         self.assertEqual(entry._cell_column('rot_5'), 'rot')
         self.assertEqual(entry._cell_column('os_5'), 'os')
         self.assertEqual(entry._cell_column('oe_5'), 'oe')
+        self.assertEqual(entry._cell_column('inv_5'), 'inv')
+        self.assertEqual(entry._cell_column('die_5'), 'die')
+        self.assertEqual(entry._cell_column('cd_5'), 'cd')
         self.assertIsNone(entry._cell_column('num_5'))
         self.assertIsNone(entry._cell_column('hdr_1'))
         self.assertIsNone(entry._cell_column('family'))
@@ -585,6 +592,129 @@ class TestBendBuild(unittest.TestCase):
         objs = entry._build_bend_arcs(self.root, lines, ['bend', 'bend'],
                                       [150.0, 150.0], self.geom, ref=None)
         self.assertEqual(len(objs), 1)   # one rounded corner
+
+
+class TestBendCopeColumns(unittest.TestCase):
+    """Per-line Inverse / Bend Die / Cope Depth columns: enablement and reads."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        entry._row_ids = []
+        entry._uid_counter[0] = 0
+        entry._DIES = bd.load_bending_dies()
+        entry._FAMILIES = prof.annotate_families(prof.load_profiles())
+        self.shs = next(f for f in entry._FAMILIES
+                        if f['abbreviation'] == 'SHS')
+
+    def _dialog(self, designation='40x40x2.0'):
+        """A dialog set to SHS / a designation that matches several dies."""
+        _cmd, inputs, _tbl = _make_dialog()
+        fam = inputs.itemById('family')
+        for label in prof.family_labels(entry._FAMILIES):
+            fam.listItems.add(label, False)
+        for i in range(fam.listItems.count):
+            fam.listItems.item(i).isSelected = fam.listItems.item(i).name.startswith('SHS')
+        des = inputs.itemById('designation')
+        for label in prof.designation_labels(self.shs):
+            des.listItems.add(label, False)
+        idx = prof.designation_labels(self.shs).index(designation)
+        for i in range(des.listItems.count):
+            des.listItems.item(i).isSelected = (i == idx)
+        return inputs
+
+    def _set_joint(self, inputs, r, key, label):
+        dd = inputs.itemById(entry._row_ids[r][key])
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == label
+
+    def test_inverse_and_die_enabled_only_for_bend(self):
+        inputs = self._dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        ids = entry._row_ids[0]
+        # Default (no bend): Inverse and Bend Die greyed out.
+        self.assertFalse(inputs.itemById(ids['inv']).isEnabled)
+        self.assertFalse(inputs.itemById(ids['die']).isEnabled)
+        # Marking an end Bend re-enables both.
+        self._set_joint(inputs, 0, 'joint_s', 'Bend')
+        entry._update_bend_columns(inputs)
+        self.assertTrue(inputs.itemById(ids['inv']).isEnabled)
+        self.assertTrue(inputs.itemById(ids['die']).isEnabled)
+
+    def test_cope_depth_enabled_for_cope_and_saddled_butt(self):
+        inputs = self._dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        ids = entry._row_ids[0]
+        self.assertFalse(inputs.itemById(ids['cd']).isEnabled)
+        # A Cope end enables the depth spinner.
+        self._set_joint(inputs, 0, 'joint_s', 'Cope')
+        entry._update_bend_columns(inputs)
+        self.assertTrue(inputs.itemById(ids['cd']).isEnabled)
+        # A plain Butt disables it again; saddling the Butt re-enables it.
+        self._set_joint(inputs, 0, 'joint_s', 'Butt')
+        entry._update_bend_columns(inputs)
+        self.assertFalse(inputs.itemById(ids['cd']).isEnabled)
+        inputs.itemById(ids['saddle']).value = True
+        entry._update_bend_columns(inputs)
+        self.assertTrue(inputs.itemById(ids['cd']).isEnabled)
+
+    def test_row_inverses_reads_checkboxes(self):
+        inputs = self._dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        inputs.itemById(entry._row_ids[1]['inv']).value = True
+        self.assertEqual(entry._row_inverses(inputs, lines), [False, True])
+
+    def test_row_cope_depths_reads_spinners(self):
+        inputs = self._dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        inputs.itemById(entry._row_ids[0]['cd']).value = 12.0
+        self.assertEqual(entry._row_cope_depths(inputs, lines), [12.0, 0.0])
+
+    def test_die_dropdown_lists_all_compatible_dies(self):
+        inputs = self._dialog('40x40x2.0')   # matches four SHS dies
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        dd = inputs.itemById(entry._row_ids[0]['die'])
+        self.assertEqual(dd.listItems.count, 4)
+        # Sorted by ascending CLR and the tightest is pre-selected.
+        self.assertIn('R57.15', dd.listItems.item(0).name)
+        self.assertTrue(dd.listItems.item(0).isSelected)
+
+    def test_row_die_clr_uses_selected_die(self):
+        inputs = self._dialog('40x40x2.0')
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        des = entry._current_designation(inputs)
+        dd = inputs.itemById(entry._row_ids[0]['die'])
+        # Default selection (item 0) is the tightest die, CLR 57.15.
+        self.assertAlmostEqual(entry._row_die_clr(inputs, 0, des), 57.15)
+        # Choosing a looser die changes the radius the bend uses.
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = 'R190.5' in dd.listItems.item(i).name
+        self.assertAlmostEqual(entry._row_die_clr(inputs, 0, des), 190.5)
+
+    def test_rebuild_dies_preserves_still_available_choice(self):
+        inputs = self._dialog('40x40x2.0')
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        entry._sync_table_rows(inputs, lines)
+        dd = inputs.itemById(entry._row_ids[0]['die'])
+        # Pick the R142.88 die, then rebuild for the same designation.
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = 'R142.88' in dd.listItems.item(i).name
+        entry._rebuild_dies(inputs)
+        # The choice survives the rebuild (still offered for this size).
+        idx = entry._dropdown_index(dd)
+        self.assertIn('R142.88', dd.listItems.item(idx).name)
 
 
 class TestCornerCutBuild(unittest.TestCase):

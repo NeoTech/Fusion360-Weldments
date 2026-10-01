@@ -201,6 +201,29 @@ class TestButtJoint(unittest.TestCase):
                                  saddle_by_line=[False, True])
         self.assertAlmostEqual(offs[1][1], -5.0 + 0.8)   # just past the near wall
 
+    def test_cope_depth_deepens_saddled_butt(self):
+        # A cope/saddle DEPTH adds extra bite into the neighbour beyond the
+        # default stopping face.  Same hollow tool as above (near wall at -4.2),
+        # plus a 10 mm (1 cm) depth -> the tip reaches -3.2.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_tube(100, 100, 8), _rect(80)]
+        offs = jt.corner_offsets(lines, geoms, ['none', 'butt'],
+                                 saddle_by_line=[False, True],
+                                 cope_depth_by_line=[0.0, 10.0])
+        self.assertAlmostEqual(offs[1][1], -5.0 + 0.8 + 1.0)
+
+    def test_cope_depth_ignored_without_saddle(self):
+        # A plain (unsaddled) butt stops at the near face and the depth does not
+        # apply -- there is no boolean to deepen.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_tube(100, 100, 8), _rect(80)]
+        offs = jt.corner_offsets(lines, geoms, ['none', 'butt'],
+                                 saddle_by_line=[False, False],
+                                 cope_depth_by_line=[0.0, 10.0])
+        self.assertAlmostEqual(offs[1][1], -5.0)
+
     def test_per_end_joints_are_independent(self):
         # A joint belongs to a line END, so passing (start, end) pairs lets the
         # two ends differ.  Here line 0 mitres at its START and butts at its END;
@@ -381,6 +404,32 @@ class TestSweptBend(unittest.TestCase):
                  FakeLine((0, 0, 0), (0, 10, 0))]
         # Only one leg asks for a bend -> no swept corner.
         self.assertEqual(jt.bend_plan(lines, ['bend', 'none'], [100.0, 100.0]), [])
+
+    def test_bend_plan_inverse_flips_axis(self):
+        # The arc centre is symmetric in the two legs, but the revolve axis is
+        # their cross product, so a corner whose lines were picked in reverse
+        # order sweeps the wrong way.  Inverse negates the axis to fix it.
+        lines = [FakeLine((0, 0, 0), (30, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 30, 0))]
+        normal = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0])[0]
+        inv = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0],
+                           inverse_by_line=[True, False])[0]
+        # Normal axis is +Z (u x v = x x y); inverse is the negation, -Z.
+        self.assertAlmostEqual(normal['axis'][2], 1.0)
+        self.assertAlmostEqual(inv['axis'][2], -1.0)
+        # The centre and turn angle are unchanged -- only the sweep direction.
+        self.assertAlmostEqual(inv['center'][0], normal['center'][0])
+        self.assertAlmostEqual(inv['theta'], normal['theta'])
+
+    def test_bend_plan_inverse_on_either_leg(self):
+        # Inverse is per-line; flagging either leg flips the shared corner.
+        lines = [FakeLine((0, 0, 0), (30, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 30, 0))]
+        a = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0],
+                         inverse_by_line=[True, False])[0]['axis']
+        b = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0],
+                         inverse_by_line=[False, True])[0]['axis']
+        self.assertAlmostEqual(a[2], b[2])   # both flip to -Z
 
     def test_bend_offsets_trim_legs(self):
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),

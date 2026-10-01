@@ -113,11 +113,27 @@ def die_for_designation(catalogue, designation, abbreviation):
     Among the matches the smallest ``nominal_CLR_mm`` is returned (the tightest
     bend the tooling can make).
     """
+    matches = dies_for_designation(catalogue, designation, abbreviation)
+    if not matches:
+        return None
+    return min(matches, key=lambda d: d.get("nominal_CLR_mm", float("inf")))
+
+
+def dies_for_designation(catalogue, designation, abbreviation):
+    """Every die that can form ``designation``, sorted by ascending CLR.
+
+    Same size/wall match as :func:`die_for_designation` but returns *all* the
+    compatible dies rather than only the tightest.  A tube size is typically
+    formable on several dies (different centerline radii), and a shop may own
+    a different one than the default, so the command layer offers this list as
+    a dropdown.  Empty when the designation cannot be bent (open section, or
+    outside every die's range).
+    """
     od, w, h = _designation_size(designation)
     if od is None and w is None:
-        return None  # open section -- no swept bend possible
+        return []  # open section -- no swept bend possible
     wall = designation.get("t_mm")
-    best = None
+    matches = []
     for d in dies_for_family(catalogue, abbreviation):
         groove = d.get("groove_profile_type")
         if groove == "round":
@@ -129,10 +145,9 @@ def die_for_designation(catalogue, designation, abbreviation):
                 continue
         if not _in_range(wall, d.get("wall_thickness_range_mm")):
             continue
-        clr = d.get("nominal_CLR_mm", float("inf"))
-        if best is None or clr < best.get("nominal_CLR_mm", float("inf")):
-            best = d
-    return best
+        matches.append(d)
+    matches.sort(key=lambda d: d.get("nominal_CLR_mm", float("inf")))
+    return matches
 
 
 def clr_cm(die):
