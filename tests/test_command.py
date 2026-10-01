@@ -586,6 +586,10 @@ class TestCornerCutBuild(unittest.TestCase):
         self.assertEqual(cuts, [])
 
     def test_cope_combines_incoming_member(self):
+        # Cope fires at a T-junction: line 1's END lands on the interior of line
+        # 0's run, so it is saddled to line 0's body (a combine, keep-tool).
+        self.lines = [adsk_stub.FakeLine((0, 0, 0), (50, 0, 0)),
+                      adsk_stub.FakeLine((25, 0, 20), (25, 0, 0))]
         objs, idx = self._build()
         cuts = entry._apply_corner_cuts(self.root, self.lines,
                                         ['none', 'cope'], objs, idx, 0)
@@ -599,6 +603,16 @@ class TestCornerCutBuild(unittest.TestCase):
             .CutFeatureOperation)
         self.assertTrue(ci[1][1])
         self.assertEqual(len(cuts), 1)
+
+    def test_cope_at_corner_builds_no_cut(self):
+        # A cope whose end coincides with a shared-vertex corner is a butt trim,
+        # not a saddle -- the cut stage must not boolean anything.
+        objs, idx = self._build()   # default self.lines is an L-corner
+        cuts = entry._apply_corner_cuts(self.root, self.lines,
+                                        ['none', 'cope'], objs, idx, 0)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertNotIn('CombineFeatures.add', names)
+        self.assertEqual(cuts, [])
 
     def test_none_joints_build_no_cuts(self):
         objs, idx = self._build()

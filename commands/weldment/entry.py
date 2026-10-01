@@ -143,10 +143,14 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
         'designation', 'Designation', adsk.core.DropDownStyles.TextListDropDownStyle)
 
     # 4. Per-line joint + rotation + offset table.  One row per selected sketch
-    #    line, with columns [#, Joint, Rotation, Offset Start, Offset End].  The
-    #    Joint dropdown lists the corner treatments the selected profile family
-    #    supports (from data/profiles.json 'joints'), defaulting to 'None' (full
-    #    length to the vertex -- the historical behaviour).  A "Sync all"
+    #    line, with columns [#, Joint, Through, Saddle, Rotation, Offset Start,
+    #    Offset End].  The Joint dropdown lists the corner treatments the
+    #    selected profile family supports (from data/profiles.json 'joints'),
+    #    defaulting to 'None' (full length to the vertex -- the historical
+    #    behaviour).  Through / Saddle are per-row checkboxes that only matter
+    #    for a Butt joint: Through marks this member as the one that runs past
+    #    the corner (its neighbour backs off); Saddle adds a boolean notch so a
+    #    butt end clears an open section's hollow interior.  A "Sync all"
     #    checkbox lives in the table's bottom toolbar (the Fusion-idiomatic spot,
     #    as in the Loft command): when checked (default) editing any row
     #    propagates its value to every row and the manipulators anchor to the
@@ -155,7 +159,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     #    _sync_table_rows() adds a row per line as the selection changes and
     #    shows the checkbox only once there are 2+ rows to synchronise.
     tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
-        'params', 'Per Line', 5, '1:2:3:3:3')
+        'params', 'Per Line', 7, '1:2:1:1:3:3:3')
     sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
         'sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
@@ -300,17 +304,54 @@ def _row_joints(inputs, lines):
     return [_row_joint(inputs, i) for i in range(len(lines))]
 
 
-def _joint_offsets(inputs, lines, geom, clr_by_line=None):
+def _row_flags(inputs, r):
+    """Return (through, saddle) booleans for table row ``r``.
+
+    These refine a ``butt`` joint: ``through`` marks the member that runs past
+    the corner (its neighbour backs off); ``saddle`` adds a boolean notch so a
+    butt end clears an open section's hollow interior.  A row past the current
+    table (or a not-yet-built row) defaults to (False, False).
+    """
+    if r >= len(_row_ids):
+        return (False, False)
+    ids = _row_ids[r]
+    th: adsk.core.BoolValueCommandInput = inputs.itemById(ids['through'])
+    sa: adsk.core.BoolValueCommandInput = inputs.itemById(ids['saddle'])
+    return (bool(th and th.value), bool(sa and sa.value))
+
+
+def _row_through(inputs, lines):
+    """The per-line ``through`` flag (index-aligned with ``lines``)."""
+    return [_row_flags(inputs, i)[0] for i in range(len(lines))]
+
+
+def _row_saddle(inputs, lines):
+    """The per-line ``saddle`` flag (index-aligned with ``lines``)."""
+    return [_row_flags(inputs, i)[1] for i in range(len(lines))]
+
+
+def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None):
     """Per-line (offset_start, offset_end) in cm from the chosen corner joints.
 
     Auto-detects the corners among ``lines`` and turns each row's joint type into
-    the length trim that removes the corner overlap (see lib/joints).  The
-    result is added to the user's manual start/end offsets in the build loop.
+    the length trim that removes the corner overlap (see lib/joints).  ``ref`` is
+    the shared profile "up" reference; when given, each line's placed section
+    basis is computed so a butt/cope trim stops at the neighbour's *directional*
+    face (an I-beam's flange width, not its web depth).  The result is added to
+    the user's manual start/end offsets in the build loop.
     """
     joints = _row_joints(inputs, lines)
+    through = _row_through(inputs, lines)
     geoms = [geom for _ in lines]
+    bases = None
+    if ref is not None:
+        try:
+            bases = [prof.compute_basis(_line_direction(l), ref) for l in lines]
+        except Exception:
+            bases = None
     try:
-        return jt.corner_offsets(lines, geoms, joints, clr_by_line=clr_by_line)
+        return jt.corner_offsets(lines, geoms, joints, clr_by_line=clr_by_line,
+                                 through_by_line=through, bases=bases)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint offsets')
         return [(0.0, 0.0) for _ in lines]
@@ -510,7 +551,9 @@ def _sync_table_rows(inputs, lines):
     while len(_row_ids) < n:
         r = len(_row_ids)
         uid = _new_uid()
-        ids = {'num': f'num_{uid}', 'joint': f'joint_{uid}', 'rot': f'rot_{uid}',
+        ids = {'num': f'num_{uid}', 'joint': f'joint_{uid}',
+               'through': f'through_{uid}', 'saddle': f'saddle_{uid}',
+               'rot': f'rot_{uid}',
                'os': f'os_{uid}', 'oe': f'oe_{uid}'}
         num = inputs.addTextBoxCommandInput(
             ids['num'], '', str(r + 1), 1, True)
@@ -519,6 +562,16 @@ def _sync_table_rows(inputs, lines):
         joint = inputs.addDropDownCommandInput(
             ids['joint'], '', adsk.core.DropDownStyles.TextListDropDownStyle)
         _populate_joint_dropdown(joint, _selected_family(inputs))
+        # Through / Saddle: per-row checkboxes that refine a Butt joint.
+        # Through marks this member as the one that runs past the corner (its
+        # neighbour backs off); Saddle adds a boolean notch so a butt end
+        # clears an open section's hollow interior.  Both default off.
+        through = inputs.addBoolValueInput(
+            ids['through'], '', True, '', False)
+        through.description = 'This member runs through the corner'
+        saddle = inputs.addBoolValueInput(
+            ids['saddle'], '', True, '', False)
+        saddle.description = 'Notch this butt end to clear the neighbour'
         # Rotation is a plain spinner (degrees): an editable box with NO
         # on-canvas manipulator.  An AngleValueCommandInput would always draw a
         # rotation wheel, and in a table cell that wheel does not write back to
@@ -532,9 +585,11 @@ def _sync_table_rows(inputs, lines):
             ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
         tbl.addCommandInput(num, r, 0)
         tbl.addCommandInput(joint, r, 1)
-        tbl.addCommandInput(rot, r, 2)
-        tbl.addCommandInput(os_, r, 3)
-        tbl.addCommandInput(oe_, r, 4)
+        tbl.addCommandInput(through, r, 2)
+        tbl.addCommandInput(saddle, r, 3)
+        tbl.addCommandInput(rot, r, 4)
+        tbl.addCommandInput(os_, r, 5)
+        tbl.addCommandInput(oe_, r, 6)
         _row_ids.append(ids)
     # "Sync all" only means something once there are 2+ rows to keep in step, so
     # hide the toolbar checkbox otherwise rather than float a lone control.
@@ -630,7 +685,7 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
     clr_by_line = _bend_radii(inputs, saved, designation)
-    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line)
+    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref)
     objs, feat_idx = [], []
     f_start = root.features.count
     for i, line in enumerate(saved):
@@ -648,7 +703,9 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
                          clr_by_line, geom, ref, preview=True))
     _preview_cuts.extend(
         _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
-                           feat_idx, f_start))
+                           feat_idx, f_start,
+                           saddle=_row_saddle(inputs, saved),
+                           through=_row_through(inputs, saved)))
     # Make sure the user's lines are still highlighted after the churn.
     _restore_selection(sel, saved)
 
@@ -668,7 +725,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
     root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
     clr_by_line = _bend_radii(inputs, saved, designation)
-    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line)
+    joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref)
 
     created = 0
     objs, feat_idx = [], []
@@ -686,7 +743,9 @@ def command_execute(args: adsk.core.CommandEventArgs):
     created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
                                     clr_by_line, geom, ref))
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
-                       feat_idx, f_start)
+                       feat_idx, f_start,
+                       saddle=_row_saddle(inputs, saved),
+                       through=_row_through(inputs, saved))
 
     if created == 0:
         ui.messageBox('No weldments were created. Select 3D sketch line(s) first.')
@@ -737,6 +796,19 @@ def _line_midpoint(line):
     """Midpoint of a sketch line in model space (cm 3-tuple)."""
     s, e = jt.line_endpoints(line)
     return ((s[0] + e[0]) / 2.0, (s[1] + e[1]) / 2.0, (s[2] + e[2]) / 2.0)
+
+
+def _line_far_end(line, near_point):
+    """The endpoint of ``line`` farthest from ``near_point`` (cm 3-tuple).
+
+    Used to locate a member's own body: the far end is always deep inside the
+    member's material, whereas its midpoint can be nearer a neighbour's body for
+    a short member (e.g. a T-junction stub).
+    """
+    s, e = jt.line_endpoints(line)
+    ds = sum((s[k] - near_point[k]) ** 2 for k in range(3))
+    de = sum((e[k] - near_point[k]) ** 2 for k in range(3))
+    return e if de >= ds else s
 
 
 def _miter_plane(root, point, normal):
@@ -856,8 +928,10 @@ def _waste_prism(root, V, normal, keep_side):
     return ext, skb, plane, sk
 
 
-def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start):
-    """Shape member ends with real geometry for miter/butt/cope corners.
+def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
+                       saddle=None, through=None):
+    """Shape member ends with real geometry for miter/cope (and saddled-butt)
+    corners.
 
     ``objs[i]`` is the ``(feature, sketch, plane)`` tuple built for line ``i``
     (or None); ``feat_idx`` and ``f_start`` are retained only for the caller's
@@ -869,8 +943,10 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start):
     * ``kind='plane'`` (miter): combine-cut the member against a waste prism
       occupying the half-space beyond the bisector plane through the vertex
       (see :func:`_waste_prism`); the prism is consumed by the cut.
-    * ``kind='body'`` (butt/cope): combine-cut the member against the
-      neighbour's body (keep-tool-bodies), saddling it to the through member.
+    * ``kind='body'`` (cope, or a saddled butt): combine-cut the member against
+      the neighbour's body (keep-tool-bodies), saddling it to the through
+      member.  A plain butt (no saddle) produces no cut -- it is a pure axial
+      trim handled by :func:`lib.joints.corner_offsets`.
 
     Returns the objects to track for preview cleanup, in delete order: each
     combine feature first (removing it restores the member body), then the
@@ -879,7 +955,8 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start):
     """
     created = []
     try:
-        cuts = jt.corner_cuts(lines, joints)
+        cuts = jt.corner_cuts(lines, joints, saddle_by_line=saddle,
+                              through_by_line=through)
     except Exception:
         futil.handle_error(f'{CMD_NAME} corner cut plan')
         return created
@@ -891,7 +968,12 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start):
             continue
         try:
             reach = max(lines[m].length, 1.0)
-            body = _find_body_near(root, _line_midpoint(lines[m]), reach)
+            # Locate the member's body by its FAR end (the endpoint away from
+            # the junction), which is always deep inside the member's own
+            # material.  The line midpoint is unreliable for a short T-junction
+            # member, whose midpoint can sit nearer the tool's body than its own.
+            body = _find_body_near(root, _line_far_end(lines[m], cut['point']),
+                                   reach)
             if body is None:
                 continue
             if cut['kind'] == 'plane':

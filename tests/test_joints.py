@@ -123,15 +123,44 @@ class TestButtJoint(unittest.TestCase):
         offs = jt.corner_offsets(lines, [_rect(100), _rect(80)], ['none', 'none'])
         self.assertEqual(offs, [(0.0, 0.0), (0.0, 0.0)])
 
-    def test_cope_is_not_a_butt(self):
-        # Cope is a boolean saddle (no axial trim); butt is the opposite.
+    def test_both_butt_never_leaves_a_gap(self):
+        # Two butt members at one corner: exactly one runs through and the
+        # other backs off -- never both backing off (which left a gap).
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_rect(100), _rect(80)]
+        offs = jt.corner_offsets(lines, geoms, ['butt', 'butt'])
+        # Line 0 backs off at its start (+4), line 1 runs through its end (+5).
+        self.assertAlmostEqual(offs[0][0], 4.0)
+        self.assertAlmostEqual(offs[1][1], 5.0)
+        # Neither member both-extends-and-trims: one grows, one shrinks.
+        self.assertGreater(offs[0][0], 0.0)
+        self.assertGreater(offs[1][1], 0.0)
+
+    def test_through_flag_picks_the_through_member(self):
+        # Marking line 0 'through' flips roles: line 0 extends, line 1 backs off.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_rect(100), _rect(80)]
+        offs = jt.corner_offsets(lines, geoms, ['butt', 'butt'],
+                                 through_by_line=[True, False])
+        self.assertAlmostEqual(offs[0][0], -4.0)   # line 0 runs through
+        self.assertAlmostEqual(offs[1][1], -5.0)   # line 1 backs off
+
+    def test_cope_at_corner_is_a_butt_trim(self):
+        # Cope is only a saddle at a T-junction (an end landing mid-run).  Where
+        # a cope's end coincides with another member's END (a shared-vertex
+        # corner), it degrades to a plain butt axial trim -- one member runs
+        # through, the other backs off -- so it never overlaps/pokes through.
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
                  FakeLine((0, -10, 0), (0, 0, 0))]
         geoms = [_rect(100), _circle(80)]
         butt = jt.corner_offsets(lines, geoms, ['none', 'butt'])
         cope = jt.corner_offsets(lines, geoms, ['none', 'cope'])
-        self.assertNotEqual(butt, cope)
-        self.assertEqual(cope, [(0.0, 0.0), (0.0, 0.0)])
+        # At a corner, cope and butt trim identically.
+        self.assertEqual(butt, cope)
+        # And neither is a no-op: the incoming member backs off to the face.
+        self.assertNotEqual(cope, [(0.0, 0.0), (0.0, 0.0)])
 
 
 class TestMiterJoint(unittest.TestCase):
@@ -181,13 +210,44 @@ class TestCornerCuts(unittest.TestCase):
                  FakeLine((0, -10, 0), (0, 0, 0))]
         self.assertEqual(jt.corner_cuts(lines, ['none', 'butt']), [])
 
-    def test_cope_is_body_saddle(self):
-        # A cope member is cut by the neighbour's body (saddle), not a plane.
+    def test_cope_at_corner_is_not_cut(self):
+        # A cope whose end coincides with a corner (shared vertex) is NOT a
+        # saddle -- cope only saddles at a T-junction.  At a corner it degrades
+        # to a butt trim, so corner_cuts emits nothing.
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
                  FakeLine((0, -10, 0), (0, 0, 0))]
+        self.assertEqual(jt.corner_cuts(lines, ['none', 'cope']), [])
+
+    def test_cope_at_t_junction_is_body_saddle(self):
+        # A cope member whose END lands on the interior of another member's run
+        # (a T) is saddled to that member's body (a boolean cut), not a plane.
+        lines = [FakeLine((0, 0, 0), (50, 0, 0)),        # tool: long run on X
+                 FakeLine((25, 0, 20), (25, 0, 0))]      # cope: ends mid-run
         cuts = jt.corner_cuts(lines, ['none', 'cope'])
         self.assertEqual(len(cuts), 1)
         self.assertEqual(cuts[0]['member'], 1)
+        self.assertEqual(cuts[0]['kind'], 'body')
+        self.assertEqual(cuts[0]['tool'], 0)
+
+    def test_butt_at_t_junction_trims_no_cut(self):
+        # A butt at a T-junction is a pure axial trim to the tool's near face
+        # (no boolean), so corner_cuts emits nothing but corner_offsets trims.
+        lines = [FakeLine((0, 0, 0), (50, 0, 0)),
+                 FakeLine((25, 0, 20), (25, 0, 0))]
+        geoms = [_rect(100), _rect(100)]
+        self.assertEqual(jt.corner_cuts(lines, ['none', 'butt']), [])
+        offs = jt.corner_offsets(lines, geoms, ['none', 'butt'])
+        # The incoming member (line 1, corner at its END) backs off by the
+        # tool's half-depth along its axis (100/2 = 50 mm = 5 cm).
+        self.assertAlmostEqual(offs[1][1], -5.0)
+
+    def test_saddled_butt_at_t_junction_is_body_cut(self):
+        # A butt at a T-junction with Saddle checked gets the conformal cut.
+        lines = [FakeLine((0, 0, 0), (50, 0, 0)),
+                 FakeLine((25, 0, 20), (25, 0, 0))]
+        cuts = jt.corner_cuts(lines, ['none', 'butt'],
+                              saddle_by_line=[False, True])
+        self.assertEqual(len(cuts), 1)
         self.assertEqual(cuts[0]['kind'], 'body')
         self.assertEqual(cuts[0]['tool'], 0)
 
@@ -196,6 +256,30 @@ class TestCornerCuts(unittest.TestCase):
                  FakeLine((0, 0, 0), (0, 10, 0))]
         self.assertEqual(jt.corner_cuts(lines, ['none', 'none']), [])
         self.assertEqual(jt.corner_cuts(lines, ['bend', 'bend']), [])
+
+    def test_saddled_butt_is_body_cut(self):
+        # Two butt members, one marked 'through' and the other 'saddle': the
+        # backing-off member gets a boolean notch against the through member's
+        # body (the user's "hits the inside of a U/I shape" case).
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        cuts = jt.corner_cuts(lines, ['butt', 'butt'],
+                              saddle_by_line=[False, True],
+                              through_by_line=[True, False])
+        self.assertEqual(len(cuts), 1)
+        self.assertEqual(cuts[0]['member'], 1)   # the backing-off member
+        self.assertEqual(cuts[0]['kind'], 'body')
+        self.assertEqual(cuts[0]['tool'], 0)     # cut by the through member
+
+    def test_butt_saddle_without_through_flag(self):
+        # A saddle on a butt member that is itself the through member produces
+        # no cut -- only the member that backs off is notched.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        cuts = jt.corner_cuts(lines, ['butt', 'butt'],
+                              saddle_by_line=[True, False],
+                              through_by_line=[True, False])
+        self.assertEqual(cuts, [])
 
     def test_collinear_miter_no_plane(self):
         # Collinear members: bisector normal is zero -> no sensible cut.

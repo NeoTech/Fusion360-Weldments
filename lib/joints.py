@@ -47,6 +47,10 @@ LABELS = {
 }
 ALL_IDS = ['none', 'butt', 'miter', 'cope', 'bend']
 
+# Labels for the two per-row butt controls (table checkboxes).
+THROUGH_LABEL = 'Through'
+SADDLE_LABEL = 'Saddle'
+
 # Endpoint coincidence tolerance (cm) for auto-detecting a shared corner.
 _CORNER_TOL = 1e-4
 
@@ -142,6 +146,55 @@ def detect_corners(lines, tol=_CORNER_TOL):
     return corners
 
 
+def _point_on_segment_interior(P, A, B, tol):
+    """True if ``P`` lies strictly inside segment ``AB`` (not at either end).
+
+    "Strictly inside" excludes the endpoints (within ``tol``), so a point that
+    merely coincides with ``A`` or ``B`` -- a shared vertex, i.e. a corner -- is
+    not a T-junction.
+    """
+    if _dot(_sub(P, A), _sub(P, A)) <= tol * tol:
+        return False
+    if _dot(_sub(P, B), _sub(P, B)) <= tol * tol:
+        return False
+    ab = _sub(B, A)
+    L2 = _dot(ab, ab)
+    if L2 <= 0.0:
+        return False
+    t = _dot(_sub(P, A), ab) / L2
+    if t <= 0.0 or t >= 1.0:
+        return False
+    closest = _add(A, _scale(ab, t))
+    d = _sub(P, closest)
+    return _dot(d, d) <= tol * tol
+
+
+def detect_t_junctions(lines, tol=_CORNER_TOL):
+    """Find endpoints that land on the *interior* of another line (T-junctions).
+
+    Returns a list of dicts::
+
+        {'point': P, 'member': (line_index, 'start'|'end'), 'tool': line_index}
+
+    where ``member``'s endpoint coincides with a point strictly inside ``tool``'s
+    run (not at either of ``tool``'s endpoints).  This is the configuration a
+    cope saddle is meant for: one tube's end butts against the middle of another
+    (a "T"), as opposed to two ends meeting at a shared vertex (a corner).
+    """
+    segs = [line_endpoints(ln) for ln in lines]
+    junctions = []
+    for i, ln in enumerate(lines):
+        s, e = segs[i]
+        for role, P in (('start', s), ('end', e)):
+            for j, (sj, ej) in enumerate(segs):
+                if j == i:
+                    continue
+                if _point_on_segment_interior(P, sj, ej, tol):
+                    junctions.append({'point': P, 'member': (i, role),
+                                      'tool': j})
+    return junctions
+
+
 # --------------------------------------------------------------------------- #
 # Section depth (how far a member's material extends perpendicular to its axis)
 # --------------------------------------------------------------------------- #
@@ -171,6 +224,43 @@ def member_depth(geom):
 # --------------------------------------------------------------------------- #
 # Per-line offsets for a chosen joint type
 # --------------------------------------------------------------------------- #
+def _half_extent_cm(geom, basis, axis):
+    """Half-extent (cm) of section ``geom`` measured along a world ``axis``.
+
+    ``basis`` is the member's placed ``(axis_u, axis_v)`` world unit vectors
+    (its section width/height directions, both perpendicular to its own run);
+    ``axis`` is the world direction to measure along (usually a *neighbour's*
+    run).  The section outline lives in local ``(u, v)`` millimetres, so a point
+    sits at ``u*axis_u + v*axis_v`` and its projection on ``axis`` is
+    ``u*(axis_u.axis) + v*(axis_v.axis)``; the half-extent is the largest such
+    projection.  This is what a butt/cope member must stop short by so its end
+    lands on the neighbour's *visible* face along the incoming direction -- for
+    an I-beam that is the flange width (not the web depth), which a single
+    scalar depth cannot express.
+
+    When ``basis`` is None (a caller that has not computed the placed frame, e.g.
+    a unit test) it falls back to the isotropic ``member_depth``/2, reproducing
+    the historical scalar trim.
+    """
+    if geom is None:
+        return 0.0
+    if basis is None:
+        return member_depth(geom) * 0.5 * MM_TO_CM
+    axis_u, axis_v = basis
+    cu, cv = _dot(axis_u, axis), _dot(axis_v, axis)
+    kind = geom.get('kind')
+    if kind == 'circles':
+        radii = geom.get('radii') or [0.0]
+        return max(radii) * math.sqrt(cu * cu + cv * cv) * MM_TO_CM
+    if kind == 'polygons':
+        best = 0.0
+        for loop in geom.get('loops') or []:
+            for u, v in loop:
+                best = max(best, abs(u * cu + v * cv))
+        return best * MM_TO_CM
+    return member_depth(geom) * 0.5 * MM_TO_CM
+
+
 def _miter_setback(depth_mm, phi):
     """Symmetric miter setback (cm) for a corner turn of ``phi`` radians.
 
@@ -185,7 +275,44 @@ def _miter_setback(depth_mm, phi):
     return (depth_mm * 0.5) / math.tan(half) * MM_TO_CM
 
 
-def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None):
+def _butt_through(members, joint_by_line, through_by_line):
+    """Index of the member that runs THROUGH at a butt corner (or None).
+
+    ``members`` is a corner's ``[(line_index, role), ...]``.  Exactly one member
+    at a butt corner should run through (extend past the vertex) while the
+    others back off.  Resolution, in order of priority:
+
+    1. a ``butt`` member the user explicitly marked ``through``;
+    2. otherwise a non-butt neighbour (it runs through, the butt member backs
+       off -- the classic single-butt case);
+    3. otherwise (all members butt, none marked) the highest-index member.
+
+    Returns None when no member at the corner is a butt.
+
+    A ``cope`` member is treated as butt-like *at a corner*: coping is only a
+    saddle at a T-junction (see :func:`corner_cuts`), so where a cope's end
+    coincides with another member's END (a shared vertex) it degrades to a plain
+    axial trim exactly like a butt -- one member runs through, the other backs
+    off.  This is what stops a corner cope from overlapping/poking through.
+    """
+    butt = [idx for idx, _ in members
+            if (joint_by_line[idx] if idx < len(joint_by_line) else 'none')
+            in ('butt', 'cope')]
+    if not butt:
+        return None
+    if through_by_line:
+        for idx in butt:
+            if idx < len(through_by_line) and through_by_line[idx]:
+                return idx
+    for idx, _ in members:
+        if (joint_by_line[idx] if idx < len(joint_by_line) else 'none') \
+                not in ('butt', 'cope'):
+            return idx
+    return max(butt)
+
+
+def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
+                   through_by_line=None, bases=None):
     """Compute ``(offset_start, offset_end)`` in cm for every line.
 
     ``geoms[i]`` is the section geometry of line ``i`` (from
@@ -194,6 +321,13 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None):
     ``clr_by_line[i]`` (optional) is the die centerline radius (mm) for a
     ``bend`` leg; without it a bend corner contributes no trim (the arc itself
     is built separately by :func:`bend_plan`).
+    ``through_by_line[i]`` (optional) marks a ``butt`` member as the one that
+    runs *through* the corner (the others back off); see :func:`_butt_through`.
+    ``bases[i]`` (optional) is line ``i``'s placed ``(axis_u, axis_v)`` section
+    basis (see :func:`profiles.compute_basis`); when supplied the butt/cope trim
+    uses the neighbour's *directional* half-extent along the incoming axis (an
+    I-beam's flange width, not its web depth).  When omitted it falls back to the
+    isotropic :func:`member_depth`/2.
 
     The result is a list of ``(offset_start, offset_end)`` tuples, one per line,
     to be *added* to the user's manual start/end offsets.  Lines whose joint is
@@ -214,12 +348,53 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None):
                 outward = (-outward[0], -outward[1], -outward[2])
             dirs.append(outward)
 
+        # The one butt member that runs through this corner (others back off).
+        through_idx = _butt_through(members, joint_by_line, through_by_line)
+
         # A swept bend rounds exactly two legs; both must request 'bend'.
         bend_clr = 0.0
         if (len(members) == 2 and clr_by_line
                 and all(joint_by_line[idx] == 'bend' for idx, _ in members)):
             bend_clr = max((clr_by_line[idx] for idx, _ in members
                             if idx < len(clr_by_line)), default=0.0)
+
+        # A butt corner is handled once here (not per member): exactly one
+        # member runs THROUGH (extends past the vertex) and the other backs off
+        # so its flat end lands on the through member's near face.  This is a
+        # pure axial trim -- no boolean.  Handling it per corner (rather than per
+        # member) is what stops two butt members from both backing off and
+        # leaving a gap; the through member is chosen by :func:`_butt_through`.
+        if through_idx is not None and len(members) == 2:
+            t_k = next(k for k, (idx, _) in enumerate(members)
+                       if idx == through_idx)
+            o_k = 1 - t_k
+            T = members[t_k][0]
+            O = members[o_k][0]
+            sinp = _sin_between(dirs[t_k], dirs[o_k])
+            if sinp > 1e-6:
+                # Directional half-extents (cm): the backing-off member stops at
+                # the through member's face measured ALONG the incoming axis, and
+                # the through member grows to the other's face along ITS axis.
+                # Using the placed bases (when available) makes this correct for
+                # open sections (an I-beam's flange width, not its web depth).
+                g_t = geoms[T] if T < len(geoms) else None
+                g_o = geoms[O] if O < len(geoms) else None
+                b_t = bases[T] if (bases and T < len(bases)) else None
+                b_o = bases[O] if (bases and O < len(bases)) else None
+                # The through member's extent along the incoming member's axis.
+                trim = _half_extent_cm(g_t, b_t, dirs[o_k]) / sinp
+                # The incoming member's extent along the through member's axis.
+                grow = _half_extent_cm(g_o, b_o, dirs[t_k]) / sinp
+                orole = members[o_k][1]
+                if orole == 'end':
+                    offs[O] = (offs[O][0], offs[O][1] - trim)
+                else:
+                    offs[O] = (offs[O][0] + trim, offs[O][1])
+                trole = members[t_k][1]
+                if trole == 'end':
+                    offs[T] = (offs[T][0], offs[T][1] + grow)
+                else:
+                    offs[T] = (offs[T][0] - grow, offs[T][1])
 
         for k, (idx, role) in enumerate(members):
             jid = joint_by_line[idx] if idx < len(joint_by_line) else 'none'
@@ -255,37 +430,35 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None):
                     offs[idx] = (offs[idx][0], offs[idx][1] + sb)
                 else:
                     offs[idx] = (offs[idx][0] - sb, offs[idx][1])
-            elif jid == 'butt':
-                # A butt is a pure axial trim -- NO boolean.  This member stops
-                # short so its flat end lands on the through neighbour's NEAR
-                # face, and the neighbour is extended past the vertex so the
-                # corner reads flush.  Because the end stops at the near face it
-                # never enters the neighbour's hollow interior, so no cut is
-                # ever needed (that is what :func:`corner_cuts`' ``cope`` is
-                # for).  Distances are divided by sin(phi) to project the
-                # perpendicular half-depths onto this member's axis.
-                sinp = _sin_between(dirs[k], dirs[other_k])
-                if sinp <= 1e-6:
-                    continue
-                d_other = (member_depth(geoms[other])
-                           if other < len(geoms) else 0.0)
-                d_own = member_depth(geoms[idx]) if idx < len(geoms) else 0.0
-                trim = (d_other * 0.5) * MM_TO_CM / sinp   # this member stops short ...
-                grow = (d_own * 0.5) * MM_TO_CM / sinp     # ... neighbour extends ...
-                if role == 'end':
-                    offs[idx] = (offs[idx][0], offs[idx][1] - trim)
-                else:
-                    offs[idx] = (offs[idx][0] + trim, offs[idx][1])
-                # Extend the through neighbour for a flush corner, but only if
-                # it is not itself a butt member (a butt never extends).
-                if joint_by_line[other] != 'butt':
-                    orole = members[other_k][1]
-                    if orole == 'end':
-                        offs[other] = (offs[other][0], offs[other][1] + grow)
-                    else:
-                        offs[other] = (offs[other][0] - grow, offs[other][1])
-            # ``cope`` is realised by a neighbour-body saddle cut (see
-            # :func:`corner_cuts`), so it contributes no offset here.
+            # ``butt`` is handled once per corner above (see the corner-level
+            # block); ``cope`` is realised by a neighbour-body saddle cut (see
+            # :func:`corner_cuts`), so neither contributes an offset here.
+
+    # T-junctions: a member whose END lands on the interior of another member's
+    # run (a "T", not a shared-vertex corner).  Its end sits on the tool's
+    # CENTRELINE, so half of it is buried inside the tube -- for a butt that is a
+    # visible overlap, and for a cope the body-cut only removes wall material and
+    # leaves the tip floating in the hollow.  Trim the member back along its axis
+    # to the tool's NEAR face (the tool's directional half-extent measured along
+    # the member's axis), exactly like a corner butt.  A cope additionally gets a
+    # saddle cut (see :func:`corner_cuts`) that now only shapes the contact face,
+    # because the tip no longer reaches the far wall.
+    for jn in detect_t_junctions(lines):
+        idx, role = jn['member']
+        tool = jn['tool']
+        jid = joint_by_line[idx] if idx < len(joint_by_line) else 'none'
+        if jid not in ('butt', 'cope'):
+            continue
+        g_tool = geoms[tool] if tool < len(geoms) else None
+        b_tool = bases[tool] if (bases and tool < len(bases)) else None
+        # The tool's half-extent along the incoming member's axis (cm).
+        trim = _half_extent_cm(g_tool, b_tool, line_direction(lines[idx]))
+        if trim <= 0.0:
+            continue
+        if role == 'end':
+            offs[idx] = (offs[idx][0], offs[idx][1] - trim)
+        else:
+            offs[idx] = (offs[idx][0] + trim, offs[idx][1])
     return offs
 
 
@@ -303,7 +476,8 @@ def _sin_between(a, b):
 # --------------------------------------------------------------------------- #
 # Real corner cuts (Phase 4): angled miter faces and butt/cope saddles
 # --------------------------------------------------------------------------- #
-def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL):
+def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL, saddle_by_line=None,
+                through_by_line=None):
     """Plan the geometric cuts that realise ``miter``/``butt``/``cope`` corners.
 
     Unlike :func:`corner_offsets` (which only shortens a member along its axis),
@@ -316,15 +490,26 @@ def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL):
     corner ``point`` whose ``normal`` is the bisector between the two members;
     keep the half on the ``keep`` side (the member's own outward direction).
 
-    ``kind='body'`` (cope only): split ``member``'s body with the *neighbour's*
-    body (``tool``) so the incoming member is saddled to the through-member's
-    surface; keep the half away from the neighbour (``keep``).
+    ``kind='body'`` (cope at a T-junction, or a saddled butt at a corner): split
+    ``member``'s body with the *neighbour's* body (``tool``) so the incoming
+    member is saddled to the through-member's surface; keep the half away from
+    the neighbour (``keep``).
 
-    A ``butt`` corner produces NO cut: it is a pure axial trim handled entirely
-    by :func:`corner_offsets` (the incoming member stops at the through
-    member's near face, so its flat end never enters the interior).  A corner
-    is cut only when the member's joint is ``miter``/``cope`` and exactly two
-    members meet there; ``none``/``butt``/``bend`` corners are skipped.
+    A ``butt`` corner produces NO cut by default: it is a pure axial trim
+    handled entirely by :func:`corner_offsets` (the incoming member stops at the
+    through member's near face, so its flat end never enters the interior).
+    When the user checks ``Saddle`` on the butt member (``saddle_by_line``), a
+    body cut is emitted instead so the end is notched to clear an open
+    section's interior.  A corner is cut when a member's joint is ``miter`` (or a
+    saddled ``butt``) and exactly two members meet there; ``none``/``bend``
+    corners are skipped.
+
+    A ``cope`` is emitted only at a T-junction -- where one member's END lands on
+    the *interior* of another's run (see :func:`detect_t_junctions`) -- never at
+    a shared-vertex corner.  This matches the physical operation: coping is
+    notching a tube so it fits over the *side* of another tube, which only
+    happens mid-run.  A cope whose end coincides with a corner is treated as a
+    plain butt (axial trim, no boolean).
     """
     cuts = []
     for corner in detect_corners(lines, tol):
@@ -337,9 +522,16 @@ def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL):
         d1 = line_direction(lines[i1])
         out0 = d0 if r0 == 'start' else _scale(d0, -1)
         out1 = d1 if r1 == 'start' else _scale(d1, -1)
+        # For a butt, only the member that BACKS OFF (not the through one) is
+        # saddled; the through member keeps its square extended end.
+        butt_through = _butt_through(members, joint_by_line, through_by_line)
         for k, (idx, role) in enumerate(members):
             jid = joint_by_line[idx] if idx < len(joint_by_line) else 'none'
-            if jid not in ('miter', 'cope'):
+            saddled_butt = (jid == 'butt' and saddle_by_line
+                            and idx < len(saddle_by_line)
+                            and saddle_by_line[idx] and idx != butt_through)
+            # cope is NOT handled here -- it only fires at a T-junction below.
+            if jid != 'miter' and not saddled_butt:
                 continue
             other = members[1 - k][0]
             own = (out0, out1)[k]
@@ -359,10 +551,29 @@ def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL):
                              'point': V, 'normal': nrm, 'keep': own,
                              'tool': other})
             else:
-                # butt/cope: saddle against the neighbour's body.
+                # saddled butt: notch against the neighbour's body at a corner.
                 cuts.append({'member': idx, 'role': role, 'kind': 'body',
                              'point': V, 'normal': _scale(own, -1),
                              'keep': own, 'tool': other})
+
+    # Cope (or a saddled butt) at T-junctions: a member whose END lands on the
+    # interior of another member's run is saddled to that member's body.  A plain
+    # butt at a T-junction gets only the axial trim (above) and no cut; checking
+    # Saddle makes its end conform to the tool's outer surface instead of a flat
+    # square face.  Cope always saddles at a T-junction.
+    for jn in detect_t_junctions(lines, tol):
+        idx, role = jn['member']
+        tool = jn['tool']
+        jid = joint_by_line[idx] if idx < len(joint_by_line) else 'none'
+        saddled = (jid == 'cope'
+                   or (jid == 'butt' and saddle_by_line
+                       and idx < len(saddle_by_line) and saddle_by_line[idx]))
+        if not saddled:
+            continue
+        own = _outward(lines[idx], role)   # from the vertex into the member
+        cuts.append({'member': idx, 'role': role, 'kind': 'body',
+                     'point': jn['point'], 'normal': _scale(own, -1),
+                     'keep': own, 'tool': tool})
     return cuts
 
 
