@@ -1,0 +1,191 @@
+"""Unit tests for the pure-Python corner-joint geometry (``lib/joints.py``).
+
+Run with plain ``python`` (no Fusion):
+
+    python -m unittest discover -s tests
+
+These validate corner detection, section depth, and the per-line butt/miter
+offsets -- everything that does NOT require the ``adsk`` API.  Lines are the
+test stub's ``FakeLine`` (which exposes ``worldGeometry``/``length`` exactly like
+a real sketch line).
+"""
+
+import math
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from lib import joints as jt  # noqa: E402
+from adsk_stub import FakeLine  # noqa: E402
+
+
+def _rect(depth_mm, width_mm=None):
+    """A polygon geom whose bounding box is depth_mm x width_mm (mm)."""
+    w = width_mm if width_mm is not None else depth_mm
+    h, b = depth_mm, w
+    return {'kind': 'polygons',
+            'loops': [[(-b / 2, -h / 2), (b / 2, -h / 2),
+                       (b / 2, h / 2), (-b / 2, h / 2)]],
+            'fillets': [[]]}
+
+
+def _circle(od_mm):
+    return {'kind': 'circles', 'radii': [od_mm / 2.0, od_mm / 2.0 - 2.0]}
+
+
+class TestLineAccessors(unittest.TestCase):
+    def test_endpoints_and_direction(self):
+        ln = FakeLine((0, 0, 0), (10, 0, 0))
+        s, e = jt.line_endpoints(ln)
+        self.assertEqual(s, (0, 0, 0))
+        self.assertEqual(e, (10, 0, 0))
+        self.assertEqual(jt.line_direction(ln), (1.0, 0.0, 0.0))
+
+    def test_direction_is_unit(self):
+        ln = FakeLine((0, 0, 0), (3, 4, 0))
+        d = jt.line_direction(ln)
+        self.assertAlmostEqual(math.sqrt(sum(c * c for c in d)), 1.0)
+
+
+class TestCornerDetection(unittest.TestCase):
+    def test_l_frame_one_corner(self):
+        # A horizontal line ending at origin, a vertical line starting at origin.
+        lines = [FakeLine((-10, 0, 0), (0, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        corners = jt.detect_corners(lines)
+        self.assertEqual(len(corners), 1)
+        self.assertEqual(corners[0]['point'], (0, 0, 0))
+        self.assertEqual({mi for mi, _ in corners[0]['members']}, {0, 1})
+
+    def test_disconnected_lines_no_corner(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 5, 0), (10, 5, 0))]
+        self.assertEqual(jt.detect_corners(lines), [])
+
+    def test_three_way_corner(self):
+        # Three lines all meeting at the origin.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0)),
+                 FakeLine((0, 0, 0), (0, 0, 10))]
+        corners = jt.detect_corners(lines)
+        self.assertEqual(len(corners), 1)
+        self.assertEqual(len(corners[0]['members']), 3)
+
+    def test_roles_start_vs_end(self):
+        lines = [FakeLine((-10, 0, 0), (0, 0, 0)),   # ends at corner
+                 FakeLine((0, 0, 0), (0, 10, 0))]     # starts at corner
+        corner = jt.detect_corners(lines)[0]
+        roles = dict(corner['members'])
+        self.assertEqual(roles[0], 'end')
+        self.assertEqual(roles[1], 'start')
+
+
+class TestMemberDepth(unittest.TestCase):
+    def test_rect_depth_is_max_extent(self):
+        # 100 x 46 rect -> half-extent 50 -> depth 100 mm.
+        self.assertAlmostEqual(jt.member_depth(_rect(100, 46)), 100.0)
+
+    def test_square_depth(self):
+        self.assertAlmostEqual(jt.member_depth(_rect(50, 50)), 50.0)
+
+    def test_circle_depth_is_od(self):
+        self.assertAlmostEqual(jt.member_depth(_circle(60)), 60.0)
+
+    def test_none_geom_zero(self):
+        self.assertEqual(jt.member_depth(None), 0.0)
+
+
+class TestButtJoint(unittest.TestCase):
+    def test_incoming_trimmed_by_through_depth(self):
+        # Line 0 runs *through* the corner (joint 'none', starts at corner, +X).
+        # Line 1 butts into it (joint 'butt', ends at corner) -> trimmed by line
+        # 0's depth (100 mm = 10 cm).  This is the "one beam shorter by the
+        # thickness, the other through" overlap the user described.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_rect(100), _rect(80)]
+        offs = jt.corner_offsets(lines, geoms, ['none', 'butt'])
+        # Line 0 runs through -> untouched.
+        self.assertEqual(offs[0], (0.0, 0.0))
+        # Line 1 ends at the corner -> offset_end shortened by 10 cm (neighbour depth).
+        self.assertAlmostEqual(offs[1][0], 0.0)
+        self.assertAlmostEqual(offs[1][1], -10.0)
+
+    def test_none_joint_is_noop(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        offs = jt.corner_offsets(lines, [_rect(100), _rect(80)], ['none', 'none'])
+        self.assertEqual(offs, [(0.0, 0.0), (0.0, 0.0)])
+
+    def test_cope_same_as_butt(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_rect(100), _circle(80)]
+        butt = jt.corner_offsets(lines, geoms, ['butt', 'butt'])
+        cope = jt.corner_offsets(lines, geoms, ['cope', 'cope'])
+        self.assertEqual(butt, cope)
+
+
+class TestMiterJoint(unittest.TestCase):
+    def test_90deg_symmetric_setback(self):
+        # Two members meeting at a right angle, both mitred.  Each pulls back by
+        # (d/2)/tan(45deg) = d/2 (cm after unit conversion).
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        geoms = [_rect(100), _rect(100)]
+        offs = jt.corner_offsets(lines, geoms, ['miter', 'miter'])
+        expected = (100 * 0.5) / math.tan(math.pi / 4) * jt.MM_TO_CM  # 5.0 cm
+        self.assertAlmostEqual(offs[0][0], expected)
+        self.assertAlmostEqual(offs[1][0], expected)
+
+    def test_miter_zero_when_collinear(self):
+        # A straight run (180 deg turn) needs no miter setback.
+        lines = [FakeLine((-10, 0, 0), (0, 0, 0)),
+                 FakeLine((0, 0, 0), (10, 0, 0))]
+        offs = jt.corner_offsets(lines, [_rect(100), _rect(100)],
+                                 ['miter', 'miter'])
+        self.assertAlmostEqual(offs[0][1], 0.0)
+        self.assertAlmostEqual(offs[1][0], 0.0)
+
+
+class TestFamilyFiltering(unittest.TestCase):
+    def test_joints_for_family(self):
+        self.assertEqual(jt.joints_for_family({'joints': ['none', 'butt', 'miter']}),
+                         ['none', 'butt', 'miter'])
+
+    def test_missing_joints_defaults_none(self):
+        self.assertEqual(jt.joints_for_family({}), ['none'])
+        self.assertEqual(jt.joints_for_family(None), ['none'])
+
+    def test_labels_and_roundtrip(self):
+        ids = jt.joints_for_family({'joints': ['none', 'miter', 'bend']})
+        labels = jt.joint_labels(ids)
+        self.assertEqual([jt.joint_id_from_label(l) for l in labels], ids)
+
+
+class TestDataProfileJoints(unittest.TestCase):
+    """Every family in the shipped catalogue declares a valid joint set."""
+
+    def setUp(self):
+        from lib import profiles as prof
+        self.families = prof.load_profiles()
+
+    def test_all_families_declare_joints(self):
+        for fam in self.families:
+            js = fam.get('joints')
+            self.assertTrue(js, fam['abbreviation'])
+            self.assertIn('none', js, fam['abbreviation'])
+            for j in js:
+                self.assertIn(j, jt.ALL_IDS, fam['abbreviation'])
+
+    def test_bend_only_on_hollow_and_round(self):
+        for fam in self.families:
+            if 'bend' in fam['joints']:
+                self.assertIn(fam['abbreviation'], {'SHS', 'RHS', 'CHS'})
+
+
+if __name__ == '__main__':
+    unittest.main()

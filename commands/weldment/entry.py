@@ -5,6 +5,7 @@ import adsk.fusion
 
 from ...lib import fusionAddInUtils as futil
 from ...lib import profiles as prof
+from ...lib import joints as jt
 from ... import config
 
 app = adsk.core.Application.get()
@@ -125,8 +126,11 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     inputs.addDropDownCommandInput(
         'designation', 'Designation', adsk.core.DropDownStyles.TextListDropDownStyle)
 
-    # 4. Per-line rotation + offset table.  One row per selected sketch line,
-    #    with columns [#, Rotation, Offset Start, Offset End].  A "Sync all"
+    # 4. Per-line joint + rotation + offset table.  One row per selected sketch
+    #    line, with columns [#, Joint, Rotation, Offset Start, Offset End].  The
+    #    Joint dropdown lists the corner treatments the selected profile family
+    #    supports (from data/profiles.json 'joints'), defaulting to 'None' (full
+    #    length to the vertex -- the historical behaviour).  A "Sync all"
     #    checkbox lives in the table's bottom toolbar (the Fusion-idiomatic spot,
     #    as in the Loft command): when checked (default) editing any row
     #    propagates its value to every row and the manipulators anchor to the
@@ -135,7 +139,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     #    _sync_table_rows() adds a row per line as the selection changes and
     #    shows the checkbox only once there are 2+ rows to synchronise.
     tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
-        'params', 'Per Line', 4, '1:3:3:3')
+        'params', 'Per Line', 5, '1:2:3:3:3')
     sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
         'sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
@@ -181,6 +185,42 @@ def _rebuild_designations(inputs):
         des.listItems.item(0).isSelected = True
 
 
+def _populate_joint_dropdown(dd, family):
+    """Fill one row's Joint dropdown with the family's supported joints.
+
+    The options are the joint ids the profile family declares (``none`` first),
+    shown with their display labels.  ``none`` is pre-selected so a freshly
+    added row keeps the historical full-length behaviour until the user opts in.
+    """
+    dd.listItems.clear()
+    ids = jt.joints_for_family(family)
+    for label in jt.joint_labels(ids):
+        dd.listItems.add(label, label == jt.LABELS['none'])
+
+
+def _rebuild_joints(inputs):
+    """Re-populate every row's Joint dropdown for the current family.
+
+    Called when the profile family changes: a family that cannot be bent drops
+    the Bend option, and so on.  Rows whose previous selection is no longer
+    offered fall back to ``None``.
+    """
+    family = _selected_family(inputs)
+    for ids in _row_ids:
+        dd: adsk.core.DropDownCommandInput = inputs.itemById(ids['joint'])
+        if dd is None:
+            continue
+        prev = _dropdown_index(dd)
+        prev_label = dd.listItems.item(prev).name if 0 <= prev < dd.listItems.count else None
+        _populate_joint_dropdown(dd, family)
+        # Keep the user's choice when the new family still supports it.
+        if prev_label is not None:
+            for i in range(dd.listItems.count):
+                if dd.listItems.item(i).name == prev_label:
+                    dd.listItems.item(i).isSelected = True
+                    break
+
+
 # --------------------------------------------------------------------------- #
 # Events
 # --------------------------------------------------------------------------- #
@@ -223,6 +263,35 @@ def _row_params(inputs, r):
     return (ang.value if ang else 0.0,
             ofs.value if ofs else 0.0,
             ofe.value if ofe else 0.0)
+
+
+def _row_joint(inputs, r):
+    """Return the joint id ('none'/'butt'/...) chosen for table row ``r``."""
+    if r >= len(_row_ids):
+        return 'none'
+    dd: adsk.core.DropDownCommandInput = inputs.itemById(_row_ids[r]['joint'])
+    if dd is None:
+        return 'none'
+    idx = _dropdown_index(dd)
+    if 0 <= idx < dd.listItems.count:
+        return jt.joint_id_from_label(dd.listItems.item(idx).name)
+    return 'none'
+
+
+def _joint_offsets(inputs, lines, geom):
+    """Per-line (offset_start, offset_end) in cm from the chosen corner joints.
+
+    Auto-detects the corners among ``lines`` and turns each row's joint type into
+    the length trim that removes the corner overlap (see lib/joints).  The
+    result is added to the user's manual start/end offsets in the build loop.
+    """
+    joints = [_row_joint(inputs, i) for i in range(len(lines))]
+    geoms = [geom for _ in lines]
+    try:
+        return jt.corner_offsets(lines, geoms, joints)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} joint offsets')
+        return [(0.0, 0.0) for _ in lines]
 
 
 def _clear_preview():
@@ -271,12 +340,12 @@ def _selected_lines(inputs):
 
 
 def _cell_column(input_id):
-    """Map a table-cell input id (rot_/os_/oe_<uid>) to its column key.
+    """Map a table-cell input id to its column key.
 
-    Returns 'rot', 'os' or 'oe' for the editable value columns, or None for the
-    read-only row-number column and every non-table input.
+    Returns 'joint', 'rot', 'os' or 'oe' for the editable value columns, or None
+    for the read-only row-number column and every non-table input.
     """
-    for col in ('rot', 'os', 'oe'):
+    for col in ('joint', 'rot', 'os', 'oe'):
         if input_id.startswith(col + '_'):
             return col
     return None
@@ -291,6 +360,7 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
     inp = args.input
     if inp.id == 'family':
         _rebuild_designations(args.inputs)
+        _rebuild_joints(args.inputs)
         return
     # Toggling Sync all changes which rows show their manipulators.
     if inp.id == 'sync_all':
@@ -309,11 +379,23 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
         return
     _syncing = True
     try:
-        value = inp.value
-        for ids in _row_ids:
-            other = args.inputs.itemById(ids[col])
-            if other is not None and other.id != inp.id:
-                other.value = value
+        if col == 'joint':
+            # Dropdowns carry no .value; propagate the selected option by label.
+            idx = _dropdown_index(inp)
+            label = inp.listItems.item(idx).name if 0 <= idx < inp.listItems.count else None
+            for ids in _row_ids:
+                other = args.inputs.itemById(ids[col])
+                if other is None or other.id == inp.id:
+                    continue
+                for i in range(other.listItems.count):
+                    other.listItems.item(i).isSelected = (
+                        label is not None and other.listItems.item(i).name == label)
+        else:
+            value = inp.value
+            for ids in _row_ids:
+                other = args.inputs.itemById(ids[col])
+                if other is not None and other.id != inp.id:
+                    other.value = value
     finally:
         _syncing = False
 
@@ -359,10 +441,15 @@ def _sync_table_rows(inputs, lines):
     while len(_row_ids) < n:
         r = len(_row_ids)
         uid = _new_uid()
-        ids = {'num': f'num_{uid}', 'rot': f'rot_{uid}',
+        ids = {'num': f'num_{uid}', 'joint': f'joint_{uid}', 'rot': f'rot_{uid}',
                'os': f'os_{uid}', 'oe': f'oe_{uid}'}
         num = inputs.addTextBoxCommandInput(
             ids['num'], '', str(r + 1), 1, True)
+        # Joint: the corner treatment for this member, limited to what the
+        # selected profile family supports (see data/profiles.json 'joints').
+        joint = inputs.addDropDownCommandInput(
+            ids['joint'], '', adsk.core.DropDownStyles.TextListDropDownStyle)
+        _populate_joint_dropdown(joint, _selected_family(inputs))
         # Rotation is a plain spinner (degrees): an editable box with NO
         # on-canvas manipulator.  An AngleValueCommandInput would always draw a
         # rotation wheel, and in a table cell that wheel does not write back to
@@ -375,9 +462,10 @@ def _sync_table_rows(inputs, lines):
         oe_ = inputs.addDistanceValueCommandInput(
             ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
         tbl.addCommandInput(num, r, 0)
-        tbl.addCommandInput(rot, r, 1)
-        tbl.addCommandInput(os_, r, 2)
-        tbl.addCommandInput(oe_, r, 3)
+        tbl.addCommandInput(joint, r, 1)
+        tbl.addCommandInput(rot, r, 2)
+        tbl.addCommandInput(os_, r, 3)
+        tbl.addCommandInput(oe_, r, 4)
         _row_ids.append(ids)
     # "Sync all" only means something once there are 2+ rows to keep in step, so
     # hide the toolbar checkbox otherwise rather than float a lone control.
@@ -472,10 +560,12 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
         return
     root, _sel, geom, label = resolved
     ref = _selection_reference(saved)
+    joint_offs = _joint_offsets(inputs, saved, geom)
     for i, line in enumerate(saved):
         angle, off_s, off_e = _row_params(inputs, i)
-        objs = _build_weldment(root, line, geom, label, angle, ref, off_s, off_e,
-                               preview=True)
+        js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
+        objs = _build_weldment(root, line, geom, label, angle, ref,
+                               off_s + js, off_e + je, preview=True)
         if objs:
             _preview_objs.append(objs)
     # Make sure the user's lines are still highlighted after the churn.
@@ -496,11 +586,14 @@ def command_execute(args: adsk.core.CommandEventArgs):
         return
     root, _sel, geom, label = resolved
     ref = _selection_reference(saved)
+    joint_offs = _joint_offsets(inputs, saved, geom)
 
     created = 0
     for i, line in enumerate(saved):
         angle, off_s, off_e = _row_params(inputs, i)
-        if _build_weldment(root, line, geom, label, angle, ref, off_s, off_e):
+        js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
+        if _build_weldment(root, line, geom, label, angle, ref,
+                           off_s + js, off_e + je):
             created += 1
 
     if created == 0:

@@ -278,6 +278,34 @@ class FakeInput:
         return True
 
 
+class FakeListItem:
+    """A dropdown list item whose isSelected is exclusive among siblings,
+    mirroring Fusion's ListItem behaviour (selecting one deselects the rest)."""
+
+    def __init__(self, parent, name, isSelected=False):
+        self._parent = parent
+        self.name = name
+        self.id = f"_li{id(parent)}_{name}"
+        self.kind = "li"
+        self._selected = isSelected
+        if isSelected:
+            self._select_only_me()
+
+    def _select_only_me(self):
+        for it in self._parent._items:
+            it._selected = (it is self)
+
+    @property
+    def isSelected(self):
+        return self._selected
+
+    @isSelected.setter
+    def isSelected(self, v):
+        self._selected = bool(v)
+        if v:
+            self._select_only_me()
+
+
 class FakeListItems:
     def __init__(self):
         self._items = []
@@ -290,8 +318,9 @@ class FakeListItems:
         return self._items[i]
 
     def add(self, name, isSelected=False, subItem=""):
-        self._items.append(FakeInput(f"_li{id(self)}_{name}", "li", isSelected))
-        return self._items[-1]
+        item = FakeListItem(self, name, isSelected)
+        self._items.append(item)
+        return item
 
     def clear(self):
         self._items = []

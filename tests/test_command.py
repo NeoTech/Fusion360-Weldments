@@ -195,7 +195,7 @@ def _make_dialog():
     inputs.addSelectionInput('path', 'Lines', '')
     inputs.addDropDownCommandInput('family', 'Profile', 0)
     inputs.addDropDownCommandInput('designation', 'Designation', 0)
-    tbl = inputs.addTableCommandInput('params', 'Per Line', 4, '1:3:3:3')
+    tbl = inputs.addTableCommandInput('params', 'Per Line', 5, '1:2:3:3:3')
     sync = inputs.addBoolValueInput('sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
     return cmd, inputs, tbl
@@ -345,6 +345,98 @@ class TestPerLineTable(unittest.TestCase):
         entry.command_select(_Args(activeInput=sel))
         self.assertEqual(len(entry._row_ids), 1)
         self.assertEqual(inputs.itemById(entry._row_ids[0]['os']).manipulatorCount, 1)
+
+
+class TestJointColumn(unittest.TestCase):
+    """The per-line Joint dropdown + how it feeds the build offsets."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        entry._row_ids = []
+        entry._uid_counter[0] = 0
+        entry._FAMILIES = prof.annotate_families(prof.load_profiles())
+
+    def _select_family(self, inputs, abbr):
+        fam = inputs.itemById('family')
+        for i in range(fam.listItems.count):
+            fam.listItems.item(i).isSelected = fam.listItems.item(i).name.startswith(abbr)
+        return fam
+
+    def test_joint_dropdown_lists_family_joints(self):
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'IPE')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
+        dd = inputs.itemById(entry._row_ids[0]['joint'])
+        labels = [dd.listItems.item(i).name for i in range(dd.listItems.count)]
+        self.assertEqual(labels, ['None', 'Butt', 'Miter'])  # IPE has no cope/bend
+
+    def test_joint_defaults_to_none(self):
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        self.assertEqual(entry._row_joint(inputs, 0), 'none')
+
+    def test_row_joint_reads_selection(self):
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        dd = inputs.itemById(entry._row_ids[0]['joint'])
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Butt'
+        self.assertEqual(entry._row_joint(inputs, 0), 'butt')
+
+    def test_family_change_rebuilds_and_preserves_choice(self):
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        dd = inputs.itemById(entry._row_ids[0]['joint'])
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Miter'
+        # Switch to IPE (still supports Miter) -> choice preserved, cope/bend gone.
+        self._select_family(inputs, 'IPE')
+        entry.command_input_changed(_Args(input=inputs.itemById('family'), inputs=inputs))
+        labels = [dd.listItems.item(i).name for i in range(dd.listItems.count)]
+        self.assertEqual(labels, ['None', 'Butt', 'Miter'])
+        self.assertEqual(entry._row_joint(inputs, 0), 'miter')
+
+    def test_family_change_drops_unsupported_choice(self):
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        dd = inputs.itemById(entry._row_ids[0]['joint'])
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Bend'
+        # Switch to IPE (no Bend) -> falls back to None.
+        self._select_family(inputs, 'IPE')
+        entry.command_input_changed(_Args(input=inputs.itemById('family'), inputs=inputs))
+        self.assertEqual(entry._row_joint(inputs, 0), 'none')
+
+    def test_sync_all_propagates_joint(self):
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 3)
+        dd0 = inputs.itemById(entry._row_ids[0]['joint'])
+        for i in range(dd0.listItems.count):
+            dd0.listItems.item(i).isSelected = dd0.listItems.item(i).name == 'Miter'
+        entry.command_input_changed(_Args(input=dd0, inputs=inputs))
+        for r in (1, 2):
+            self.assertEqual(entry._row_joint(inputs, r), 'miter')
+
+    def test_joint_offsets_applied_to_line(self):
+        # An L-frame; row 1 butts into row 0 -> row 1's end offset is negative.
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((0, -10, 0), (0, 0, 0))]
+        entry._sync_table_rows(inputs, lines)
+        dd1 = inputs.itemById(entry._row_ids[1]['joint'])
+        for i in range(dd1.listItems.count):
+            dd1.listItems.item(i).isSelected = dd1.listItems.item(i).name == 'Butt'
+        family = entry._selected_family(inputs)
+        geom = prof.section_geometry(prof.designations(family)[0])
+        offs = entry._joint_offsets(inputs, lines, geom)
+        self.assertEqual(offs[0], (0.0, 0.0))          # runs through
+        self.assertLess(offs[1][1], 0.0)               # incoming member trimmed
 
 
 if __name__ == "__main__":

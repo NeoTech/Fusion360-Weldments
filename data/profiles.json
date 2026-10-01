@@ -6,6 +6,11 @@
     "profile_family": "Parallel Flange I-Beams",
     "abbreviation": "IPE",
     "geometry_type": "Parallel flanges",
+    "joints": [
+      "none",
+      "butt",
+      "miter"
+    ],
     "standard_designations": [
       {
         "designation": "IPE 80",
@@ -178,6 +183,11 @@
     "profile_family": "Wide Flange Beams (Light)",
     "abbreviation": "HEA",
     "geometry_type": "Parallel flanges (wide flange, light weight)",
+    "joints": [
+      "none",
+      "butt",
+      "miter"
+    ],
     "standard_designations": [
       {
         "designation": "HEA 100",
@@ -359,6 +369,11 @@
     "profile_family": "Wide Flange Beams (Medium)",
     "abbreviation": "HEB",
     "geometry_type": "Parallel flanges (wide flange, standard weight)",
+    "joints": [
+      "none",
+      "butt",
+      "miter"
+    ],
     "standard_designations": [
       {
         "designation": "HEB 100",
@@ -540,6 +555,11 @@
     "profile_family": "Parallel Flange Channels",
     "abbreviation": "UPE",
     "geometry_type": "Parallel flanges",
+    "joints": [
+      "none",
+      "butt",
+      "miter"
+    ],
     "standard_designations": [
       {
         "designation": "UPE 80",
@@ -676,6 +696,11 @@
     "profile_family": "Taper Flange Channels",
     "abbreviation": "UPN",
     "geometry_type": "Tapered internal flanges (8% slope)",
+    "joints": [
+      "none",
+      "butt",
+      "miter"
+    ],
     "standard_designations": [
       {
         "designation": "UPN 80",
@@ -794,6 +819,13 @@
     "profile_family": "Square Hollow Sections",
     "abbreviation": "SHS",
     "geometry_type": "Equal square (h x h)",
+    "joints": [
+      "none",
+      "butt",
+      "miter",
+      "cope",
+      "bend"
+    ],
     "standard_designations": [
       {
         "designation": "40x40x2.0",
@@ -1061,6 +1093,13 @@
     "profile_family": "Rectangular Hollow Sections",
     "abbreviation": "RHS",
     "geometry_type": "Unequal rectangle (h x b)",
+    "joints": [
+      "none",
+      "butt",
+      "miter",
+      "cope",
+      "bend"
+    ],
     "standard_designations": [
       {
         "designation": "50x30x2.0",
@@ -1383,6 +1422,12 @@
     "profile_family": "Circular Hollow Sections",
     "abbreviation": "CHS",
     "geometry_type": "Round / Cylindrical (OD x t)",
+    "joints": [
+      "none",
+      "butt",
+      "cope",
+      "bend"
+    ],
     "standard_designations": [
       {
         "designation": "42.4x2.6",
