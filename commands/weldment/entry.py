@@ -104,8 +104,6 @@ def stop():
 # Dialog definition
 # --------------------------------------------------------------------------- #
 def command_created(args: adsk.core.CommandCreatedEventArgs):
-    futil.log(f'{CMD_NAME} Command Created Event')
-
     inputs = args.command.commandInputs
 
     # 1. The path: one or more 3D sketch lines.
@@ -129,11 +127,13 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 
     # 4. Per-line rotation + offset table.  One row per selected sketch line,
     #    with columns [#, Rotation, Offset Start, Offset End].  A "Sync all"
-    #    checkbox lives in the table toolbar: when checked (default) editing any
-    #    row propagates its value to every row and the manipulators anchor to
-    #    the first line; when unchecked each row keeps its own values and gets
-    #    its own manipulators anchored to that row's line.  The table starts
-    #    empty; _sync_table_rows() adds a row per line as the selection changes.
+    #    checkbox lives in the table's bottom toolbar (the Fusion-idiomatic spot,
+    #    as in the Loft command): when checked (default) editing any row
+    #    propagates its value to every row and the manipulators anchor to the
+    #    first line; when unchecked each row keeps its own values and gets its
+    #    own manipulators anchored to that row's line.  The table starts empty;
+    #    _sync_table_rows() adds a row per line as the selection changes and
+    #    shows the checkbox only once there are 2+ rows to synchronise.
     tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
         'params', 'Per Line', 4, '1:3:3:3')
     sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
@@ -363,32 +363,40 @@ def _sync_table_rows(inputs, lines):
                'os': f'os_{uid}', 'oe': f'oe_{uid}'}
         num = inputs.addTextBoxCommandInput(
             ids['num'], '', str(r + 1), 1, True)
-        rot = inputs.addAngleValueCommandInput(
-            ids['rot'], '', adsk.core.ValueInput.createByString('0 deg'))
+        # Rotation is a plain spinner (degrees): an editable box with NO
+        # on-canvas manipulator.  An AngleValueCommandInput would always draw a
+        # rotation wheel, and in a table cell that wheel does not write back to
+        # the box, so it is redundant -- hence a spinner here.  Its .value is in
+        # radians (the database angle unit), matching _build_weldment.
+        rot = inputs.addFloatSpinnerCommandInput(
+            ids['rot'], '', 'degree', -1000, 1000, 15, 0)
         os_ = inputs.addDistanceValueCommandInput(
             ids['os'], '', adsk.core.ValueInput.createByString('0 mm'))
         oe_ = inputs.addDistanceValueCommandInput(
             ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
-        rot.hasMinimumValue = False
-        rot.hasMaximumValue = False
         tbl.addCommandInput(num, r, 0)
         tbl.addCommandInput(rot, r, 1)
         tbl.addCommandInput(os_, r, 2)
         tbl.addCommandInput(oe_, r, 3)
         _row_ids.append(ids)
+    # "Sync all" only means something once there are 2+ rows to keep in step, so
+    # hide the toolbar checkbox otherwise rather than float a lone control.
+    sync: adsk.core.BoolValueCommandInput = inputs.itemById('sync_all')
+    if sync is not None:
+        sync.isVisible = len(_row_ids) >= 2
 
 
 def _update_manipulators(inputs, lines):
-    """Show/anchor each row's rotation wheel and offset arrows.
+    """Show each row's cells and anchor its offset arrows.
 
-    Synced (default): only row 0's manipulators are shown, anchored to line 0,
-    because editing any row propagates to all -- one universal set of handles.
-    Unsynced: row r's manipulators anchor to line r, so every created element
-    carries its own wheel and arrows on the canvas.
+    Rotation is a plain spinner (no canvas handle); only the offset arrows draw
+    on the canvas.  Synced (default): only row 0's arrows are shown, anchored to
+    line 0, because editing any row propagates to all -- one universal set of
+    handles.  Unsynced: row r's arrows anchor to line r, so every created
+    element carries its own arrows on the canvas.
     """
     sync: adsk.core.BoolValueCommandInput = inputs.itemById('sync_all')
     synced = bool(sync and sync.value)
-    ref = _selection_reference(lines) if lines else None
     for r, ids in enumerate(_row_ids):
         if synced:
             anchor = lines[0] if lines else None
@@ -398,23 +406,22 @@ def _update_manipulators(inputs, lines):
             show = anchor is not None
         _apply_row_manipulators(
             inputs.itemById(ids['rot']), inputs.itemById(ids['os']),
-            inputs.itemById(ids['oe']), anchor, ref, show)
+            inputs.itemById(ids['oe']), anchor, show)
 
 
-def _apply_row_manipulators(ang, ofs, ofe, line, ref, show):
-    """Show one row's cells and (optionally) anchor its wheel + arrows on ``line``.
+def _apply_row_manipulators(ang, ofs, ofe, line, show):
+    """Keep a row's cells visible and anchor (or disable) its offset arrows.
 
-    The wheel sits in the profile plane (normal = line direction) at the line
-    start so dragging spins the profile about its own axis; the Offset Start
-    arrow sits at the line start and the Offset End arrow at its end, both along
-    the line direction.
+    The Rotation cell is a plain spinner (no on-canvas handle), so it is always
+    just an editable box.  The Offset Start / End arrows are the only canvas
+    manipulators: Offset Start sits at the line start and Offset End at its end,
+    both along the line direction.
 
-    A table row auto-hides when ALL of its cells are invisible, so the cells are
-    always kept isVisible=True -- otherwise only the first row would show.  The
-    on-canvas manipulator is toggled separately via isEnabled (the docs: the
-    manipulator draws only when isVisible AND isEnabled are both true).  When
-    ``show`` is False (or there is no line) the handles are disabled so they
-    never strand at the default origin (0,0,0), while the row still shows.
+    A table row auto-hides when ALL of its cells are invisible, so every cell is
+    kept isVisible=True.  The offset arrows are toggled via isEnabled (the
+    manipulator draws only when isVisible AND isEnabled are both true): when
+    ``show`` is False (or there is no line) they are disabled so they never
+    strand at the default origin (0,0,0), while the row still shows.
     """
     for inp in (ang, ofs, ofe):
         if inp is not None:
@@ -423,7 +430,7 @@ def _apply_row_manipulators(ang, ofs, ofe, line, ref, show):
             except Exception:
                 pass
     if not show or line is None:
-        for inp in (ang, ofs, ofe):
+        for inp in (ofs, ofe):
             if inp is not None:
                 try:
                     inp.isEnabled = False
@@ -436,13 +443,6 @@ def _apply_row_manipulators(ang, ofs, ofe, line, ref, show):
         end = world.endPoint
         direction = (end.x - start.x, end.y - start.y, end.z - start.z)
         dir_vec = adsk.core.Vector3D.create(*prof._norm(direction))
-        if ang is not None:
-            axis_u, axis_v = prof.compute_basis(direction, ref)
-            ang.setManipulator(
-                adsk.core.Point3D.create(start.x, start.y, start.z),
-                adsk.core.Vector3D.create(*axis_u),
-                adsk.core.Vector3D.create(*axis_v))
-            ang.isEnabled = True
         if ofs is not None:
             ofs.setManipulator(
                 adsk.core.Point3D.create(start.x, start.y, start.z), dir_vec)
@@ -483,8 +483,6 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
 
 
 def command_execute(args: adsk.core.CommandEventArgs):
-    futil.log(f'{CMD_NAME} Command Execute Event')
-
     inputs = args.command.commandInputs
     sel = inputs.itemById('path')
     # Snapshot the lines before tearing down the preview: the delete churn can
@@ -510,7 +508,6 @@ def command_execute(args: adsk.core.CommandEventArgs):
 
 
 def command_destroy(args: adsk.core.CommandEventArgs):
-    futil.log(f'{CMD_NAME} Command Destroy Event')
     # On cancel (destroy without a preceding execute) the preview is still live;
     # remove it.  After OK, _preview_objs is already empty so this is a no-op.
     _clear_preview()

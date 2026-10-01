@@ -412,6 +412,10 @@ class FakeCommandInputs:
     def addAngleValueCommandInput(self, id, name, vi):
         return self._add(FakeInput(id, "angle", 0.0))
 
+    def addFloatSpinnerCommandInput(self, id, name, unit, mn, mx, step, init):
+        # A spinner is a plain editable value box with NO canvas manipulator.
+        return self._add(FakeInput(id, "spinner", 0.0))
+
     def addDistanceValueCommandInput(self, id, name, vi):
         return self._add(FakeInput(id, "distance", 0.0))
 

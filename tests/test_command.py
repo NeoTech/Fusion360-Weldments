@@ -248,6 +248,16 @@ class TestPerLineTable(unittest.TestCase):
         self.assertIsNone(entry._cell_column('num_5'))
         self.assertIsNone(entry._cell_column('family'))
 
+    def test_sync_all_hidden_until_two_rows(self):
+        _cmd, inputs, tbl = _make_dialog()
+        sync = inputs.itemById('sync_all')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        self.assertFalse(sync.isVisible)  # 1 row: nothing to sync
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
+        self.assertTrue(sync.isVisible)   # 2 rows: show the toggle
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        self.assertFalse(sync.isVisible)  # back to 1 row: hide again
+
     def test_row_params_reads_per_row_values(self):
         _cmd, inputs, tbl = _make_dialog()
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
@@ -287,21 +297,32 @@ class TestPerLineTable(unittest.TestCase):
         self.assertAlmostEqual(
             inputs.itemById(entry._row_ids[1]['rot']).value, 0.0)
 
-    def test_synced_manipulators_only_row_zero(self):
+    def test_rotation_cell_has_no_manipulator(self):
+        # Rotation is a plain spinner: it must never draw a canvas handle.
         _cmd, inputs, tbl = _make_dialog()
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
         entry._sync_table_rows(inputs, lines)
         entry._update_manipulators(inputs, lines)
-        self.assertEqual(inputs.itemById(entry._row_ids[0]['rot']).manipulatorCount, 1)
-        self.assertEqual(inputs.itemById(entry._row_ids[1]['rot']).manipulatorCount, 0)
-        # Row 1's cells stay VISIBLE (a table row hides when all its cells are
-        # invisible), but its on-canvas manipulator is disabled so only row 0
-        # shows a wheel/arrows when Sync all is on.
-        self.assertTrue(inputs.itemById(entry._row_ids[1]['rot']).isVisible)
-        self.assertFalse(inputs.itemById(entry._row_ids[1]['rot']).isEnabled)
+        for r in (0, 1):
+            self.assertEqual(
+                inputs.itemById(entry._row_ids[r]['rot']).manipulatorCount, 0)
 
-    def test_unsynced_manipulators_anchor_each_row(self):
+    def test_synced_arrows_only_row_zero(self):
+        _cmd, inputs, tbl = _make_dialog()
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
+        entry._sync_table_rows(inputs, lines)
+        entry._update_manipulators(inputs, lines)
+        # Only row 0's offset arrows anchor to the canvas when Sync all is on.
+        self.assertEqual(inputs.itemById(entry._row_ids[0]['os']).manipulatorCount, 1)
+        self.assertEqual(inputs.itemById(entry._row_ids[1]['os']).manipulatorCount, 0)
+        # Row 1's cells stay VISIBLE (a table row hides when all its cells are
+        # invisible), but its arrows are disabled so only row 0 shows handles.
+        self.assertTrue(inputs.itemById(entry._row_ids[1]['os']).isVisible)
+        self.assertFalse(inputs.itemById(entry._row_ids[1]['os']).isEnabled)
+
+    def test_unsynced_arrows_anchor_each_row(self):
         _cmd, inputs, tbl = _make_dialog()
         inputs.itemById('sync_all').value = False
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
@@ -310,12 +331,11 @@ class TestPerLineTable(unittest.TestCase):
         entry._update_manipulators(inputs, lines)
         for r in (0, 1):
             self.assertEqual(
-                inputs.itemById(entry._row_ids[r]['rot']).manipulatorCount, 1)
+                inputs.itemById(entry._row_ids[r]['os']).manipulatorCount, 1)
             self.assertTrue(
-                inputs.itemById(entry._row_ids[r]['rot']).isVisible)
-        # Row 1's offset-start arrow anchors to line 1's start (0,0,0) but its
-        # rotation wheel origin equals that line's start point.
-        mo = inputs.itemById(entry._row_ids[1]['rot']).manipulatorOrigin
+                inputs.itemById(entry._row_ids[r]['os']).isVisible)
+        # Row 1's offset-start arrow anchors to line 1's start point (0,0,0).
+        mo = inputs.itemById(entry._row_ids[1]['os']).manipulatorOrigin
         self.assertEqual((round(mo.x, 3), round(mo.y, 3), round(mo.z, 3)),
                          (0.0, 0.0, 0.0))
 
@@ -324,7 +344,7 @@ class TestPerLineTable(unittest.TestCase):
         sel = self._pick(inputs, [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))])
         entry.command_select(_Args(activeInput=sel))
         self.assertEqual(len(entry._row_ids), 1)
-        self.assertEqual(inputs.itemById(entry._row_ids[0]['rot']).manipulatorCount, 1)
+        self.assertEqual(inputs.itemById(entry._row_ids[0]['os']).manipulatorCount, 1)
 
 
 if __name__ == "__main__":
