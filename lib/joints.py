@@ -241,28 +241,79 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None):
                     offs[idx] = (offs[idx][0], offs[idx][1] - sb)
                 else:
                     offs[idx] = (offs[idx][0] + sb, offs[idx][1])
-            elif jid in ('butt', 'cope'):
-                # Trim this member by the neighbour's depth at the end that
-                # touches the corner; the neighbour runs through (untouched).
-                depth = member_depth(geoms[other]) if other < len(geoms) else 0.0
-                trim = depth * MM_TO_CM
-                if role == 'end':
-                    offs[idx] = (offs[idx][0], offs[idx][1] - trim)
-                else:
-                    offs[idx] = (offs[idx][0] + trim, offs[idx][1])
-            elif jid == 'miter':
-                depth = member_depth(geoms[idx]) if idx < len(geoms) else 0.0
-                sb = _miter_setback(depth, phi)
-                if role == 'end':
-                    offs[idx] = (offs[idx][0], offs[idx][1] - sb)
-                else:
-                    offs[idx] = (offs[idx][0] + sb, offs[idx][1])
+            # ``miter``/``butt``/``cope`` are realised by real boolean cuts
+            # (see :func:`corner_cuts`), not an axial trim, so they contribute
+            # no offset here -- the member runs to the vertex and the cut
+            # (angled plane or neighbour-body saddle) shapes its end face.
     return offs
 
 
 def _angle_between(a, b):
     d = max(-1.0, min(1.0, _dot(_norm(a), _norm(b))))
     return math.acos(d)
+
+
+# --------------------------------------------------------------------------- #
+# Real corner cuts (Phase 4): angled miter faces and butt/cope saddles
+# --------------------------------------------------------------------------- #
+def corner_cuts(lines, joint_by_line, tol=_CORNER_TOL):
+    """Plan the geometric cuts that realise ``miter``/``butt``/``cope`` corners.
+
+    Unlike :func:`corner_offsets` (which only shortens a member along its axis),
+    these cuts produce genuinely new end faces.  Returns a list of cut dicts::
+
+        {'member': line_index, 'role': 'start'|'end', 'kind': 'plane'|'body',
+         'point': V, 'normal': n, 'keep': d, 'tool': other_line_index}
+
+    ``kind='plane'`` (miter): split ``member``'s body with a plane through the
+    corner ``point`` whose ``normal`` is the bisector between the two members;
+    keep the half on the ``keep`` side (the member's own outward direction).
+
+    ``kind='body'`` (butt/cope): split ``member``'s body with the *neighbour's*
+    body (``tool``) so the incoming member is saddled to the through-member's
+    surface; keep the half away from the neighbour (``keep``).
+
+    A corner is cut only when the member's joint is ``miter``/``butt``/``cope``
+    and exactly two members meet there; ``none``/``bend`` corners are skipped.
+    """
+    cuts = []
+    for corner in detect_corners(lines, tol):
+        members = corner['members']
+        if len(members) != 2:
+            continue  # a clean two-member corner only
+        V = corner['point']
+        (i0, r0), (i1, r1) = members
+        d0 = line_direction(lines[i0])
+        d1 = line_direction(lines[i1])
+        out0 = d0 if r0 == 'start' else _scale(d0, -1)
+        out1 = d1 if r1 == 'start' else _scale(d1, -1)
+        for k, (idx, role) in enumerate(members):
+            jid = joint_by_line[idx] if idx < len(joint_by_line) else 'none'
+            if jid not in ('miter', 'butt', 'cope'):
+                continue
+            other = members[1 - k][0]
+            own = (out0, out1)[k]
+            neigh = (out1, out0)[k]
+            # A cut only makes sense at a genuine corner: neither a straight
+            # run (outward dirs opposite, phi ~ pi) nor a fold-back (phi ~ 0).
+            phi = _angle_between(own, neigh)
+            if phi <= 1e-6 or phi >= math.pi - 1e-6:
+                continue
+            if jid == 'miter':
+                # Bisector plane; normal points from the neighbour toward this
+                # member's own axis, so the kept half is the member's body.
+                nrm = _norm(_sub(own, neigh))
+                if _dot(nrm, nrm) < 1e-9:
+                    continue  # degenerate: no miter face
+                cuts.append({'member': idx, 'role': role, 'kind': 'plane',
+                             'point': V, 'normal': nrm, 'keep': own,
+                             'tool': other})
+            else:
+                # butt/cope: saddle against the neighbour's body.
+                cuts.append({'member': idx, 'role': role, 'kind': 'body',
+                             'point': V, 'normal': _scale(own, -1),
+                             'keep': own, 'tool': other})
+    return cuts
 
 
 # --------------------------------------------------------------------------- #

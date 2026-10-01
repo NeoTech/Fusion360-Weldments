@@ -99,20 +99,14 @@ class TestMemberDepth(unittest.TestCase):
 
 
 class TestButtJoint(unittest.TestCase):
-    def test_incoming_trimmed_by_through_depth(self):
-        # Line 0 runs *through* the corner (joint 'none', starts at corner, +X).
-        # Line 1 butts into it (joint 'butt', ends at corner) -> trimmed by line
-        # 0's depth (100 mm = 10 cm).  This is the "one beam shorter by the
-        # thickness, the other through" overlap the user described.
+    def test_incoming_no_axial_trim(self):
+        # Butt/cope/miter are realised by real boolean cuts (corner_cuts), not
+        # an axial trim, so corner_offsets contributes nothing for them.
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
                  FakeLine((0, -10, 0), (0, 0, 0))]
         geoms = [_rect(100), _rect(80)]
         offs = jt.corner_offsets(lines, geoms, ['none', 'butt'])
-        # Line 0 runs through -> untouched.
-        self.assertEqual(offs[0], (0.0, 0.0))
-        # Line 1 ends at the corner -> offset_end shortened by 10 cm (neighbour depth).
-        self.assertAlmostEqual(offs[1][0], 0.0)
-        self.assertAlmostEqual(offs[1][1], -10.0)
+        self.assertEqual(offs, [(0.0, 0.0), (0.0, 0.0)])
 
     def test_none_joint_is_noop(self):
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
@@ -130,16 +124,13 @@ class TestButtJoint(unittest.TestCase):
 
 
 class TestMiterJoint(unittest.TestCase):
-    def test_90deg_symmetric_setback(self):
-        # Two members meeting at a right angle, both mitred.  Each pulls back by
-        # (d/2)/tan(45deg) = d/2 (cm after unit conversion).
+    def test_miter_no_axial_trim(self):
+        # A miter is a real angled cut, not a setback trim.
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
                  FakeLine((0, 0, 0), (0, 10, 0))]
         geoms = [_rect(100), _rect(100)]
         offs = jt.corner_offsets(lines, geoms, ['miter', 'miter'])
-        expected = (100 * 0.5) / math.tan(math.pi / 4) * jt.MM_TO_CM  # 5.0 cm
-        self.assertAlmostEqual(offs[0][0], expected)
-        self.assertAlmostEqual(offs[1][0], expected)
+        self.assertEqual(offs, [(0.0, 0.0), (0.0, 0.0)])
 
     def test_miter_zero_when_collinear(self):
         # A straight run (180 deg turn) needs no miter setback.
@@ -149,6 +140,44 @@ class TestMiterJoint(unittest.TestCase):
                                  ['miter', 'miter'])
         self.assertAlmostEqual(offs[0][1], 0.0)
         self.assertAlmostEqual(offs[1][0], 0.0)
+
+
+class TestCornerCuts(unittest.TestCase):
+    def test_miter_right_angle_planes(self):
+        # Two mitred members at a right angle -> one bisector plane per member.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        cuts = jt.corner_cuts(lines, ['miter', 'miter'])
+        self.assertEqual(len(cuts), 2)
+        for c in cuts:
+            self.assertEqual(c['kind'], 'plane')
+            self.assertEqual(c['point'], (0, 0, 0))
+            # Normal is the 45-degree bisector between the two outward dirs.
+            n = c['normal']
+            self.assertAlmostEqual(abs(n[0]), math.sqrt(0.5))
+            self.assertAlmostEqual(abs(n[1]), math.sqrt(0.5))
+
+    def test_butt_is_body_saddle(self):
+        # A butt member is cut by the neighbour's body (saddle), not a plane.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        cuts = jt.corner_cuts(lines, ['none', 'butt'])
+        self.assertEqual(len(cuts), 1)
+        self.assertEqual(cuts[0]['member'], 1)
+        self.assertEqual(cuts[0]['kind'], 'body')
+        self.assertEqual(cuts[0]['tool'], 0)
+
+    def test_none_and_bend_not_cut(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        self.assertEqual(jt.corner_cuts(lines, ['none', 'none']), [])
+        self.assertEqual(jt.corner_cuts(lines, ['bend', 'bend']), [])
+
+    def test_collinear_miter_no_plane(self):
+        # Collinear members: bisector normal is zero -> no sensible cut.
+        lines = [FakeLine((-10, 0, 0), (0, 0, 0)),
+                 FakeLine((0, 0, 0), (10, 0, 0))]
+        self.assertEqual(jt.corner_cuts(lines, ['miter', 'miter']), [])
 
 
 class TestSweptBend(unittest.TestCase):

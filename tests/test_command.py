@@ -425,7 +425,9 @@ class TestJointColumn(unittest.TestCase):
             self.assertEqual(entry._row_joint(inputs, r), 'miter')
 
     def test_joint_offsets_applied_to_line(self):
-        # An L-frame; row 1 butts into row 0 -> row 1's end offset is negative.
+        # Phase 4: butt/miter/cope no longer trim axially -- they are realised
+        # by real boolean cuts (corner_cuts).  An L-frame whose row 1 butts into
+        # row 0 therefore yields zero axial offsets but a body-saddle cut.
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'SHS')
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
@@ -438,7 +440,14 @@ class TestJointColumn(unittest.TestCase):
         geom = prof.section_geometry(prof.designations(family)[0])
         offs = entry._joint_offsets(inputs, lines, geom)
         self.assertEqual(offs[0], (0.0, 0.0))          # runs through
-        self.assertLess(offs[1][1], 0.0)               # incoming member trimmed
+        self.assertEqual(offs[1], (0.0, 0.0))          # no axial trim any more
+        # The cut is planned instead: member 1 saddles against member 0's body.
+        joints = [entry._row_joint(inputs, r) for r in range(len(lines))]
+        cuts = jt.corner_cuts(lines, joints)
+        self.assertEqual(len(cuts), 1)
+        self.assertEqual(cuts[0]['member'], 1)
+        self.assertEqual(cuts[0]['kind'], 'body')
+        self.assertEqual(cuts[0]['tool'], 0)
 
 
 class TestBendBuild(unittest.TestCase):
