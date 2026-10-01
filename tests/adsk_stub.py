@@ -198,7 +198,7 @@ class FakePath:
 
 class FakeCPInput:
     def setByPath(self, path, dist_type, dist):
-        _record("ConstructionPlaneInput.setByPath", dist_type)
+        _record("ConstructionPlaneInput.setByPath", dist_type, dist)
         return True
 
 

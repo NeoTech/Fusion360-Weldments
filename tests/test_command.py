@@ -110,10 +110,28 @@ class TestBuildWeldment(unittest.TestCase):
         sp = [c for c in adsk_stub.CALLS if c[0] == "ConstructionPlaneInput.setByPath"]
         self.assertEqual(len(sp), 1)
         fusion = adsk_stub.sys.modules["adsk.fusion"]
-        self.assertEqual(sp[0][1][0], fusion.PathDistanceTypes.ProportionalPathDistanceType)
-        # The one plane is at the start of the path (proportional 0.0).
+        # The plane is placed by an absolute (physical) distance along the path
+        # so the signed Offset Start can move it before/after the line start.
+        self.assertEqual(sp[0][1][0], fusion.PathDistanceTypes.PhysicalPathDistanceType)
+        # With no offset the plane sits at the start of the path (distance 0.0).
         real = [c[1][0] for c in adsk_stub.CALLS if c[0] == "ValueInput.createByReal"]
         self.assertIn(0.0, real)
+
+    def test_offset_start_moves_plane(self):
+        # A positive Offset Start places the plane that far along the line.
+        line = adsk_stub.FakeLine(start=(0, 0, 0), end=(10, 0, 0))
+        entry._build_weldment(self.root, line, self.geom, "IPE 80",
+                              offset_start=2.0)
+        sp = [c for c in adsk_stub.CALLS if c[0] == "ConstructionPlaneInput.setByPath"]
+        self.assertAlmostEqual(sp[0][1][1].value, 2.0)
+
+    def test_offsets_adjust_extrude_length(self):
+        # length 5, offset_start 1, offset_end -2 -> extrude 5 + (-2) - 1 = 2.
+        line = adsk_stub.FakeLine(start=(0, 0, 0), end=(5, 0, 0))
+        entry._build_weldment(self.root, line, self.geom, "IPE 80",
+                              offset_start=1.0, offset_end=-2.0)
+        de = [c for c in adsk_stub.CALLS if c[0] == "DistanceExtentDefinition.create"]
+        self.assertAlmostEqual(de[0][1][0].value, 2.0)
 
     def test_extrude_distance_equals_line_length(self):
         line = adsk_stub.FakeLine(start=(0, 0, 0), end=(3, 4, 0))  # length 5

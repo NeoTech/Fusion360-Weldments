@@ -121,6 +121,18 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     ang.hasMaximumValue = False
     ang.isVisible = False
 
+    # 5. Signed offsets along the line.  Both default to 0 = the full line
+    #    length.  Offset Start moves where the profile is created from (positive
+    #    trims into the line, negative extends before its start); Offset End
+    #    moves the far end the same way.  Hidden until a line is picked -- with
+    #    no anchor Fusion would draw their arrows at the default origin (0,0,0).
+    ofs: adsk.core.DistanceValueCommandInput = inputs.addDistanceValueCommandInput(
+        'offset_start', 'Offset Start', adsk.core.ValueInput.createByString('0 mm'))
+    ofe: adsk.core.DistanceValueCommandInput = inputs.addDistanceValueCommandInput(
+        'offset_end', 'Offset End', adsk.core.ValueInput.createByString('0 mm'))
+    ofs.isVisible = False
+    ofe.isVisible = False
+
     _rebuild_designations(inputs)
 
     futil.add_handler(args.command.execute, command_execute, local_handlers=local_handlers)
@@ -163,9 +175,11 @@ def _rebuild_designations(inputs):
 # Events
 # --------------------------------------------------------------------------- #
 def _resolve(inputs):
-    """Resolve the current dialog inputs to (root, selection, geom, label, angle).
+    """Resolve the current dialog inputs to
+    (root, selection, geom, label, angle, offset_start, offset_end).
 
     ``angle`` is the profile rotation (radians) about the selected line.
+    ``offset_start``/``offset_end`` are signed distances (cm) along the line.
     Returns None when the designation is not (yet) valid.
     """
     family = _selected_family(inputs)
@@ -182,8 +196,13 @@ def _resolve(inputs):
     sel: adsk.core.SelectionCommandInput = inputs.itemById('path')
     ang: adsk.core.AngleValueCommandInput = inputs.itemById('rotation')
     angle_rad = ang.value if ang else 0.0
+    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_start')
+    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_end')
+    offset_start = ofs.value if ofs else 0.0
+    offset_end = ofe.value if ofe else 0.0
     design = adsk.fusion.Design.cast(app.activeProduct)
-    return design.rootComponent, sel, geom, designation['designation'], angle_rad
+    return (design.rootComponent, sel, geom, designation['designation'],
+            angle_rad, offset_start, offset_end)
 
 
 def _clear_preview():
@@ -235,19 +254,55 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 
 
 def command_select(args: adsk.core.SelectionEventArgs):
-    """Anchor the rotation wheel the instant a line is picked.
+    """Anchor the manipulators the instant a line is picked.
 
     This fires on the actual click -- before the preview redraw -- so the
-    manipulator is already positioned on the selected line when it first
-    appears.  Anchoring inside executePreview is too late: setManipulator only
-    takes effect on the following redraw, so the wheel would briefly show at
-    its default origin (0,0,0), which is the sketch's first point.
+    rotation wheel and the offset arrows are already positioned on the selected
+    line when they first appear.  Anchoring inside executePreview is too late:
+    setManipulator only takes effect on the following redraw, so they would
+    briefly show at their default origin (0,0,0), i.e. the sketch's first point.
     """
     sel = args.activeInput
     if sel is None or sel.id != 'path':
         return
     lines = [sel.selection(i).entity for i in range(sel.selectionCount)]
-    _update_rotation_manipulator(sel.parentCommand.commandInputs, lines)
+    inputs = sel.parentCommand.commandInputs
+    _update_rotation_manipulator(inputs, lines)
+    _update_offset_manipulators(inputs, lines)
+
+
+def _update_offset_manipulators(inputs, lines):
+    """Anchor the Offset Start / End arrows to the selected line's endpoints.
+
+    Offset Start sits at the line's start point and Offset End at its end point,
+    both pointing along the line direction, so dragging an arrow moves that end
+    of the profile in/out exactly as the numeric offset does.  Without this,
+    Fusion draws them at the default origin (0,0,0) -- the wrong vertex.
+    """
+    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_start')
+    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_end')
+    if ofs is None or ofe is None:
+        return
+    if not lines:
+        ofs.isVisible = False
+        ofe.isVisible = False
+        return
+    try:
+        world = lines[0].worldGeometry
+        start = world.startPoint
+        end = world.endPoint
+        direction = (end.x - start.x, end.y - start.y, end.z - start.z)
+        dir_vec = adsk.core.Vector3D.create(*prof._norm(direction))
+        ofs.setManipulator(
+            adsk.core.Point3D.create(start.x, start.y, start.z), dir_vec)
+        ofe.setManipulator(
+            adsk.core.Point3D.create(end.x, end.y, end.z), dir_vec)
+        ofs.isVisible = True
+        ofs.isEnabled = True
+        ofe.isVisible = True
+        ofe.isEnabled = True
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} offset manipulators')
 
 
 def _update_rotation_manipulator(inputs, lines):
@@ -294,14 +349,16 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     saved = _snapshot_selection(sel)
     _clear_preview()
     _update_rotation_manipulator(inputs, saved)
+    _update_offset_manipulators(inputs, saved)
     resolved = _resolve(inputs)
     if not resolved:
         _restore_selection(sel, saved)
         return
-    root, _sel, geom, label, angle = resolved
+    root, _sel, geom, label, angle, off_s, off_e = resolved
     ref = _selection_reference(saved)
     for line in saved:
-        objs = _build_weldment(root, line, geom, label, angle, ref, preview=True)
+        objs = _build_weldment(root, line, geom, label, angle, ref, off_s, off_e,
+                               preview=True)
         if objs:
             _preview_objs.append(objs)
     # Make sure the user's lines are still highlighted after the churn.
@@ -322,12 +379,12 @@ def command_execute(args: adsk.core.CommandEventArgs):
     resolved = _resolve(inputs)
     if not resolved:
         return
-    root, _sel, geom, label, angle = resolved
+    root, _sel, geom, label, angle, off_s, off_e = resolved
     ref = _selection_reference(saved)
 
     created = 0
     for line in saved:
-        if _build_weldment(root, line, geom, label, angle, ref):
+        if _build_weldment(root, line, geom, label, angle, ref, off_s, off_e):
             created += 1
 
     if created == 0:
@@ -361,13 +418,17 @@ def _selection_reference(lines):
 
 
 def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
-                    ref=None, preview=False):
+                    ref=None, offset_start=0.0, offset_end=0.0, preview=False):
     """Build one weldment body along ``line`` using cross-section ``geom``.
 
     ``angle_rad`` rotates the profile about the selected line (its own axis),
     turning it around its centre point without tilting about any other axis.
     ``ref`` is the shared "up" reference for the selection so that profiles on
     differently-oriented lines stay rolled consistently and their ends align.
+    ``offset_start``/``offset_end`` are signed distances (cm) along the line:
+    the profile is created ``offset_start`` from the line's start and the body
+    extends to ``line.length + offset_end`` from that same start, so both 0
+    gives the full line length.
 
     Returns ``(feature, sketch, plane)`` on success, or ``None`` on failure.
     When ``preview`` is True the resulting body is ghosted (semi-transparent)
@@ -379,13 +440,14 @@ def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
         end_pt = world.endPoint
         direction = (end_pt.x - start_pt.x, end_pt.y - start_pt.y, end_pt.z - start_pt.z)
 
-        # Construction plane normal to the line at its start, chaining OFF.
+        # Construction plane normal to the line, placed offset_start along it
+        # (physical distance, so negative extends before the line's start).
         path = adsk.fusion.Path.create(
             line, adsk.fusion.ChainedCurveOptions.noChainedCurves)
         cp_input = root.constructionPlanes.createInput()
         cp_input.setByPath(
-            path, adsk.fusion.PathDistanceTypes.ProportionalPathDistanceType,
-            adsk.core.ValueInput.createByReal(0.0))
+            path, adsk.fusion.PathDistanceTypes.PhysicalPathDistanceType,
+            adsk.core.ValueInput.createByReal(offset_start))
         plane = root.constructionPlanes.add(cp_input)
 
         origin = plane.geometry.origin
@@ -408,11 +470,12 @@ def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
             sketch.profiles.item(0),
             adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
         extrude_input.startExtent = adsk.fusion.ProfilePlaneStartDefinition.create()
-        # Extrude exactly the line's length along the plane normal (which is the
-        # line direction), so the body ends on the line's far point.
+        # Extrude along the plane normal (= line direction) from the offset
+        # start point to the offset end point: length + offset_end - offset_start.
         extrude_input.setOneSideExtent(
             adsk.fusion.DistanceExtentDefinition.create(
-                adsk.core.ValueInput.createByReal(line.length)),
+                adsk.core.ValueInput.createByReal(
+                    line.length + offset_end - offset_start)),
             adsk.fusion.ExtentDirections.PositiveExtentDirection)
         feature = root.features.extrudeFeatures.add(extrude_input)
 
