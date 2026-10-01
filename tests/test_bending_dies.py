@@ -90,23 +90,58 @@ class TestMatching(unittest.TestCase):
 
 
 class TestAgainstProfiles(unittest.TestCase):
-    """Every bendable family in the shipped catalogue resolves to a die."""
+    """Bendable families resolve to a die wherever the catalogue covers them.
+
+    The shipped die catalogue only spans a limited OD/size window (e.g. the
+    smallest CHS die starts at OD 21.3 mm), while the profile catalogue lists
+    many small tubes below that.  So we assert only the designations that fall
+    inside some die's compatible range resolve -- a designation outside every
+    die's coverage is expected to have no die.
+    """
 
     def setUp(self):
         self.cat = bd.load_bending_dies()
         self.families = {f["abbreviation"]: f for f in prof.load_profiles()}
 
+    def _size_covered(self, family, des):
+        """True when some die in ``family`` covers ``des`` on size and wall.
+
+        Mirrors :func:`lib.bending_dies.die_for_designation`'s gates so we only
+        assert resolution for designations the tooling is dimensionally meant to
+        cover (the shipped catalogue spans a limited OD/size and wall window).
+        """
+        od, w, h = bd._designation_size(des)
+        wall = des.get("t_mm")
+        for die in bd.dies_for_family(self.cat, family):
+            if not bd._in_range(wall, die.get("wall_thickness_range_mm")):
+                continue
+            if die.get("groove_profile_type") == "round":
+                if bd._in_range(od, die.get("compatible_OD_mm")):
+                    return True
+            elif (bd._in_range(w, die.get("compatible_width_mm")) and
+                    bd._in_range(h, die.get("compatible_height_mm"))):
+                return True
+        return False
+
     def test_chs_designations_resolve(self):
         fam = self.families["CHS"]
-        for d in prof.designations(fam)[:5]:
-            self.assertIsNotNone(
-                bd.die_for_designation(self.cat, d, "CHS"), d["designation"])
+        checked = 0
+        for d in prof.designations(fam):
+            if self._size_covered("CHS", d):
+                self.assertIsNotNone(
+                    bd.die_for_designation(self.cat, d, "CHS"), d["designation"])
+                checked += 1
+        self.assertGreater(checked, 0, "no CHS designation fell inside die coverage")
 
     def test_shs_designations_resolve(self):
         fam = self.families["SHS"]
-        for d in prof.designations(fam)[:5]:
-            self.assertIsNotNone(
-                bd.die_for_designation(self.cat, d, "SHS"), d["designation"])
+        checked = 0
+        for d in prof.designations(fam):
+            if self._size_covered("SHS", d):
+                self.assertIsNotNone(
+                    bd.die_for_designation(self.cat, d, "SHS"), d["designation"])
+                checked += 1
+        self.assertGreater(checked, 0, "no SHS designation fell inside die coverage")
 
 
 if __name__ == "__main__":

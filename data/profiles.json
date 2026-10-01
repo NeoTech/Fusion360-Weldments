@@ -828,6 +828,182 @@
     ],
     "standard_designations": [
       {
+        "designation": "10x10x1.0",
+        "h_mm": 10,
+        "b_mm": 10,
+        "t_mm": 1.0,
+        "r_mm": 3.0,
+        "mass_kg_m": 0.28
+      },
+      {
+        "designation": "12x12x1.0",
+        "h_mm": 12,
+        "b_mm": 12,
+        "t_mm": 1.0,
+        "r_mm": 3.0,
+        "mass_kg_m": 0.34
+      },
+      {
+        "designation": "12x12x1.5",
+        "h_mm": 12,
+        "b_mm": 12,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.48
+      },
+      {
+        "designation": "15x15x1.0",
+        "h_mm": 15,
+        "b_mm": 15,
+        "t_mm": 1.0,
+        "r_mm": 3.0,
+        "mass_kg_m": 0.44
+      },
+      {
+        "designation": "15x15x1.5",
+        "h_mm": 15,
+        "b_mm": 15,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.60
+      },
+      {
+        "designation": "15x15x2.0",
+        "h_mm": 15,
+        "b_mm": 15,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 0.77
+      },
+      {
+        "designation": "18x18x1.5",
+        "h_mm": 18,
+        "b_mm": 18,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.74
+      },
+      {
+        "designation": "20x20x1.0",
+        "h_mm": 20,
+        "b_mm": 20,
+        "t_mm": 1.0,
+        "r_mm": 3.0,
+        "mass_kg_m": 0.59
+      },
+      {
+        "designation": "20x20x1.5",
+        "h_mm": 20,
+        "b_mm": 20,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.84
+      },
+      {
+        "designation": "20x20x2.0",
+        "h_mm": 20,
+        "b_mm": 20,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.08
+      },
+      {
+        "designation": "25x25x1.2",
+        "h_mm": 25,
+        "b_mm": 25,
+        "t_mm": 1.2,
+        "r_mm": 3.6,
+        "mass_kg_m": 0.88
+      },
+      {
+        "designation": "25x25x1.5",
+        "h_mm": 25,
+        "b_mm": 25,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.07
+      },
+      {
+        "designation": "25x25x2.0",
+        "h_mm": 25,
+        "b_mm": 25,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.40
+      },
+      {
+        "designation": "25x25x2.5",
+        "h_mm": 25,
+        "b_mm": 25,
+        "t_mm": 2.5,
+        "r_mm": 7.5,
+        "mass_kg_m": 1.69
+      },
+      {
+        "designation": "30x30x1.5",
+        "h_mm": 30,
+        "b_mm": 30,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.31
+      },
+      {
+        "designation": "30x30x2.0",
+        "h_mm": 30,
+        "b_mm": 30,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.71
+      },
+      {
+        "designation": "30x30x2.5",
+        "h_mm": 30,
+        "b_mm": 30,
+        "t_mm": 2.5,
+        "r_mm": 7.5,
+        "mass_kg_m": 2.08
+      },
+      {
+        "designation": "30x30x3.0",
+        "h_mm": 30,
+        "b_mm": 30,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 2.42
+      },
+      {
+        "designation": "35x35x1.5",
+        "h_mm": 35,
+        "b_mm": 35,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.54
+      },
+      {
+        "designation": "35x35x2.0",
+        "h_mm": 35,
+        "b_mm": 35,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 2.03
+      },
+      {
+        "designation": "35x35x2.5",
+        "h_mm": 35,
+        "b_mm": 35,
+        "t_mm": 2.5,
+        "r_mm": 7.5,
+        "mass_kg_m": 2.47
+      },
+      {
+        "designation": "35x35x3.0",
+        "h_mm": 35,
+        "b_mm": 35,
+        "t_mm": 3.0,
+        "r_mm": 9.0,
+        "mass_kg_m": 2.89
+      },
+      {
         "designation": "40x40x2.0",
         "h_mm": 40,
         "b_mm": 40,
@@ -1101,6 +1277,262 @@
       "bend"
     ],
     "standard_designations": [
+    {
+        "designation": "15x10x1.0",
+        "h_mm": 15,
+        "b_mm": 10,
+        "t_mm": 1.0,
+        "r_mm": 3.0,
+        "mass_kg_m": 0.34
+      },
+      {
+        "designation": "15x10x1.5",
+        "h_mm": 15,
+        "b_mm": 10,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.48
+      },
+      {
+        "designation": "20x10x1.0",
+        "h_mm": 20,
+        "b_mm": 10,
+        "t_mm": 1.0,
+        "r_mm": 3.0,
+        "mass_kg_m": 0.42
+      },
+      {
+        "designation": "20x10x1.5",
+        "h_mm": 20,
+        "b_mm": 10,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.60
+      },
+      {
+        "designation": "20x15x1.5",
+        "h_mm": 20,
+        "b_mm": 15,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.72
+      },
+      {
+        "designation": "25x15x1.5",
+        "h_mm": 25,
+        "b_mm": 15,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.84
+      },
+      {
+        "designation": "25x15x2.0",
+        "h_mm": 25,
+        "b_mm": 15,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.08
+      },
+      {
+        "designation": "30x10x1.5",
+        "h_mm": 30,
+        "b_mm": 10,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.84
+      },
+      {
+        "designation": "30x15x1.5",
+        "h_mm": 30,
+        "b_mm": 15,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 0.95
+      },
+      {
+        "designation": "30x15x2.0",
+        "h_mm": 30,
+        "b_mm": 15,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.24
+      },
+      {
+        "designation": "30x20x1.5",
+        "h_mm": 30,
+        "b_mm": 20,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.07
+      },
+      {
+        "designation": "30x20x2.0",
+        "h_mm": 30,
+        "b_mm": 20,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.40
+      },
+      {
+        "designation": "30x20x2.5",
+        "h_mm": 30,
+        "b_mm": 20,
+        "t_mm": 2.5,
+        "r_mm": 7.5,
+        "mass_kg_m": 1.64
+      },
+      {
+        "designation": "35x20x1.5",
+        "h_mm": 35,
+        "b_mm": 20,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.19
+      },
+      {
+        "designation": "35x20x2.0",
+        "h_mm": 35,
+        "b_mm": 20,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.56
+      },
+      {
+        "designation": "40x15x1.5",
+        "h_mm": 40,
+        "b_mm": 15,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.19
+      },
+      {
+        "designation": "40x15x2.0",
+        "h_mm": 40,
+        "b_mm": 15,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.56
+      },
+      {
+        "designation": "40x20x1.5",
+        "h_mm": 40,
+        "b_mm": 20,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.31
+      },
+      {
+        "designation": "40x20x2.0",
+        "h_mm": 40,
+        "b_mm": 20,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.71
+      },
+      {
+        "designation": "40x20x2.5",
+        "h_mm": 40,
+        "b_mm": 20,
+        "t_mm": 2.5,
+        "r_mm": 7.5,
+        "mass_kg_m": 2.03
+      },
+      {
+        "designation": "40x27x1.5",
+        "h_mm": 40,
+        "b_mm": 27,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.47
+      },
+      {
+        "designation": "40x27x2.0",
+        "h_mm": 40,
+        "b_mm": 27,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 1.93
+      },
+      {
+        "designation": "40x30x1.5",
+        "h_mm": 40,
+        "b_mm": 30,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.54
+      },
+      {
+        "designation": "40x30x2.0",
+        "h_mm": 40,
+        "b_mm": 30,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 2.03
+      },
+      {
+        "designation": "40x30x2.5",
+        "h_mm": 40,
+        "b_mm": 30,
+        "t_mm": 2.5,
+        "r_mm": 7.5,
+        "mass_kg_m": 2.42
+      },
+      {
+        "designation": "50x20x1.5",
+        "h_mm": 50,
+        "b_mm": 20,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.54
+      },
+      {
+        "designation": "50x20x2.0",
+        "h_mm": 50,
+        "b_mm": 20,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 2.03
+      },
+      {
+        "designation": "50x25x1.5",
+        "h_mm": 50,
+        "b_mm": 25,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.66
+      },
+      {
+        "designation": "50x25x2.0",
+        "h_mm": 50,
+        "b_mm": 25,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 2.18
+      },
+      {
+        "designation": "50x25x2.5",
+        "h_mm": 50,
+        "b_mm": 25,
+        "t_mm": 2.5,
+        "r_mm": 7.5,
+        "mass_kg_m": 2.62
+      },
+      {
+        "designation": "50x30x1.5",
+        "h_mm": 50,
+        "b_mm": 30,
+        "t_mm": 1.5,
+        "r_mm": 4.5,
+        "mass_kg_m": 1.80
+      },
+      {
+        "designation": "50x30x2.0",
+        "h_mm": 50,
+        "b_mm": 30,
+        "t_mm": 2.0,
+        "r_mm": 6.0,
+        "mass_kg_m": 2.38
+      },
       {
         "designation": "50x30x2.0",
         "h_mm": 50,
@@ -1429,6 +1861,462 @@
       "bend"
     ],
     "standard_designations": [
+      {
+        "designation": "10x1",
+        "od_mm": 10.0,
+        "t_mm": 1.0,
+        "mass_kg_m": 0.222
+      },
+      {
+        "designation": "10x1.5",
+        "od_mm": 10.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.314
+      },
+      {
+        "designation": "10x2",
+        "od_mm": 10.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.395
+      },
+      {
+        "designation": "12x1",
+        "od_mm": 12.0,
+        "t_mm": 1.0,
+        "mass_kg_m": 0.271
+      },
+      {
+        "designation": "12x1.5",
+        "od_mm": 12.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.388
+      },
+      {
+        "designation": "12x2",
+        "od_mm": 12.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.493
+      },
+      {
+        "designation": "13.5x1.5",
+        "od_mm": 13.5,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.444
+      },
+      {
+        "designation": "13.5x2",
+        "od_mm": 13.5,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.567
+      },
+      {
+        "designation": "13.5x2.3",
+        "od_mm": 13.5,
+        "t_mm": 2.3,
+        "mass_kg_m": 0.635
+      },
+      {
+        "designation": "15x1",
+        "od_mm": 15.0,
+        "t_mm": 1.0,
+        "mass_kg_m": 0.345
+      },
+      {
+        "designation": "15x1.5",
+        "od_mm": 15.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.499
+      },
+      {
+        "designation": "15x2",
+        "od_mm": 15.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.641
+      },
+      {
+        "designation": "16x1",
+        "od_mm": 16.0,
+        "t_mm": 1.0,
+        "mass_kg_m": 0.370
+      },
+      {
+        "designation": "16x1.5",
+        "od_mm": 16.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.536
+      },
+      {
+        "designation": "16x2",
+        "od_mm": 16.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.691
+      },
+      {
+        "designation": "17.2x1.5",
+        "od_mm": 17.2,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.581
+      },
+      {
+        "designation": "17.2x2",
+        "od_mm": 17.2,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.750
+      },
+      {
+        "designation": "17.2x2.3",
+        "od_mm": 17.2,
+        "t_mm": 2.3,
+        "mass_kg_m": 0.845
+      },
+      {
+        "designation": "18x1",
+        "od_mm": 18.0,
+        "t_mm": 1.0,
+        "mass_kg_m": 0.419
+      },
+      {
+        "designation": "18x1.5",
+        "od_mm": 18.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.610
+      },
+      {
+        "designation": "18x2",
+        "od_mm": 18.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.789
+      },
+      {
+        "designation": "20x1",
+        "od_mm": 20.0,
+        "t_mm": 1.0,
+        "mass_kg_m": 0.469
+      },
+      {
+        "designation": "20x1.5",
+        "od_mm": 20.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.684
+      },
+      {
+        "designation": "20x2",
+        "od_mm": 20.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.888
+      },
+      {
+        "designation": "20x2.5",
+        "od_mm": 20.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 1.08
+      },
+      {
+        "designation": "21.3x1.5",
+        "od_mm": 21.3,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.732
+      },
+      {
+        "designation": "21.3x2",
+        "od_mm": 21.3,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.952
+      },
+      {
+        "designation": "21.3x2.3",
+        "od_mm": 21.3,
+        "t_mm": 2.3,
+        "mass_kg_m": 1.08
+      },
+      {
+        "designation": "21.3x2.6",
+        "od_mm": 21.3,
+        "t_mm": 2.6,
+        "mass_kg_m": 1.20
+      },
+      {
+        "designation": "21.3x3.2",
+        "od_mm": 21.3,
+        "t_mm": 3.2,
+        "mass_kg_m": 1.43
+      },
+      {
+        "designation": "22x1",
+        "od_mm": 22.0,
+        "t_mm": 1.0,
+        "mass_kg_m": 0.518
+      },
+      {
+        "designation": "22x1.5",
+        "od_mm": 22.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.758
+      },
+      {
+        "designation": "22x2",
+        "od_mm": 22.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 0.986
+      },
+      {
+        "designation": "25x1.2",
+        "od_mm": 25.0,
+        "t_mm": 1.2,
+        "mass_kg_m": 0.704
+      },
+      {
+        "designation": "25x1.5",
+        "od_mm": 25.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.869
+      },
+      {
+        "designation": "25x2",
+        "od_mm": 25.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.13
+      },
+      {
+        "designation": "25x2.5",
+        "od_mm": 25.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 1.39
+      },
+      {
+        "designation": "26.9x1.5",
+        "od_mm": 26.9,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.939
+      },
+      {
+        "designation": "26.9x2",
+        "od_mm": 26.9,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.23
+      },
+      {
+        "designation": "26.9x2.3",
+        "od_mm": 26.9,
+        "t_mm": 2.3,
+        "mass_kg_m": 1.40
+      },
+      {
+        "designation": "26.9x2.6",
+        "od_mm": 26.9,
+        "t_mm": 2.6,
+        "mass_kg_m": 1.56
+      },
+      {
+        "designation": "26.9x3.2",
+        "od_mm": 26.9,
+        "t_mm": 3.2,
+        "mass_kg_m": 1.87
+      },
+      {
+        "designation": "28x1.5",
+        "od_mm": 28.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 0.980
+      },
+      {
+        "designation": "28x2",
+        "od_mm": 28.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.28
+      },
+      {
+        "designation": "28x2.5",
+        "od_mm": 28.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 1.57
+      },
+      {
+        "designation": "30x1.5",
+        "od_mm": 30.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 1.05
+      },
+      {
+        "designation": "30x2",
+        "od_mm": 30.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.38
+      },
+      {
+        "designation": "30x2.5",
+        "od_mm": 30.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 1.69
+      },
+      {
+        "designation": "30x3",
+        "od_mm": 30.0,
+        "t_mm": 3.0,
+        "mass_kg_m": 2.00
+      },
+      {
+        "designation": "32x1.5",
+        "od_mm": 32.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 1.13
+      },
+      {
+        "designation": "32x2",
+        "od_mm": 32.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.48
+      },
+      {
+        "designation": "32x2.5",
+        "od_mm": 32.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 1.82
+      },
+      {
+        "designation": "32x3",
+        "od_mm": 32.0,
+        "t_mm": 3.0,
+        "mass_kg_m": 2.15
+      },
+      {
+        "designation": "33.7x2",
+        "od_mm": 33.7,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.56
+      },
+      {
+        "designation": "33.7x2.3",
+        "od_mm": 33.7,
+        "t_mm": 2.3,
+        "mass_kg_m": 1.78
+      },
+      {
+        "designation": "33.7x2.6",
+        "od_mm": 33.7,
+        "t_mm": 2.6,
+        "mass_kg_m": 1.99
+      },
+      {
+        "designation": "33.7x3.2",
+        "od_mm": 33.7,
+        "t_mm": 3.2,
+        "mass_kg_m": 2.41
+      },
+      {
+        "designation": "33.7x4",
+        "od_mm": 33.7,
+        "t_mm": 4.0,
+        "mass_kg_m": 2.93
+      },
+      {
+        "designation": "35x1.5",
+        "od_mm": 35.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 1.24
+      },
+      {
+        "designation": "35x2",
+        "od_mm": 35.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.63
+      },
+      {
+        "designation": "35x2.5",
+        "od_mm": 35.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 2.00
+      },
+      {
+        "designation": "35x3",
+        "od_mm": 35.0,
+        "t_mm": 3.0,
+        "mass_kg_m": 2.37
+      },
+      {
+        "designation": "38x1.5",
+        "od_mm": 38.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 1.35
+      },
+      {
+        "designation": "38x2",
+        "od_mm": 38.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.78
+      },
+      {
+        "designation": "38x2.5",
+        "od_mm": 38.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 2.19
+      },
+      {
+        "designation": "38x3",
+        "od_mm": 38.0,
+        "t_mm": 3.0,
+        "mass_kg_m": 2.59
+      },
+      {
+        "designation": "40x1.5",
+        "od_mm": 40.0,
+        "t_mm": 1.5,
+        "mass_kg_m": 1.42
+      },
+      {
+        "designation": "40x2",
+        "od_mm": 40.0,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.87
+      },
+      {
+        "designation": "40x2.5",
+        "od_mm": 40.0,
+        "t_mm": 2.5,
+        "mass_kg_m": 2.31
+      },
+      {
+        "designation": "40x3",
+        "od_mm": 40.0,
+        "t_mm": 3.0,
+        "mass_kg_m": 2.74
+      },
+      {
+        "designation": "40x4",
+        "od_mm": 40.0,
+        "t_mm": 4.0,
+        "mass_kg_m": 3.55
+      },
+      {
+        "designation": "42.4x2",
+        "od_mm": 42.4,
+        "t_mm": 2.0,
+        "mass_kg_m": 1.99
+      },
+      {
+        "designation": "42.4x2.3",
+        "od_mm": 42.4,
+        "t_mm": 2.3,
+        "mass_kg_m": 2.27
+      },
+      {
+        "designation": "42.4x2.6",
+        "od_mm": 42.4,
+        "t_mm": 2.6,
+        "mass_kg_m": 2.55
+      },
+      {
+        "designation": "42.4x3.2",
+        "od_mm": 42.4,
+        "t_mm": 3.2,
+        "mass_kg_m": 3.09
+      },
+      {
+        "designation": "42.4x4",
+        "od_mm": 42.4,
+        "t_mm": 4.0,
+        "mass_kg_m": 3.79
+      },
       {
         "designation": "42.4x2.6",
         "od_mm": 42.4,

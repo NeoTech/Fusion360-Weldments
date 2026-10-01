@@ -322,6 +322,41 @@ def _is_hollow(geom):
     return False
 
 
+def _wall_cm(geom):
+    """Wall thickness (cm) of a hollow section, or None when not determinable.
+
+    A hollow tool (round CHS or square SHS/RHS tube) is saddled by running the
+    member to just PAST the near wall (``half + wall``) so the boolean carves a
+    saddle that removes the wall it overlaps -- stopping at the near face would
+    leave the tube's wall poking through the member (the "no saddle" symptom),
+    and running to the far face would leave a plug floating in the void.  The
+    wall is the gap between the outer and inner outlines: the second radius for
+    a circle, the inner-loop inset for a polygon.
+    """
+    if geom is None:
+        return None
+    kind = geom.get('kind')
+    if kind == 'circles':
+        radii = geom.get('radii') or []
+        if len(radii) > 1:
+            return (radii[0] - radii[1]) * MM_TO_CM
+        return None
+    if kind == 'polygons':
+        loops = geom.get('loops') or []
+        if len(loops) > 1:
+            outer, inner = loops[0], loops[1]
+            if outer and inner:
+                # Half the difference of the two bounding half-widths (the wall).
+                wo = max(abs(p[0]) for p in outer)
+                wi = max(abs(p[0]) for p in inner)
+                ho = max(abs(p[1]) for p in outer)
+                hi = max(abs(p[1]) for p in inner)
+                wall = min(wo - wi, ho - hi)
+                return max(wall, 0.0) * MM_TO_CM
+        return None
+    return None
+
+
 def _butt_through(members, joint_by_line, through_by_line):
     """Index of the member that runs THROUGH at a butt corner (or None).
 
@@ -438,17 +473,27 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                 trim = _half_extent_cm(g_t, b_t, dirs[o_k]) / sinp
                 # The incoming member's extent along the through member's axis.
                 grow = _half_extent_cm(g_o, b_o, dirs[t_k]) / sinp
-                # A saddle runs the backing-off member to the FAR face (extend,
-                # +trim) so the boolean has material to carve -- but only against
-                # a SOLID tool; a hollow one would leave a plug floating in the
-                # void, so it stays at the NEAR face (-trim, a flush butt).  A
-                # plain (unsaddled) butt always retracts to the near face.
+                # How far the backing-off member's tip reaches along its axis
+                # (positive = past the vertex into the tool):
+                #   plain butt        -> near face  (-half): a flat square end.
+                #   saddle, solid     -> far face   (+half): the boolean carves
+                #                                        the whole cross-section.
+                #   saddle, hollow    -> just past the near wall (-half + wall):
+                #                        the boolean carves a saddle through the
+                #                        wall.  Stopping at the near face leaves
+                #                        the wall poking through (the "no saddle"
+                #                        symptom); the far face leaves a plug.
                 saddled = flag_at(saddle_by_line, O, orole)
-                sgn = (1.0 if (saddled and not _is_hollow(g_t)) else -1.0)
-                if orole == 'end':
-                    offs[O] = (offs[O][0], offs[O][1] + sgn * trim)
+                if not saddled:
+                    reach = -trim
+                elif _is_hollow(g_t):
+                    reach = -trim + (_wall_cm(g_t) or 0.0)
                 else:
-                    offs[O] = (offs[O][0] - sgn * trim, offs[O][1])
+                    reach = trim
+                if orole == 'end':
+                    offs[O] = (offs[O][0], offs[O][1] + reach)
+                else:
+                    offs[O] = (offs[O][0] - reach, offs[O][1])
                 trole = members[t_k][1]
                 if trole == 'end':
                     offs[T] = (offs[T][0], offs[T][1] + grow)
@@ -494,14 +539,15 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
             # :func:`corner_cuts`), so neither contributes an offset here.
 
     # T-junctions: a member whose END lands on the interior of another member's
-    # run (a "T", not a shared-vertex corner).  Its end sits on the tool's
-    # CENTRELINE, so half of it is buried inside the tube -- for a butt that is a
-    # visible overlap, and for a cope the body-cut only removes wall material and
-    # leaves the tip floating in the hollow.  Trim the member back along its axis
-    # to the tool's NEAR face (the tool's directional half-extent measured along
-    # the member's axis), exactly like a corner butt.  A cope additionally gets a
-    # saddle cut (see :func:`corner_cuts`) that now only shapes the contact face,
-    # because the tip no longer reaches the far wall.
+    # run (a "T", not a shared-vertex corner).  Its tip sits on the tool's
+    # CENTRELINE, so half of it is buried inside the tube.  The axial trim places
+    # the tip (offset from the centreline, positive = deeper into the tool):
+    #   plain butt        -> near face  (-half): a flat square end, no overlap.
+    #   saddle/cope, solid-> far face   (+half): the boolean carves the section.
+    #   saddle/cope, hollow -> just past the near wall (-half + wall): the boolean
+    #                        carves a saddle through the wall.  Reaching the far
+    #                        face pokes straight through (the reported bug); the
+    #                        near face leaves the wall poking through the member.
     for jn in detect_t_junctions(lines):
         idx, role = jn['member']
         tool = jn['tool']
@@ -510,19 +556,21 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
             continue
         g_tool = geoms[tool] if tool < len(geoms) else None
         b_tool = bases[tool] if (bases and tool < len(bases)) else None
-        # The tool's half-extent along the incoming member's axis (cm). The tip
-        # sits on the tool centreline, so retracting by this lands it on the NEAR
-        # face (a plain butt); a cope/saddle instead extends it by the same amount
-        # to the FAR face so the boolean notch has material to carve.
+        # The tool's half-extent along the incoming member's axis (cm).
         trim = _half_extent_cm(g_tool, b_tool, line_direction(lines[idx]))
-        saddled = (jid == 'cope' or flag_at(saddle_by_line, idx, role))
-        sgn = 1.0 if saddled else -1.0
         if trim <= 0.0:
             continue
-        if role == 'end':
-            offs[idx] = (offs[idx][0], offs[idx][1] + sgn * trim)
+        saddled = (jid == 'cope' or flag_at(saddle_by_line, idx, role))
+        if not saddled:
+            reach = -trim
+        elif _is_hollow(g_tool):
+            reach = -trim + (_wall_cm(g_tool) or 0.0)
         else:
-            offs[idx] = (offs[idx][0] - sgn * trim, offs[idx][1])
+            reach = trim
+        if role == 'end':
+            offs[idx] = (offs[idx][0], offs[idx][1] + reach)
+        else:
+            offs[idx] = (offs[idx][0] - reach, offs[idx][1])
     return offs
 
 

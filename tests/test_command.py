@@ -197,12 +197,9 @@ def _make_dialog():
     inputs.addSelectionInput('path', 'Lines', '')
     inputs.addDropDownCommandInput('family', 'Profile', 0)
     inputs.addDropDownCommandInput('designation', 'Designation', 0)
-    # Rotation + start/end offsets are global (per-line) inputs, not table cells.
-    inputs.addFloatSpinnerCommandInput('rotation', 'Rotation', 'degree',
-                                       -1000, 1000, 15, 0)
-    inputs.addDistanceValueCommandInput('offset_start', 'Offset Start', None)
-    inputs.addDistanceValueCommandInput('offset_end', 'Offset End', None)
-    tbl = inputs.addTableCommandInput('params', 'Per Line', 5, '1:3:3:1:1')
+    # Rotation + start/end offsets are per-line table cells (columns 5-7), not
+    # separate global inputs.
+    tbl = inputs.addTableCommandInput('params', 'Per Line', 8, '1:3:3:1:1:2:2:2')
     sync = inputs.addBoolValueInput('sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
     entry._make_header_row(inputs, tbl)   # row 0 = read-only column titles
@@ -244,6 +241,9 @@ class TestPerLineTable(unittest.TestCase):
         self.assertEqual(inputs.itemById('hdr_2').value, 'Joint End')
         self.assertEqual(inputs.itemById('hdr_3').value, 'Through')
         self.assertEqual(inputs.itemById('hdr_4').value, 'Saddle')
+        self.assertEqual(inputs.itemById('hdr_5').value, 'Rotation')
+        self.assertEqual(inputs.itemById('hdr_6').value, 'Offset Start')
+        self.assertEqual(inputs.itemById('hdr_7').value, 'Offset End')
 
     def test_sync_table_rows_shrinks(self):
         _cmd, inputs, tbl = _make_dialog()
@@ -272,6 +272,9 @@ class TestPerLineTable(unittest.TestCase):
         self.assertEqual(entry._cell_column('joint_e_5'), 'joint_e')
         self.assertEqual(entry._cell_column('through_5'), 'through')
         self.assertEqual(entry._cell_column('saddle_5'), 'saddle')
+        self.assertEqual(entry._cell_column('rot_5'), 'rot')
+        self.assertEqual(entry._cell_column('os_5'), 'os')
+        self.assertEqual(entry._cell_column('oe_5'), 'oe')
         self.assertIsNone(entry._cell_column('num_5'))
         self.assertIsNone(entry._cell_column('hdr_1'))
         self.assertIsNone(entry._cell_column('family'))
@@ -287,14 +290,16 @@ class TestPerLineTable(unittest.TestCase):
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
         self.assertFalse(sync.isVisible)  # back to 1 row: hide again
 
-    def test_row_params_reads_global_values(self):
+    def test_row_params_reads_per_row_values(self):
         _cmd, inputs, tbl = _make_dialog()
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
-        inputs.itemById('rotation').value = 0.5
-        inputs.itemById('offset_start').value = 2.0
-        # Rotation/offset are global: every row reads the same values.
+        inputs.itemById(entry._row_ids[0]['rot']).value = 0.5
+        inputs.itemById(entry._row_ids[1]['os']).value = 2.0
+        # Rotation/offset are per-LINE cells: each row reads its own values.
         self.assertEqual(entry._row_params(inputs, 0)[0], 0.5)
         self.assertEqual(entry._row_params(inputs, 1)[1], 2.0)
+        # A row past the table defaults to zeros.
+        self.assertEqual(entry._row_params(inputs, 9), (0.0, 0.0, 0.0))
 
     def test_sync_all_propagates_joint_start(self):
         _cmd, inputs, tbl = _make_dialog()
@@ -317,6 +322,46 @@ class TestPerLineTable(unittest.TestCase):
         entry.command_input_changed(_Args(input=sa1, inputs=inputs))
         self.assertTrue(inputs.itemById(entry._row_ids[0]['saddle']).value)
 
+    def test_sync_all_propagates_rotation_and_offset(self):
+        # Rotation / Offset Start / Offset End are per-row cells too, so Sync
+        # all must mirror them across rows like the other value columns.
+        _cmd, inputs, tbl = _make_dialog()
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 3)
+        rot1 = inputs.itemById(entry._row_ids[1]['rot'])
+        rot1.value = 0.75
+        entry.command_input_changed(_Args(input=rot1, inputs=inputs))
+        os0 = inputs.itemById(entry._row_ids[0]['os'])
+        os0.value = 3.0
+        entry.command_input_changed(_Args(input=os0, inputs=inputs))
+        for r in (0, 1, 2):
+            self.assertAlmostEqual(entry._row_params(inputs, r)[0], 0.75)
+            self.assertAlmostEqual(entry._row_params(inputs, r)[1], 3.0)
+
+    def test_unsynced_rows_keep_their_own_rotation(self):
+        _cmd, inputs, tbl = _make_dialog()
+        inputs.itemById('sync_all').value = False
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
+        rot0 = inputs.itemById(entry._row_ids[0]['rot'])
+        rot0.value = 0.5
+        entry.command_input_changed(_Args(input=rot0, inputs=inputs))
+        self.assertAlmostEqual(entry._row_params(inputs, 0)[0], 0.5)
+        self.assertAlmostEqual(entry._row_params(inputs, 1)[0], 0.0)
+
+    def test_unsynced_arrows_anchor_each_line(self):
+        # Unsynced: row r's offset arrows anchor to line r, so every element
+        # carries its own handles on the canvas.
+        _cmd, inputs, tbl = _make_dialog()
+        inputs.itemById('sync_all').value = False
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
+        entry._sync_table_rows(inputs, lines)
+        entry._update_manipulators(inputs, lines)
+        for r in (0, 1):
+            self.assertEqual(
+                inputs.itemById(entry._row_ids[r]['os']).manipulatorCount, 1)
+            self.assertEqual(
+                inputs.itemById(entry._row_ids[r]['rot']).manipulatorCount, 0)
+
     def test_no_propagation_when_unsynced(self):
         _cmd, inputs, tbl = _make_dialog()
         inputs.itemById('sync_all').value = False
@@ -328,24 +373,27 @@ class TestPerLineTable(unittest.TestCase):
         entry.command_input_changed(_Args(input=dd0, inputs=inputs))
         self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'none')
 
-    def test_offset_arrows_anchor_line_zero(self):
-        # Rotation/offset are global inputs: one universal pair of arrows,
-        # anchored to line 0 regardless of the Sync-all state.
+    def test_synced_arrows_only_row_zero(self):
+        # Rotation/offset are per-row cells; when Sync all is on, only row 0's
+        # arrows anchor to the canvas (editing any row propagates to all).
         _cmd, inputs, tbl = _make_dialog()
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
         entry._sync_table_rows(inputs, lines)
         entry._update_manipulators(inputs, lines)
-        self.assertEqual(inputs.itemById('rotation').manipulatorCount, 0)
-        self.assertEqual(inputs.itemById('offset_start').manipulatorCount, 1)
-        self.assertEqual(inputs.itemById('offset_end').manipulatorCount, 1)
+        self.assertEqual(inputs.itemById(entry._row_ids[0]['rot']).manipulatorCount, 0)
+        self.assertEqual(
+            inputs.itemById(entry._row_ids[0]['os']).manipulatorCount, 1)
+        self.assertEqual(
+            inputs.itemById(entry._row_ids[1]['os']).manipulatorCount, 0)
 
     def test_select_builds_rows_and_anchors(self):
         cmd, inputs, tbl = _make_dialog()
         sel = self._pick(inputs, [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))])
         entry.command_select(_Args(activeInput=sel))
         self.assertEqual(len(entry._row_ids), 1)
-        self.assertEqual(inputs.itemById('offset_start').manipulatorCount, 1)
+        self.assertEqual(
+            inputs.itemById(entry._row_ids[0]['os']).manipulatorCount, 1)
 
 
 class TestJointColumn(unittest.TestCase):
@@ -507,8 +555,16 @@ class TestBendBuild(unittest.TestCase):
 
     def test_bend_radii_from_die(self):
         # A bend leg resolves to the catalogue CLR; a non-bend leg to 0.
-        des = dict(prof.designations(self.shs)[0])
-        des['_abbreviation'] = 'SHS'
+        # Pick the first SHS designation the die catalogue actually covers
+        # (the profile list also carries small sizes below every die's range).
+        des = None
+        for cand in prof.designations(self.shs):
+            c = dict(cand)
+            c['_abbreviation'] = 'SHS'
+            if bd.die_for_designation(entry._DIES, c, 'SHS'):
+                des = c
+                break
+        self.assertIsNotNone(des, "no SHS designation resolves to a die")
         inputs = self._shs_dialog()
         lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]

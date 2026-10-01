@@ -63,8 +63,9 @@ _syncing = False
 _row_ids = []
 _uid_counter = [0]
 
-# Column titles for the header row (row 0), matching the table's 5 columns.
-_TABLE_HEADERS = ('#', 'Joint Start', 'Joint End', 'Through', 'Saddle')
+# Column titles for the header row (row 0), matching the table's 8 columns.
+_TABLE_HEADERS = ('#', 'Joint Start', 'Joint End', 'Through', 'Saddle',
+                  'Rotation', 'Offset Start', 'Offset End')
 
 
 def _new_uid():
@@ -161,40 +162,29 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     inputs.addDropDownCommandInput(
         'designation', 'Designation', adsk.core.DropDownStyles.TextListDropDownStyle)
 
-    # 4. Global rotation + start/end offset (per-line, not per-end).  A joint is
-    #    a property of a line END, but rotation and the manual trim offsets apply
-    #    to the whole line, so they live here as single dialog inputs rather than
-    #    table columns.  The offset arrows anchor on the canvas (see
-    #    _update_manipulators); rotation is a plain spinner.
-    rot: adsk.core.FloatSpinnerCommandInput = inputs.addFloatSpinnerCommandInput(
-        'rotation', 'Rotation', 'degree', -1000, 1000, 15, 0)
-    rot.description = 'Section rotation about each line (degrees)'
-    inputs.addDistanceValueCommandInput(
-        'offset_start', 'Offset Start',
-        adsk.core.ValueInput.createByString('0 mm'))
-    inputs.addDistanceValueCommandInput(
-        'offset_end', 'Offset End',
-        adsk.core.ValueInput.createByString('0 mm'))
-
-    # 5. Per-line joint table.  One row per selected sketch line, with columns
-    #    [#, Joint Start, Joint End, Through, Saddle].  A joint belongs to a line
-    #    END, so each line gets TWO dropdowns -- one for its start vertex and one
-    #    for its end vertex -- which may differ (e.g. a miter on one end, a butt
-    #    on the other).  Each dropdown lists the corner treatments the selected
-    #    profile family supports (from data/profiles.json 'joints'), defaulting to
-    #    'None' (full length to the vertex -- the historical behaviour).  Through
-    #    / Saddle are per-row checkboxes that refine a Butt: Through marks this
+    # 4. Per-line joint + rotation + offset table.  One row per selected sketch
+    #    line, with columns [#, Joint Start, Joint End, Through, Saddle, Rotation,
+    #    Offset Start, Offset End].  A joint belongs to a line END, so each line
+    #    gets TWO dropdowns -- one for its start vertex and one for its end
+    #    vertex -- which may differ (e.g. a miter on one end, a butt on the
+    #    other).  Each dropdown lists the corner treatments the selected profile
+    #    family supports (from data/profiles.json 'joints'), defaulting to 'None'
+    #    (full length to the vertex -- the historical behaviour).  Through /
+    #    Saddle are per-row checkboxes that refine a Butt: Through marks this
     #    member as the one that runs past the corner (its neighbour backs off);
     #    Saddle notches the butt end to the neighbour's outer surface (a boolean)
-    #    instead of a flat square.  Row 0 is a read-only HEADER row giving the
-    #    column titles (Fusion tables have no header API), so the first data row
-    #    is row 1.  A "Sync all" checkbox lives in the table's bottom toolbar:
-    #    when checked (default) editing any data row propagates its value to every
-    #    row and the manipulators anchor to the first line; when unchecked each
-    #    row keeps its own values.  The table starts with just the header row;
-    #    _sync_table_rows() adds a data row per line as the selection changes.
+    #    instead of a flat square.  Rotation and the start/end offsets are
+    #    per-LINE (not per-end) and live in their own columns so each line can
+    #    differ.  Row 0 is a read-only HEADER row giving the column titles
+    #    (Fusion tables have no header API), so the first data row is row 1.  A
+    #    "Sync all" checkbox lives in the table's bottom toolbar: when checked
+    #    (default) editing any data row propagates its value to every row and the
+    #    manipulators anchor to the first line; when unchecked each row keeps its
+    #    own values and gets its own arrows.  The table starts with just the
+    #    header row; _sync_table_rows() adds a data row per line as the selection
+    #    changes.
     tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
-        'params', 'Per Line', 5, '1:3:3:1:1')
+        'params', 'Per Line', 8, '1:3:3:1:1:2:2:2')
     sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
         'sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
@@ -308,16 +298,19 @@ def _resolve(inputs):
 
 
 def _row_params(inputs, r):
-    """Return (angle_rad, offset_start, offset_end) -- global (same for all lines).
+    """Return (angle_rad, offset_start, offset_end) for table row ``r``.
 
     Rotation and the manual start/end offsets are per-LINE properties (not
-    per-end), so they live in single dialog inputs rather than table cells; every
-    line reads the same values here.  ``r`` is accepted for call-site symmetry
-    but ignored.
+    per-end) and live in that row's own cells (looked up by the ids recorded in
+    ``_row_ids[r]``), so each line can differ.  A row past the current table (or
+    a not-yet-built row) defaults to 0, i.e. no rotation and full length.
     """
-    ang: adsk.core.FloatSpinnerCommandInput = inputs.itemById('rotation')
-    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_start')
-    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_end')
+    if r >= len(_row_ids):
+        return (0.0, 0.0, 0.0)
+    ids = _row_ids[r]
+    ang: adsk.core.FloatSpinnerCommandInput = inputs.itemById(ids['rot'])
+    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById(ids['os'])
+    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById(ids['oe'])
     return (ang.value if ang else 0.0,
             ofs.value if ofs else 0.0,
             ofe.value if ofe else 0.0)
@@ -503,11 +496,11 @@ def _selected_lines(inputs):
 def _cell_column(input_id):
     """Map a table-cell input id to its column key.
 
-    Returns 'joint_s', 'joint_e', 'through' or 'saddle' for the editable value
-    columns, or None for the read-only row-number / header cells and every
-    non-table input (Rotation / Offset live outside the table now).
+    Returns 'joint_s', 'joint_e', 'through', 'saddle', 'rot', 'os' or 'oe' for
+    the editable value columns, or None for the read-only row-number / header
+    cells and every non-table input.
     """
-    for col in ('joint_s', 'joint_e', 'through', 'saddle'):
+    for col in ('joint_s', 'joint_e', 'through', 'saddle', 'rot', 'os', 'oe'):
         if input_id.startswith(col + '_'):
             return col
     return None
@@ -607,7 +600,8 @@ def _sync_table_rows(inputs, lines):
         uid = _new_uid()
         ids = {'num': f'num_{uid}', 'joint_s': f'joint_s_{uid}',
                'joint_e': f'joint_e_{uid}',
-               'through': f'through_{uid}', 'saddle': f'saddle_{uid}'}
+               'through': f'through_{uid}', 'saddle': f'saddle_{uid}',
+               'rot': f'rot_{uid}', 'os': f'os_{uid}', 'oe': f'oe_{uid}'}
         num = inputs.addTextBoxCommandInput(
             ids['num'], '', str(r + 1), 1, True)
         # Joint Start / Joint End: the corner treatment for each END of this
@@ -630,11 +624,25 @@ def _sync_table_rows(inputs, lines):
         saddle = inputs.addBoolValueInput(
             ids['saddle'], '', True, '', False)
         saddle.description = 'Notch this butt end to clear the neighbour'
+        # Rotation is a plain spinner (degrees): an editable box with NO
+        # on-canvas manipulator.  An AngleValueCommandInput would always draw a
+        # rotation wheel, and in a table cell that wheel does not write back to
+        # the box, so it is redundant -- hence a spinner here.  Its .value is in
+        # radians (the database angle unit), matching _build_weldment.
+        rot = inputs.addFloatSpinnerCommandInput(
+            ids['rot'], '', 'degree', -1000, 1000, 15, 0)
+        os_ = inputs.addDistanceValueCommandInput(
+            ids['os'], '', adsk.core.ValueInput.createByString('0 mm'))
+        oe_ = inputs.addDistanceValueCommandInput(
+            ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
         tbl.addCommandInput(num, r + 1, 0)
         tbl.addCommandInput(joint_s, r + 1, 1)
         tbl.addCommandInput(joint_e, r + 1, 2)
         tbl.addCommandInput(through, r + 1, 3)
         tbl.addCommandInput(saddle, r + 1, 4)
+        tbl.addCommandInput(rot, r + 1, 5)
+        tbl.addCommandInput(os_, r + 1, 6)
+        tbl.addCommandInput(oe_, r + 1, 7)
         _row_ids.append(ids)
     # "Sync all" only means something once there are 2+ rows to keep in step, so
     # hide the toolbar checkbox otherwise rather than float a lone control.
@@ -644,28 +652,41 @@ def _sync_table_rows(inputs, lines):
 
 
 def _update_manipulators(inputs, lines):
-    """Anchor the (global) offset arrows on the canvas.
+    """Show each row's cells and anchor its offset arrows.
 
-    Rotation is a plain spinner (no canvas handle) and the start/end offsets are
-    now single global inputs, so there is one universal pair of arrows.  Synced
-    (default) or with a single line, they anchor to line 0; unsynced with several
-    lines they still anchor to line 0 (the values are global regardless).
+    Rotation is a plain spinner (no canvas handle); only the offset arrows draw
+    on the canvas.  Synced (default): only row 0's arrows are shown, anchored to
+    line 0, because editing any row propagates to all -- one universal set of
+    handles.  Unsynced: row r's arrows anchor to line r, so every created
+    element carries its own arrows on the canvas.
     """
-    anchor = lines[0] if lines else None
-    _apply_row_manipulators(inputs.itemById('rotation'),
-                            inputs.itemById('offset_start'),
-                            inputs.itemById('offset_end'), anchor,
-                            anchor is not None)
+    sync: adsk.core.BoolValueCommandInput = inputs.itemById('sync_all')
+    synced = bool(sync and sync.value)
+    for r, ids in enumerate(_row_ids):
+        if synced:
+            anchor = lines[0] if lines else None
+            show = (r == 0)
+        else:
+            anchor = lines[r] if r < len(lines) else None
+            show = anchor is not None
+        _apply_row_manipulators(
+            inputs.itemById(ids['rot']), inputs.itemById(ids['os']),
+            inputs.itemById(ids['oe']), anchor, show)
 
 
 def _apply_row_manipulators(ang, ofs, ofe, line, show):
-    """Anchor (or disable) the global offset arrows on ``line``.
+    """Keep a row's cells visible and anchor (or disable) its offset arrows.
 
-    The Rotation spinner has no on-canvas handle.  The Offset Start / End arrows
-    are the only canvas manipulators: Offset Start sits at the line start and
-    Offset End at its end, both along the line direction.  When ``show`` is False
-    (or there is no line) they are disabled so they never strand at the default
-    origin (0,0,0).
+    The Rotation cell is a plain spinner (no on-canvas handle), so it is always
+    just an editable box.  The Offset Start / End arrows are the only canvas
+    manipulators: Offset Start sits at the line start and Offset End at its end,
+    both along the line direction.
+
+    A table row auto-hides when ALL of its cells are invisible, so every cell is
+    kept isVisible=True.  The offset arrows are toggled via isEnabled (the
+    manipulator draws only when isVisible AND isEnabled are both true): when
+    ``show`` is False (or there is no line) they are disabled so they never
+    strand at the default origin (0,0,0), while the row still shows.
     """
     for inp in (ang, ofs, ofe):
         if inp is not None:
@@ -1022,6 +1043,18 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                 # real neighbour body).
                 ci.isKeepToolBodies = False
                 comb = root.features.combineFeatures.add(ci)
+                # The prism is consumed, but its helper geometry -- the two very
+                # long lines in the miter-plane sketch (sk), the waste sketch
+                # (skb) and the construction plane -- would otherwise linger in
+                # the browser and clutter the canvas.  They are still needed as
+                # live inputs to the combine (deleting them breaks the feature),
+                # so turn their light bulbs off instead: hidden from the view but
+                # intact, and still tracked in ``created`` for preview teardown.
+                for helper in (skb, sk, plane):
+                    try:
+                        helper.isLightBulbOn = False
+                    except Exception:
+                        pass
                 created.extend([comb, prism, skb, sk, plane])
             else:
                 tool_reach = max(lines[t].length, 1.0)
