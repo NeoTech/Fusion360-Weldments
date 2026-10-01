@@ -561,17 +561,11 @@ class TestBendBuild(unittest.TestCase):
         self.assertAlmostEqual(ae[0][1][1].value, plans[0]['theta'])
 
     def test_bend_radii_from_die(self):
-        # A bend leg resolves to the catalogue CLR; a non-bend leg to 0.
-        # Pick the first SHS designation the die catalogue actually covers
-        # (the profile list also carries small sizes below every die's range).
-        des = None
-        for cand in prof.designations(self.shs):
-            c = dict(cand)
-            c['_abbreviation'] = 'SHS'
-            if bd.die_for_designation(entry._DIES, c, 'SHS'):
-                des = c
-                break
-        self.assertIsNotNone(des, "no SHS designation resolves to a die")
+        # A bend leg resolves to the family's default (tightest) CLR; a non-bend
+        # leg to 0.  Matching is by family alone, so any SHS designation works.
+        des = dict(prof.designations(self.shs)[0])
+        des['_abbreviation'] = 'SHS'
+        self.assertIsNotNone(bd.die_for_designation(entry._DIES, des, 'SHS'))
         inputs = self._shs_dialog()
         lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
@@ -677,13 +671,17 @@ class TestBendCopeColumns(unittest.TestCase):
         inputs.itemById(entry._row_ids[0]['cd']).value = 12.0
         self.assertEqual(entry._row_cope_depths(inputs, lines), [12.0, 0.0])
 
-    def test_die_dropdown_lists_all_compatible_dies(self):
-        inputs = self._dialog('40x40x2.0')   # matches four SHS dies
+    def test_die_dropdown_lists_family_clrs(self):
+        inputs = self._dialog('40x40x2.0')
         lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
         entry._sync_table_rows(inputs, lines)
         dd = inputs.itemById(entry._row_ids[0]['die'])
-        self.assertEqual(dd.listItems.count, 4)
+        # The dropdown lists every CLR the SHS family offers (size no longer
+        # filters -- the shop picks the radius it owns).
+        self.assertEqual(dd.listItems.count,
+                         len(bd.dies_for_family(entry._DIES, 'SHS')))
+        self.assertGreater(dd.listItems.count, 1)
         # Sorted by ascending CLR and the tightest is pre-selected.
         self.assertIn('R57.15', dd.listItems.item(0).name)
         self.assertTrue(dd.listItems.item(0).isSelected)
@@ -715,6 +713,126 @@ class TestBendCopeColumns(unittest.TestCase):
         # The choice survives the rebuild (still offered for this size).
         idx = entry._dropdown_index(dd)
         self.assertIn('R142.88', dd.listItems.item(idx).name)
+
+
+class TestCornerJointPropagation(unittest.TestCase):
+    """A relationship joint (miter/bend) mirrors onto the partner at a corner.
+
+    The user sets it on ONE member's end and the preview reacts -- they no
+    longer have to edit the corresponding dropdown on the other line too.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+        entry._row_ids = []
+        entry._uid_counter[0] = 0
+        entry._FAMILIES = prof.annotate_families(prof.load_profiles())
+
+    def _corner(self, sync=True, family=None):
+        """A dialog with two lines meeting at the origin (an L-corner)."""
+        _cmd, inputs, _tbl = _make_dialog()
+        inputs.itemById('sync_all').value = sync
+        if family:
+            fam = inputs.itemById('family')
+            for label in prof.family_labels(entry._FAMILIES):
+                fam.listItems.add(label, False)
+            for i in range(fam.listItems.count):
+                fam.listItems.item(i).isSelected = (
+                    fam.listItems.item(i).name.startswith(family))
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
+        sel = inputs.itemById('path')
+        for ln in lines:
+            sel.addSelection(ln)
+        entry._sync_table_rows(inputs, lines)
+        return inputs, lines
+
+    def _set(self, inputs, r, key, label):
+        dd = inputs.itemById(entry._row_ids[r][key])
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == label
+        return dd
+
+    def test_miter_mirrors_to_partner_start_end(self):
+        # Both lines START at the origin, so setting row 0's start Miter must set
+        # row 1's start too -- even with Sync all OFF (it is a corner link, not a
+        # universal sync).
+        inputs, _lines = self._corner(sync=False)
+        dd = self._set(inputs, 0, 'joint_s', 'Miter')
+        entry.command_input_changed(_Args(input=dd, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'miter')
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'miter')
+
+    def test_miter_maps_end_to_start_across_lines(self):
+        # A real L: line 0 runs +X to (10,0,0), line 1 runs +Y FROM (10,0,0).
+        # The shared vertex is line 0's END and line 1's START, so a miter set on
+        # one must land on the OTHER end dropdown of the partner -- the corner
+        # link maps start<->end per line, not blindly start->start.
+        _cmd, inputs, _tbl = _make_dialog()
+        inputs.itemById('sync_all').value = False
+        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                 adsk_stub.FakeLine((10, 0, 0), (10, 10, 0))]
+        sel = inputs.itemById('path')
+        for ln in lines:
+            sel.addSelection(ln)
+        entry._sync_table_rows(inputs, lines)
+        dd = self._set(inputs, 0, 'joint_e', 'Miter')   # line 0's end at vertex
+        entry.command_input_changed(_Args(input=dd, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_e'), 'miter')
+        # Partner's START touches the same vertex -> its start dropdown changes.
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'miter')
+        # And line 0's far end (the start, at the origin) is a different corner.
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'none')
+
+    def test_bend_mirrors_to_partner(self):
+        # A swept bend needs both legs; setting it on one line's end sets the
+        # partner's matching end so the arc resolves from a single edit.
+        inputs, _lines = self._corner(sync=False, family='SHS')
+        dd = self._set(inputs, 0, 'joint_s', 'Bend')
+        entry.command_input_changed(_Args(input=dd, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'bend')
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'bend')
+
+    def test_butt_does_not_mirror(self):
+        # A butt is per-member (a lone butt already reads its neighbour as the
+        # through member), so it must NOT be copied onto the partner.
+        inputs, _lines = self._corner(sync=False)
+        dd = self._set(inputs, 0, 'joint_s', 'Butt')
+        entry.command_input_changed(_Args(input=dd, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'butt')
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'none')
+
+    def test_none_does_not_mirror(self):
+        # Clearing a joint to None is also per-member: the partner keeps its own.
+        inputs, _lines = self._corner(sync=False)
+        # First link a miter on both, then set row 0 back to None.
+        dd = self._set(inputs, 0, 'joint_s', 'Miter')
+        entry.command_input_changed(_Args(input=dd, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'miter')
+        dd = self._set(inputs, 0, 'joint_s', 'None')
+        entry.command_input_changed(_Args(input=dd, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'none')
+        # Row 1 keeps its miter -- None is not propagated.
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'miter')
+
+    def test_corner_link_independent_of_the_other_end(self):
+        # Only the end that touches the shared vertex changes; the far end of the
+        # partner line is a different corner and stays put.
+        inputs, _lines = self._corner(sync=False)
+        self._set(inputs, 1, 'joint_e', 'Butt')   # line 1's far end (0,10,0)
+        dd = self._set(inputs, 0, 'joint_s', 'Miter')
+        entry.command_input_changed(_Args(input=dd, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'miter')
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_e'), 'butt')
+
+    def test_no_lines_selected_is_a_noop(self):
+        # With nothing in the path selection there are no lines to relate, so a
+        # joint edit must not raise (corner detection has nothing to work with).
+        _cmd, inputs, _tbl = _make_dialog()
+        entry._sync_table_rows(inputs, [])
+        self.assertEqual(entry._row_ids, [])
+        # No rows exist, so there is nothing to change -- just assert no crash.
+        entry._propagate_corner_joint(inputs, [], 0, 'joint_s', 'miter')
 
 
 class TestCornerCutBuild(unittest.TestCase):

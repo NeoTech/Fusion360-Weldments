@@ -12,16 +12,14 @@ Data shape
 
     {
       "standard": "...", "units": "mm",
-      "dies": [ {die_id, profile_family, groove_profile_type,
-                 nominal_CLR_mm, compatible_OD_mm | compatible_width_mm/
-                 compatible_height_mm, wall_thickness_range_mm,
-                 maximum_bend_angle_deg, min_adjacent_straight_mm,
-                 neutral_axis_shift_mm, ...}, ... ]
+      "dies": [ {die_id, profile_family, clr_mm}, ... ]
     }
 
-A die matches a designation when the designation's family equals the die's
-``profile_family`` and its outside size falls inside the die's compatible
-range.  When several dies match, the smallest CLR wins (tightest feasible bend).
+Each die is one centerline radius (``clr_mm``) available for a profile family
+(``profile_family``); ``die_id`` is a readable ``<FAMILY>-CLR-<value>`` tag.  The
+CLR is the only value that shapes a swept bend, so the old per-die OD/size/wall
+ranges (which the command ignored in practice) are gone: a family's dies are
+filtered by family alone and the shop picks the radius it owns.
 """
 
 import json
@@ -57,8 +55,13 @@ def dies(catalogue):
 
 
 def die_labels(catalogue):
-    """Human-readable one-line label per die, e.g. ``'CHS-D40-R120 (R120)'``."""
-    return [f"{d['die_id']} (R{d['nominal_CLR_mm']:g})" for d in dies(catalogue)]
+    """Human-readable one-line label per die, e.g. ``'CHS-CLR-114.3 (R114.3)'``."""
+    return [f"{d['die_id']} (R{d['clr_mm']:g})" for d in dies(catalogue)]
+
+
+def die_clr(die):
+    """Centerline radius (mm) of a die entry (0.0 when absent)."""
+    return die.get("clr_mm", 0.0) if die else 0.0
 
 
 def find_die(catalogue, die_id):
@@ -75,81 +78,35 @@ def dies_for_family(catalogue, abbreviation):
 
 
 # --------------------------------------------------------------------------- #
-# Designation -> die matching
+# Family -> die matching
 # --------------------------------------------------------------------------- #
-def _designation_size(designation):
-    """Return ``(od_mm | None, width_mm, height_mm)`` for a designation dict.
-
-    Round sections (CHS) carry ``od_mm``; hollow rectangular sections (SHS/RHS)
-    carry ``h_mm``/``b_mm``.  Open sections have neither and cannot be bent.
-    """
-    od = designation.get("od_mm")
-    if od is not None:
-        return od, od, od
-    h = designation.get("h_mm")
-    b = designation.get("b_mm")
-    if h is not None and b is not None:
-        return None, b, h
-    return None, None, None
-
-
-def _in_range(value, rng):
-    """True when ``value`` lies inside a ``[lo, hi]`` range (or rng is absent)."""
-    if not rng:
-        return True
-    lo, hi = (rng + [None, None])[:2]
-    if lo is not None and value < lo:
-        return False
-    if hi is not None and value > hi:
-        return False
-    return True
-
-
 def die_for_designation(catalogue, designation, abbreviation):
-    """Pick the best die for a designation, or None if it cannot be bent.
+    """Pick the default (tightest) die for a profile family, or None.
 
-    Matches on family, then on the outside size falling inside the die's
-    compatible range and the wall thickness inside the die's qualified range.
-    Among the matches the smallest ``nominal_CLR_mm`` is returned (the tightest
-    bend the tooling can make).
+    The catalogue is keyed by family alone now -- the centerline radius is the
+    one value that shapes a bend -- so this returns the die with the smallest
+    ``clr_mm`` for ``abbreviation``.  ``designation`` is still accepted for
+    call-site compatibility but no longer filters anything.  None when the
+    family has no dies (an open section cannot be swept-bent).
     """
     matches = dies_for_designation(catalogue, designation, abbreviation)
-    if not matches:
-        return None
-    return min(matches, key=lambda d: d.get("nominal_CLR_mm", float("inf")))
+    return matches[0] if matches else None
 
 
 def dies_for_designation(catalogue, designation, abbreviation):
-    """Every die that can form ``designation``, sorted by ascending CLR.
+    """Every centerline radius offered for a family, sorted ascending.
 
-    Same size/wall match as :func:`die_for_designation` but returns *all* the
-    compatible dies rather than only the tightest.  A tube size is typically
-    formable on several dies (different centerline radii), and a shop may own
-    a different one than the default, so the command layer offers this list as
-    a dropdown.  Empty when the designation cannot be bent (open section, or
-    outside every die's range).
+    Filtering is by family alone: a tube of a given family can be swept to any
+    of the catalogue's CLRs for that family, and the shop picks the radius it
+    owns (the tightest is the default, so the dropdown pre-selects item 0).
+    ``designation`` is accepted for call-site compatibility but no longer gates
+    the result.  Empty for a family with no dies (an open section).
     """
-    od, w, h = _designation_size(designation)
-    if od is None and w is None:
-        return []  # open section -- no swept bend possible
-    wall = designation.get("t_mm")
-    matches = []
-    for d in dies_for_family(catalogue, abbreviation):
-        groove = d.get("groove_profile_type")
-        if groove == "round":
-            if not _in_range(od, d.get("compatible_OD_mm")):
-                continue
-        else:  # square / rectangular groove
-            if not (_in_range(w, d.get("compatible_width_mm")) and
-                    _in_range(h, d.get("compatible_height_mm"))):
-                continue
-        if not _in_range(wall, d.get("wall_thickness_range_mm")):
-            continue
-        matches.append(d)
-    matches.sort(key=lambda d: d.get("nominal_CLR_mm", float("inf")))
-    return matches
+    out = list(dies_for_family(catalogue, abbreviation))
+    out.sort(key=lambda d: d.get("clr_mm", float("inf")))
+    return out
 
 
 def clr_cm(die):
     """Centerline radius of a die in cm (Fusion's internal unit)."""
-    return (die.get("nominal_CLR_mm", 0.0) if die else 0.0) * MM_TO_CM
+    return die_clr(die) * MM_TO_CM

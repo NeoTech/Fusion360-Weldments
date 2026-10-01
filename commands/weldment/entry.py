@@ -68,6 +68,14 @@ _TABLE_HEADERS = ('#', 'Joint Start', 'Joint End', 'Through', 'Saddle',
                   'Rotation', 'Offset Start', 'Offset End',
                   'Inverse', 'Bend Die', 'Cope Depth')
 
+# Joints that describe a relationship BETWEEN the two members meeting at a
+# corner, so both ends must agree for the geometry to resolve: a miter needs
+# both members cut on the bisector, and a swept bend needs both legs to lay the
+# arc.  Setting one on a member mirrors it onto its partner at the shared corner
+# (see _propagate_corner_joint).  Butt/cope/none are per-member (a lone butt
+# already reads the neighbour as the through member) and are never mirrored.
+_RELATIONSHIP_JOINTS = ('miter', 'bend')
+
 
 def _new_uid():
     _uid_counter[0] += 1
@@ -291,16 +299,16 @@ def _current_designation(inputs):
 
 def _die_label(die):
     """Dropdown label for a die: its id plus the centerline radius it produces."""
-    return f"{die['die_id']} (R{die.get('nominal_CLR_mm', 0.0):g})"
+    return f"{die['die_id']} (R{bd.die_clr(die):g})"
 
 
 def _populate_die_dropdown(dd, inputs):
-    """Fill one row's Bend Die dropdown with the dies that fit the designation.
+    """Fill one row's Bend Die dropdown with the CLRs offered for the family.
 
-    A tube size is formable on several dies (different CLRs) and a shop may own
-    a different one than the default, so every compatible die is offered, sorted
-    by ascending CLR; the tightest (first) is pre-selected to match the previous
-    automatic behaviour.
+    A family can be swept to several centerline radii and a shop may own a
+    different one than the default, so every CLR the catalogue lists for the
+    selected family is offered here, sorted by ascending radius; the tightest
+    (first) is pre-selected to match the previous automatic behaviour.
     """
     dd.listItems.clear()
     des = _current_designation(inputs)
@@ -396,6 +404,64 @@ def _row_cope_depths(inputs, lines):
               if i < len(_row_ids) else None)
         out.append(cd.value if cd else 0.0)
     return out
+
+
+def _row_index_of(input_id):
+    """The data-row index owning the table cell with ``input_id`` (or None)."""
+    for r, ids in enumerate(_row_ids):
+        if input_id in ids.values():
+            return r
+    return None
+
+
+def _propagate_corner_joint(inputs, lines, row, key, jid):
+    """Mirror a relationship joint onto the member(s) sharing this corner.
+
+    A miter or a swept bend is a property of the *joint* between two members,
+    not of one member's end: the geometry only resolves when both members
+    request it (a lone bend leg draws no arc; a lone miter leaves the
+    neighbour's square end poking through).  So when the user sets such a joint
+    on one end, we set the matching end on every other line that meets at the
+    same vertex, and the preview updates from a single edit.
+
+    ``key`` is 'joint_s'/'joint_e' (the edited end) and ``jid`` its new id.  Only
+    :data:`_RELATIONSHIP_JOINTS` propagate; butt/cope/none are per-member and
+    left alone.  Guarded by ``_syncing`` so the programmatic writes below do not
+    re-fire this handler.
+    """
+    global _syncing
+    if jid not in _RELATIONSHIP_JOINTS or row >= len(_row_ids):
+        return
+    line = lines[row] if row < len(lines) else None
+    if line is None:
+        return
+    role = 'start' if key == 'joint_s' else 'end'
+    # The vertex this end sits at, and the other lines touching it.
+    s, e = jt.line_endpoints(line)
+    corner = s if role == 'start' else e
+    label = jt.LABELS[jid]
+    _syncing = True
+    try:
+        for other in jt.detect_corners(lines):
+            if _dist2(other['point'], corner) > jt._CORNER_TOL * jt._CORNER_TOL:
+                continue
+            for oidx, orole in other['members']:
+                if oidx == row or oidx >= len(_row_ids):
+                    continue
+                okey = 'joint_s' if orole == 'start' else 'joint_e'
+                dd = inputs.itemById(_row_ids[oidx][okey])
+                if dd is None:
+                    continue
+                for i in range(dd.listItems.count):
+                    dd.listItems.item(i).isSelected = (
+                        dd.listItems.item(i).name == label)
+    finally:
+        _syncing = False
+
+
+def _dist2(a, b):
+    """Squared distance between two 3-tuples (cm)."""
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
 
 
 # --------------------------------------------------------------------------- #
@@ -546,10 +612,10 @@ def _row_die_clr(inputs, r, designation):
                 label = dd.listItems.item(idx).name
                 for die in bd.dies_for_designation(_DIES, designation, abbr):
                     if _die_label(die) == label:
-                        return die['nominal_CLR_mm']
+                        return bd.die_clr(die)
     if abbr:
         die = bd.die_for_designation(_DIES, designation, abbr)
-        return die['nominal_CLR_mm'] if die else 0.0
+        return bd.die_clr(die) if die else 0.0
     return 0.0
 
 
@@ -700,6 +766,16 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
     # enabled state.  (Runs regardless of Sync all.)
     if col in ('joint_s', 'joint_e', 'saddle'):
         _update_bend_columns(args.inputs)
+    # A relationship joint (miter/bend) is a property of the corner, not one
+    # member's end, so mirror it onto the partner(s) sharing the vertex -- the
+    # preview then reacts to a single edit instead of needing both dropdowns.
+    if col in ('joint_s', 'joint_e'):
+        row = _row_index_of(inp.id)
+        idx = _dropdown_index(inp)
+        label = inp.listItems.item(idx).name if 0 <= idx < inp.listItems.count else None
+        if row is not None:
+            _propagate_corner_joint(args.inputs, _selected_lines(args.inputs),
+                                    row, col, jt.joint_id_from_label(label))
     sync: adsk.core.BoolValueCommandInput = args.inputs.itemById('sync_all')
     if not (sync and sync.value):
         return
