@@ -36,6 +36,18 @@ def _circle(od_mm):
     return {'kind': 'circles', 'radii': [od_mm / 2.0, od_mm / 2.0 - 2.0]}
 
 
+def _tube(depth_mm, width_mm, wall_mm):
+    """A hollow rectangular-section geom (two loops: outer + inner void)."""
+    h, b = depth_mm, width_mm
+    t = wall_mm
+    return {'kind': 'polygons',
+            'loops': [[(-b / 2, -h / 2), (b / 2, -h / 2),
+                       (b / 2, h / 2), (-b / 2, h / 2)],
+                      [(-(b / 2 - t), -(h / 2 - t)), (b / 2 - t, -(h / 2 - t)),
+                       (b / 2 - t, h / 2 - t), (-(b / 2 - t), h / 2 - t)]],
+            'fillets': [[], []]}
+
+
 class TestLineAccessors(unittest.TestCase):
     def test_endpoints_and_direction(self):
         ln = FakeLine((0, 0, 0), (10, 0, 0))
@@ -161,6 +173,44 @@ class TestButtJoint(unittest.TestCase):
         self.assertEqual(butt, cope)
         # And neither is a no-op: the incoming member backs off to the face.
         self.assertNotEqual(cope, [(0.0, 0.0), (0.0, 0.0)])
+
+    def test_saddled_butt_runs_to_far_face(self):
+        # A SADDLED butt against a SOLID tool runs the backing-off member to the
+        # tool's FAR face (extend, +half) so the boolean notch has overlap to
+        # carve; a plain butt stops at the NEAR face (-half).  Same magnitude,
+        # opposite sign -- the sign is what makes the saddle actually remove
+        # material instead of nothing.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_rect(100), _rect(80)]
+        plain = jt.corner_offsets(lines, geoms, ['none', 'butt'])
+        saddled = jt.corner_offsets(lines, geoms, ['none', 'butt'],
+                                    saddle_by_line=[False, True])
+        self.assertAlmostEqual(plain[1][1], -5.0)     # near face
+        self.assertAlmostEqual(saddled[1][1], 5.0)    # far face (extended)
+
+    def test_saddled_butt_hollow_tool_stays_near_face(self):
+        # Against a HOLLOW tool a far-face run would leave a plug floating in the
+        # void, so a saddled butt falls back to the near face (a flush butt).
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_tube(100, 100, 8), _rect(80)]
+        offs = jt.corner_offsets(lines, geoms, ['none', 'butt'],
+                                 saddle_by_line=[False, True])
+        self.assertAlmostEqual(offs[1][1], -5.0)      # near face, no plug
+
+    def test_per_end_joints_are_independent(self):
+        # A joint belongs to a line END, so passing (start, end) pairs lets the
+        # two ends differ.  Here line 0 mitres at its START and butts at its END;
+        # only the end that meets a neighbour takes effect at each corner.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((10, 0, 0), (10, 10, 0))]
+        geoms = [_rect(100), _rect(100)]
+        # Scalar (both ends 'miter') vs a per-end pair -- both must be accepted.
+        scalar = jt.corner_offsets(lines, geoms, ['miter', 'miter'])
+        paired = jt.corner_offsets(lines, geoms,
+                                   [('miter', 'miter'), ('miter', 'miter')])
+        self.assertEqual(scalar, paired)
 
 
 class TestMiterJoint(unittest.TestCase):

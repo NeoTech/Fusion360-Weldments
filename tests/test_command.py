@@ -197,9 +197,15 @@ def _make_dialog():
     inputs.addSelectionInput('path', 'Lines', '')
     inputs.addDropDownCommandInput('family', 'Profile', 0)
     inputs.addDropDownCommandInput('designation', 'Designation', 0)
-    tbl = inputs.addTableCommandInput('params', 'Per Line', 5, '1:2:3:3:3')
+    # Rotation + start/end offsets are global (per-line) inputs, not table cells.
+    inputs.addFloatSpinnerCommandInput('rotation', 'Rotation', 'degree',
+                                       -1000, 1000, 15, 0)
+    inputs.addDistanceValueCommandInput('offset_start', 'Offset Start', None)
+    inputs.addDistanceValueCommandInput('offset_end', 'Offset End', None)
+    tbl = inputs.addTableCommandInput('params', 'Per Line', 5, '1:3:3:1:1')
     sync = inputs.addBoolValueInput('sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
+    entry._make_header_row(inputs, tbl)   # row 0 = read-only column titles
     return cmd, inputs, tbl
 
 
@@ -216,13 +222,28 @@ class TestPerLineTable(unittest.TestCase):
             sel.addSelection(ln)
         return sel
 
+    def _select_family(self, inputs, abbr):
+        fam = inputs.itemById('family')
+        for i in range(fam.listItems.count):
+            fam.listItems.item(i).isSelected = fam.listItems.item(i).name.startswith(abbr)
+        return fam
+
     def test_sync_table_rows_one_row_per_line(self):
         _cmd, inputs, tbl = _make_dialog()
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
         entry._sync_table_rows(inputs, lines)
         self.assertEqual(len(entry._row_ids), 2)
-        self.assertEqual(tbl.rowCount, 2)
+        self.assertEqual(tbl.rowCount, 3)   # header row + 2 data rows
+
+    def test_header_row_has_column_titles(self):
+        _cmd, inputs, tbl = _make_dialog()
+        # Row 0 is the read-only header; its cells carry the column titles.
+        self.assertEqual(inputs.itemById('hdr_0').value, '#')
+        self.assertEqual(inputs.itemById('hdr_1').value, 'Joint Start')
+        self.assertEqual(inputs.itemById('hdr_2').value, 'Joint End')
+        self.assertEqual(inputs.itemById('hdr_3').value, 'Through')
+        self.assertEqual(inputs.itemById('hdr_4').value, 'Saddle')
 
     def test_sync_table_rows_shrinks(self):
         _cmd, inputs, tbl = _make_dialog()
@@ -230,25 +251,31 @@ class TestPerLineTable(unittest.TestCase):
         self.assertEqual(len(entry._row_ids), 3)
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
         self.assertEqual(len(entry._row_ids), 1)
-        self.assertEqual(tbl.rowCount, 1)
+        self.assertEqual(tbl.rowCount, 2)   # header row + 1 data row
 
     def test_sync_table_rows_preserves_existing(self):
         _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
-        first_id = entry._row_ids[0]['rot']
-        inputs.itemById(first_id).value = 0.25
+        first_id = entry._row_ids[0]['joint_s']
+        dd = inputs.itemById(first_id)
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Butt'
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine(), adsk_stub.FakeLine()])
         # Row 0 keeps its identity and value; a new row 1 is appended.
-        self.assertEqual(entry._row_ids[0]['rot'], first_id)
-        self.assertAlmostEqual(inputs.itemById(first_id).value, 0.25)
+        self.assertEqual(entry._row_ids[0]['joint_s'], first_id)
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'butt')
         self.assertEqual(len(entry._row_ids), 2)
 
     def test_cell_column_mapping(self):
-        self.assertEqual(entry._cell_column('rot_5'), 'rot')
-        self.assertEqual(entry._cell_column('os_5'), 'os')
-        self.assertEqual(entry._cell_column('oe_5'), 'oe')
+        self.assertEqual(entry._cell_column('joint_s_5'), 'joint_s')
+        self.assertEqual(entry._cell_column('joint_e_5'), 'joint_e')
+        self.assertEqual(entry._cell_column('through_5'), 'through')
+        self.assertEqual(entry._cell_column('saddle_5'), 'saddle')
         self.assertIsNone(entry._cell_column('num_5'))
+        self.assertIsNone(entry._cell_column('hdr_1'))
         self.assertIsNone(entry._cell_column('family'))
+        self.assertIsNone(entry._cell_column('rotation'))
 
     def test_sync_all_hidden_until_two_rows(self):
         _cmd, inputs, tbl = _make_dialog()
@@ -260,93 +287,65 @@ class TestPerLineTable(unittest.TestCase):
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
         self.assertFalse(sync.isVisible)  # back to 1 row: hide again
 
-    def test_row_params_reads_per_row_values(self):
+    def test_row_params_reads_global_values(self):
         _cmd, inputs, tbl = _make_dialog()
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
-        inputs.itemById(entry._row_ids[0]['rot']).value = 0.5
-        inputs.itemById(entry._row_ids[1]['os']).value = 2.0
+        inputs.itemById('rotation').value = 0.5
+        inputs.itemById('offset_start').value = 2.0
+        # Rotation/offset are global: every row reads the same values.
         self.assertEqual(entry._row_params(inputs, 0)[0], 0.5)
         self.assertEqual(entry._row_params(inputs, 1)[1], 2.0)
-        # A row past the table defaults to zeros.
-        self.assertEqual(entry._row_params(inputs, 9), (0.0, 0.0, 0.0))
 
-    def test_sync_all_propagates_rotation(self):
+    def test_sync_all_propagates_joint_start(self):
         _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 3)
-        rot0 = inputs.itemById(entry._row_ids[0]['rot'])
-        rot0.value = 0.75
-        entry.command_input_changed(_Args(input=rot0, inputs=inputs))
+        dd0 = inputs.itemById(entry._row_ids[0]['joint_s'])
+        for i in range(dd0.listItems.count):
+            dd0.listItems.item(i).isSelected = dd0.listItems.item(i).name == 'Miter'
+        entry.command_input_changed(_Args(input=dd0, inputs=inputs))
         for r in (1, 2):
-            self.assertAlmostEqual(
-                inputs.itemById(entry._row_ids[r]['rot']).value, 0.75)
+            self.assertEqual(entry._row_joint_at(inputs, r, 'joint_s'), 'miter')
+            # The End dropdown is a different column and stays untouched.
+            self.assertEqual(entry._row_joint_at(inputs, r, 'joint_e'), 'none')
 
-    def test_sync_all_propagates_offset(self):
+    def test_sync_all_propagates_checkbox(self):
         _cmd, inputs, tbl = _make_dialog()
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
-        os1 = inputs.itemById(entry._row_ids[1]['os'])
-        os1.value = 3.0
-        entry.command_input_changed(_Args(input=os1, inputs=inputs))
-        self.assertAlmostEqual(
-            inputs.itemById(entry._row_ids[0]['os']).value, 3.0)
+        sa1 = inputs.itemById(entry._row_ids[1]['saddle'])
+        sa1.value = True
+        entry.command_input_changed(_Args(input=sa1, inputs=inputs))
+        self.assertTrue(inputs.itemById(entry._row_ids[0]['saddle']).value)
 
     def test_no_propagation_when_unsynced(self):
         _cmd, inputs, tbl = _make_dialog()
         inputs.itemById('sync_all').value = False
+        self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
-        rot0 = inputs.itemById(entry._row_ids[0]['rot'])
-        rot0.value = 0.9
-        entry.command_input_changed(_Args(input=rot0, inputs=inputs))
-        self.assertAlmostEqual(
-            inputs.itemById(entry._row_ids[1]['rot']).value, 0.0)
+        dd0 = inputs.itemById(entry._row_ids[0]['joint_s'])
+        for i in range(dd0.listItems.count):
+            dd0.listItems.item(i).isSelected = dd0.listItems.item(i).name == 'Miter'
+        entry.command_input_changed(_Args(input=dd0, inputs=inputs))
+        self.assertEqual(entry._row_joint_at(inputs, 1, 'joint_s'), 'none')
 
-    def test_rotation_cell_has_no_manipulator(self):
-        # Rotation is a plain spinner: it must never draw a canvas handle.
+    def test_offset_arrows_anchor_line_zero(self):
+        # Rotation/offset are global inputs: one universal pair of arrows,
+        # anchored to line 0 regardless of the Sync-all state.
         _cmd, inputs, tbl = _make_dialog()
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
         entry._sync_table_rows(inputs, lines)
         entry._update_manipulators(inputs, lines)
-        for r in (0, 1):
-            self.assertEqual(
-                inputs.itemById(entry._row_ids[r]['rot']).manipulatorCount, 0)
-
-    def test_synced_arrows_only_row_zero(self):
-        _cmd, inputs, tbl = _make_dialog()
-        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
-                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
-        entry._sync_table_rows(inputs, lines)
-        entry._update_manipulators(inputs, lines)
-        # Only row 0's offset arrows anchor to the canvas when Sync all is on.
-        self.assertEqual(inputs.itemById(entry._row_ids[0]['os']).manipulatorCount, 1)
-        self.assertEqual(inputs.itemById(entry._row_ids[1]['os']).manipulatorCount, 0)
-        # Row 1's cells stay VISIBLE (a table row hides when all its cells are
-        # invisible), but its arrows are disabled so only row 0 shows handles.
-        self.assertTrue(inputs.itemById(entry._row_ids[1]['os']).isVisible)
-        self.assertFalse(inputs.itemById(entry._row_ids[1]['os']).isEnabled)
-
-    def test_unsynced_arrows_anchor_each_row(self):
-        _cmd, inputs, tbl = _make_dialog()
-        inputs.itemById('sync_all').value = False
-        lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
-                 adsk_stub.FakeLine((0, 0, 0), (0, 10, 0))]
-        entry._sync_table_rows(inputs, lines)
-        entry._update_manipulators(inputs, lines)
-        for r in (0, 1):
-            self.assertEqual(
-                inputs.itemById(entry._row_ids[r]['os']).manipulatorCount, 1)
-            self.assertTrue(
-                inputs.itemById(entry._row_ids[r]['os']).isVisible)
-        # Row 1's offset-start arrow anchors to line 1's start point (0,0,0).
-        mo = inputs.itemById(entry._row_ids[1]['os']).manipulatorOrigin
-        self.assertEqual((round(mo.x, 3), round(mo.y, 3), round(mo.z, 3)),
-                         (0.0, 0.0, 0.0))
+        self.assertEqual(inputs.itemById('rotation').manipulatorCount, 0)
+        self.assertEqual(inputs.itemById('offset_start').manipulatorCount, 1)
+        self.assertEqual(inputs.itemById('offset_end').manipulatorCount, 1)
 
     def test_select_builds_rows_and_anchors(self):
         cmd, inputs, tbl = _make_dialog()
         sel = self._pick(inputs, [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))])
         entry.command_select(_Args(activeInput=sel))
         self.assertEqual(len(entry._row_ids), 1)
-        self.assertEqual(inputs.itemById(entry._row_ids[0]['os']).manipulatorCount, 1)
+        self.assertEqual(inputs.itemById('offset_start').manipulatorCount, 1)
 
 
 class TestJointColumn(unittest.TestCase):
@@ -364,65 +363,77 @@ class TestJointColumn(unittest.TestCase):
             fam.listItems.item(i).isSelected = fam.listItems.item(i).name.startswith(abbr)
         return fam
 
+    def _set_joint(self, inputs, r, key, label):
+        dd = inputs.itemById(entry._row_ids[r][key])
+        for i in range(dd.listItems.count):
+            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == label
+
     def test_joint_dropdown_lists_family_joints(self):
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'IPE')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 2)
-        dd = inputs.itemById(entry._row_ids[0]['joint'])
-        labels = [dd.listItems.item(i).name for i in range(dd.listItems.count)]
-        self.assertEqual(labels, ['None', 'Butt', 'Miter'])  # IPE has no cope/bend
+        for key in ('joint_s', 'joint_e'):
+            dd = inputs.itemById(entry._row_ids[0][key])
+            labels = [dd.listItems.item(i).name for i in range(dd.listItems.count)]
+            self.assertEqual(labels, ['None', 'Butt', 'Miter'])  # IPE: no cope/bend
 
     def test_joint_defaults_to_none(self):
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
-        self.assertEqual(entry._row_joint(inputs, 0), 'none')
+        self.assertEqual(entry._row_joints(inputs, [None]), [('none', 'none')])
 
     def test_row_joint_reads_selection(self):
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
-        dd = inputs.itemById(entry._row_ids[0]['joint'])
-        for i in range(dd.listItems.count):
-            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Butt'
-        self.assertEqual(entry._row_joint(inputs, 0), 'butt')
+        self._set_joint(inputs, 0, 'joint_e', 'Butt')
+        # The two ends are independent: only the End dropdown changed.
+        self.assertEqual(entry._row_joints(inputs, [None]), [('none', 'butt')])
+
+    def test_per_end_joints_may_differ(self):
+        # A joint belongs to a line END, so start and end can differ (miter one
+        # way, butt the other) -- the core of the per-end model.
+        _cmd, inputs, tbl = _make_dialog()
+        self._select_family(inputs, 'SHS')
+        entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
+        self._set_joint(inputs, 0, 'joint_s', 'Miter')
+        self._set_joint(inputs, 0, 'joint_e', 'Butt')
+        self.assertEqual(entry._row_joints(inputs, [None]), [('miter', 'butt')])
 
     def test_family_change_rebuilds_and_preserves_choice(self):
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
-        dd = inputs.itemById(entry._row_ids[0]['joint'])
-        for i in range(dd.listItems.count):
-            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Miter'
+        self._set_joint(inputs, 0, 'joint_s', 'Miter')
         # Switch to IPE (still supports Miter) -> choice preserved, cope/bend gone.
         self._select_family(inputs, 'IPE')
         entry.command_input_changed(_Args(input=inputs.itemById('family'), inputs=inputs))
+        dd = inputs.itemById(entry._row_ids[0]['joint_s'])
         labels = [dd.listItems.item(i).name for i in range(dd.listItems.count)]
         self.assertEqual(labels, ['None', 'Butt', 'Miter'])
-        self.assertEqual(entry._row_joint(inputs, 0), 'miter')
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'miter')
 
     def test_family_change_drops_unsupported_choice(self):
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()])
-        dd = inputs.itemById(entry._row_ids[0]['joint'])
-        for i in range(dd.listItems.count):
-            dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Bend'
+        self._set_joint(inputs, 0, 'joint_s', 'Bend')
         # Switch to IPE (no Bend) -> falls back to None.
         self._select_family(inputs, 'IPE')
         entry.command_input_changed(_Args(input=inputs.itemById('family'), inputs=inputs))
-        self.assertEqual(entry._row_joint(inputs, 0), 'none')
+        self.assertEqual(entry._row_joint_at(inputs, 0, 'joint_s'), 'none')
 
-    def test_sync_all_propagates_joint(self):
+    def test_sync_all_propagates_joint_end(self):
         _cmd, inputs, tbl = _make_dialog()
         self._select_family(inputs, 'SHS')
         entry._sync_table_rows(inputs, [adsk_stub.FakeLine()] * 3)
-        dd0 = inputs.itemById(entry._row_ids[0]['joint'])
+        dd0 = inputs.itemById(entry._row_ids[0]['joint_e'])
         for i in range(dd0.listItems.count):
             dd0.listItems.item(i).isSelected = dd0.listItems.item(i).name == 'Miter'
         entry.command_input_changed(_Args(input=dd0, inputs=inputs))
         for r in (1, 2):
-            self.assertEqual(entry._row_joint(inputs, r), 'miter')
+            self.assertEqual(entry._row_joint_at(inputs, r, 'joint_e'), 'miter')
 
     def test_joint_offsets_applied_to_line(self):
         # A butt is a pure axial trim (no boolean): the incoming member stops
@@ -434,9 +445,7 @@ class TestJointColumn(unittest.TestCase):
         lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
                  adsk_stub.FakeLine((0, -10, 0), (0, 0, 0))]
         entry._sync_table_rows(inputs, lines)
-        dd1 = inputs.itemById(entry._row_ids[1]['joint'])
-        for i in range(dd1.listItems.count):
-            dd1.listItems.item(i).isSelected = dd1.listItems.item(i).name == 'Butt'
+        self._set_joint(inputs, 1, 'joint_e', 'Butt')   # line 1's END is the corner
         family = entry._selected_family(inputs)
         geom = prof.section_geometry(prof.designations(family)[0])
         offs = entry._joint_offsets(inputs, lines, geom)
@@ -446,7 +455,7 @@ class TestJointColumn(unittest.TestCase):
         self.assertEqual(offs[1][0], 0.0)
         self.assertAlmostEqual(offs[1][1], -half)   # butt member stops short
         # No boolean cut is planned for a butt.
-        joints = [entry._row_joint(inputs, r) for r in range(len(lines))]
+        joints = entry._row_joints(inputs, lines)
         self.assertEqual(jt.corner_cuts(lines, joints), [])
 
 
@@ -505,7 +514,8 @@ class TestBendBuild(unittest.TestCase):
                  adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
         entry._sync_table_rows(inputs, lines)
         for r in (0, 1):
-            dd = inputs.itemById(entry._row_ids[r]['joint'])
+            # The corner is at both lines' START (0,0,0), so mark the start end.
+            dd = inputs.itemById(entry._row_ids[r]['joint_s'])
             for i in range(dd.listItems.count):
                 dd.listItems.item(i).isSelected = dd.listItems.item(i).name == 'Bend'
         radii = entry._bend_radii(inputs, lines, des)

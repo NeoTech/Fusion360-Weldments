@@ -55,17 +55,36 @@ _preview_cuts = []
 # programmatically can re-fire inputChanged, which would otherwise recurse.
 _syncing = False
 
-# One entry per table row, in row order: a dict of that row's cell input ids
-# {'num','rot','os','oe'}.  Kept in sync with the selection by
-# _sync_table_rows(); the ids carry a monotonic uid so a deleted-then-recreated
+# One entry per DATA table row (row 0 is a read-only header, not tracked here),
+# in row order: a dict of that row's cell input ids
+# {'num','joint_s','joint_e','through','saddle'}.  Kept in sync with the selection
+# by _sync_table_rows(); the ids carry a monotonic uid so a deleted-then-recreated
 # row never collides with a lingering input.
 _row_ids = []
 _uid_counter = [0]
+
+# Column titles for the header row (row 0), matching the table's 5 columns.
+_TABLE_HEADERS = ('#', 'Joint Start', 'Joint End', 'Through', 'Saddle')
 
 
 def _new_uid():
     _uid_counter[0] += 1
     return _uid_counter[0]
+
+
+def _make_header_row(inputs, tbl):
+    """Populate table row 0 with read-only column titles.
+
+    Fusion tables expose no header API, so the idiomatic workaround is a first
+    row of non-editable text boxes.  These are NOT tracked in ``_row_ids``; every
+    data row is therefore offset by one table row (data row ``r`` lives at table
+    row ``r + 1``).
+    """
+    for c, title in enumerate(_TABLE_HEADERS):
+        box = inputs.addTextBoxCommandInput(
+            f'hdr_{c}', '', title, 1, True)
+        box.isEnabled = False
+        tbl.addCommandInput(box, 0, c)
 
 
 # --------------------------------------------------------------------------- #
@@ -142,30 +161,48 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     inputs.addDropDownCommandInput(
         'designation', 'Designation', adsk.core.DropDownStyles.TextListDropDownStyle)
 
-    # 4. Per-line joint + rotation + offset table.  One row per selected sketch
-    #    line, with columns [#, Joint, Through, Saddle, Rotation, Offset Start,
-    #    Offset End].  The Joint dropdown lists the corner treatments the
-    #    selected profile family supports (from data/profiles.json 'joints'),
-    #    defaulting to 'None' (full length to the vertex -- the historical
-    #    behaviour).  Through / Saddle are per-row checkboxes that only matter
-    #    for a Butt joint: Through marks this member as the one that runs past
-    #    the corner (its neighbour backs off); Saddle adds a boolean notch so a
-    #    butt end clears an open section's hollow interior.  A "Sync all"
-    #    checkbox lives in the table's bottom toolbar (the Fusion-idiomatic spot,
-    #    as in the Loft command): when checked (default) editing any row
-    #    propagates its value to every row and the manipulators anchor to the
-    #    first line; when unchecked each row keeps its own values and gets its
-    #    own manipulators anchored to that row's line.  The table starts empty;
-    #    _sync_table_rows() adds a row per line as the selection changes and
-    #    shows the checkbox only once there are 2+ rows to synchronise.
+    # 4. Global rotation + start/end offset (per-line, not per-end).  A joint is
+    #    a property of a line END, but rotation and the manual trim offsets apply
+    #    to the whole line, so they live here as single dialog inputs rather than
+    #    table columns.  The offset arrows anchor on the canvas (see
+    #    _update_manipulators); rotation is a plain spinner.
+    rot: adsk.core.FloatSpinnerCommandInput = inputs.addFloatSpinnerCommandInput(
+        'rotation', 'Rotation', 'degree', -1000, 1000, 15, 0)
+    rot.description = 'Section rotation about each line (degrees)'
+    inputs.addDistanceValueCommandInput(
+        'offset_start', 'Offset Start',
+        adsk.core.ValueInput.createByString('0 mm'))
+    inputs.addDistanceValueCommandInput(
+        'offset_end', 'Offset End',
+        adsk.core.ValueInput.createByString('0 mm'))
+
+    # 5. Per-line joint table.  One row per selected sketch line, with columns
+    #    [#, Joint Start, Joint End, Through, Saddle].  A joint belongs to a line
+    #    END, so each line gets TWO dropdowns -- one for its start vertex and one
+    #    for its end vertex -- which may differ (e.g. a miter on one end, a butt
+    #    on the other).  Each dropdown lists the corner treatments the selected
+    #    profile family supports (from data/profiles.json 'joints'), defaulting to
+    #    'None' (full length to the vertex -- the historical behaviour).  Through
+    #    / Saddle are per-row checkboxes that refine a Butt: Through marks this
+    #    member as the one that runs past the corner (its neighbour backs off);
+    #    Saddle notches the butt end to the neighbour's outer surface (a boolean)
+    #    instead of a flat square.  Row 0 is a read-only HEADER row giving the
+    #    column titles (Fusion tables have no header API), so the first data row
+    #    is row 1.  A "Sync all" checkbox lives in the table's bottom toolbar:
+    #    when checked (default) editing any data row propagates its value to every
+    #    row and the manipulators anchor to the first line; when unchecked each
+    #    row keeps its own values.  The table starts with just the header row;
+    #    _sync_table_rows() adds a data row per line as the selection changes.
     tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
-        'params', 'Per Line', 7, '1:2:1:1:3:3:3')
+        'params', 'Per Line', 5, '1:3:3:1:1')
     sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
         'sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
-    # Fresh dialog: no rows yet (they are added as lines are selected).
+    # Fresh dialog: the header row plus no data rows yet (they are added as lines
+    # are selected).
     global _row_ids
     _row_ids = []
+    _make_header_row(inputs, tbl)
 
     _rebuild_designations(inputs)
 
@@ -219,7 +256,7 @@ def _populate_joint_dropdown(dd, family):
 
 
 def _rebuild_joints(inputs):
-    """Re-populate every row's Joint dropdown for the current family.
+    """Re-populate every row's two Joint dropdowns for the current family.
 
     Called when the profile family changes: a family that cannot be bent drops
     the Bend option, and so on.  Rows whose previous selection is no longer
@@ -227,18 +264,20 @@ def _rebuild_joints(inputs):
     """
     family = _selected_family(inputs)
     for ids in _row_ids:
-        dd: adsk.core.DropDownCommandInput = inputs.itemById(ids['joint'])
-        if dd is None:
-            continue
-        prev = _dropdown_index(dd)
-        prev_label = dd.listItems.item(prev).name if 0 <= prev < dd.listItems.count else None
-        _populate_joint_dropdown(dd, family)
-        # Keep the user's choice when the new family still supports it.
-        if prev_label is not None:
-            for i in range(dd.listItems.count):
-                if dd.listItems.item(i).name == prev_label:
-                    dd.listItems.item(i).isSelected = True
-                    break
+        for key in ('joint_s', 'joint_e'):
+            dd: adsk.core.DropDownCommandInput = inputs.itemById(ids[key])
+            if dd is None:
+                continue
+            prev = _dropdown_index(dd)
+            prev_label = (dd.listItems.item(prev).name
+                          if 0 <= prev < dd.listItems.count else None)
+            _populate_joint_dropdown(dd, family)
+            # Keep the user's choice when the new family still supports it.
+            if prev_label is not None:
+                for i in range(dd.listItems.count):
+                    if dd.listItems.item(i).name == prev_label:
+                        dd.listItems.item(i).isSelected = True
+                        break
 
 
 # --------------------------------------------------------------------------- #
@@ -269,28 +308,30 @@ def _resolve(inputs):
 
 
 def _row_params(inputs, r):
-    """Return (angle_rad, offset_start, offset_end) for table row ``r``.
+    """Return (angle_rad, offset_start, offset_end) -- global (same for all lines).
 
-    Reads the row's own Rotation / Offset Start / Offset End cells (looked up by
-    the ids recorded in ``_row_ids[r]``).  A row index past the current table
-    (or a not-yet-built row) defaults to 0, i.e. no rotation and full length.
+    Rotation and the manual start/end offsets are per-LINE properties (not
+    per-end), so they live in single dialog inputs rather than table cells; every
+    line reads the same values here.  ``r`` is accepted for call-site symmetry
+    but ignored.
     """
-    if r >= len(_row_ids):
-        return (0.0, 0.0, 0.0)
-    ids = _row_ids[r]
-    ang: adsk.core.AngleValueCommandInput = inputs.itemById(ids['rot'])
-    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById(ids['os'])
-    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById(ids['oe'])
+    ang: adsk.core.FloatSpinnerCommandInput = inputs.itemById('rotation')
+    ofs: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_start')
+    ofe: adsk.core.DistanceValueCommandInput = inputs.itemById('offset_end')
     return (ang.value if ang else 0.0,
             ofs.value if ofs else 0.0,
             ofe.value if ofe else 0.0)
 
 
-def _row_joint(inputs, r):
-    """Return the joint id ('none'/'butt'/...) chosen for table row ``r``."""
+def _row_joint_at(inputs, r, key):
+    """Return the joint id chosen for table row ``r``'s end dropdown ``key``.
+
+    ``key`` is 'joint_s' (the line's start vertex) or 'joint_e' (its end vertex).
+    A row past the current table (or a not-yet-built row) defaults to 'none'.
+    """
     if r >= len(_row_ids):
         return 'none'
-    dd: adsk.core.DropDownCommandInput = inputs.itemById(_row_ids[r]['joint'])
+    dd: adsk.core.DropDownCommandInput = inputs.itemById(_row_ids[r][key])
     if dd is None:
         return 'none'
     idx = _dropdown_index(dd)
@@ -300,17 +341,23 @@ def _row_joint(inputs, r):
 
 
 def _row_joints(inputs, lines):
-    """The joint id chosen for each line (index-aligned with ``lines``)."""
-    return [_row_joint(inputs, i) for i in range(len(lines))]
+    """The per-end joint pair chosen for each line (index-aligned with ``lines``).
+
+    Each entry is a ``(start_id, end_id)`` tuple -- the joint chosen for the
+    line's start vertex and its end vertex, which may differ.
+    """
+    return [(_row_joint_at(inputs, i, 'joint_s'),
+             _row_joint_at(inputs, i, 'joint_e')) for i in range(len(lines))]
 
 
 def _row_flags(inputs, r):
     """Return (through, saddle) booleans for table row ``r``.
 
-    These refine a ``butt`` joint: ``through`` marks the member that runs past
-    the corner (its neighbour backs off); ``saddle`` adds a boolean notch so a
-    butt end clears an open section's hollow interior.  A row past the current
-    table (or a not-yet-built row) defaults to (False, False).
+    These refine a ``butt`` joint and apply to BOTH of the line's ends (a scalar
+    per line; see :func:`lib.joints._ends`): ``through`` marks the member that
+    runs past the corner (its neighbour backs off); ``saddle`` adds a boolean
+    notch so a butt end conforms to the neighbour's outer surface.  A row past
+    the current table (or a not-yet-built row) defaults to (False, False).
     """
     if r >= len(_row_ids):
         return (False, False)
@@ -342,6 +389,7 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None):
     """
     joints = _row_joints(inputs, lines)
     through = _row_through(inputs, lines)
+    saddle = _row_saddle(inputs, lines)
     geoms = [geom for _ in lines]
     bases = None
     if ref is not None:
@@ -351,7 +399,8 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None):
             bases = None
     try:
         return jt.corner_offsets(lines, geoms, joints, clr_by_line=clr_by_line,
-                                 through_by_line=through, bases=bases)
+                                 through_by_line=through, bases=bases,
+                                 saddle_by_line=saddle)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint offsets')
         return [(0.0, 0.0) for _ in lines]
@@ -360,13 +409,15 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None):
 def _bend_radii(inputs, lines, designation):
     """Per-line die centerline radius (mm) for ``bend`` legs (0 where not bending).
 
-    A leg only gets a radius when its joint is ``bend`` and the designation
+    A leg only gets a radius when one of its ends is ``bend`` and the designation
     resolves to a die in the catalogue; otherwise 0 (no swept arc there).
     """
     abbr = designation.get('_abbreviation') if designation else None
     radii = []
     for i in range(len(lines)):
-        if _row_joint(inputs, i) == 'bend' and abbr:
+        ends = (_row_joint_at(inputs, i, 'joint_s'),
+                _row_joint_at(inputs, i, 'joint_e'))
+        if 'bend' in ends and abbr:
             die = bd.die_for_designation(_DIES, designation, abbr)
             radii.append(die['nominal_CLR_mm'] if die else 0.0)
         else:
@@ -452,10 +503,11 @@ def _selected_lines(inputs):
 def _cell_column(input_id):
     """Map a table-cell input id to its column key.
 
-    Returns 'joint', 'rot', 'os' or 'oe' for the editable value columns, or None
-    for the read-only row-number column and every non-table input.
+    Returns 'joint_s', 'joint_e', 'through' or 'saddle' for the editable value
+    columns, or None for the read-only row-number / header cells and every
+    non-table input (Rotation / Offset live outside the table now).
     """
-    for col in ('joint', 'rot', 'os', 'oe'):
+    for col in ('joint_s', 'joint_e', 'through', 'saddle'):
         if input_id.startswith(col + '_'):
             return col
     return None
@@ -489,8 +541,9 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
         return
     _syncing = True
     try:
-        if col == 'joint':
-            # Dropdowns carry no .value; propagate the selected option by label.
+        if col in ('joint_s', 'joint_e'):
+            # Dropdowns carry no .value; propagate the selected option by label,
+            # within the same column (start stays start, end stays end).
             idx = _dropdown_index(inp)
             label = inp.listItems.item(idx).name if 0 <= idx < inp.listItems.count else None
             for ids in _row_ids:
@@ -530,13 +583,14 @@ def command_select(args: adsk.core.SelectionEventArgs):
 
 
 def _sync_table_rows(inputs, lines):
-    """Grow/shrink the params table so it has exactly one row per line.
+    """Grow/shrink the params table so it has exactly one data row per line.
 
-    Rows are matched by position: row r drives line r.  Existing rows keep
-    their values; new rows are appended with 0 defaults; rows past the current
-    line count are deleted from the end.  Each row's cell inputs get unique ids
-    (from a monotonic counter) so a deleted-then-recreated row never collides
-    with a lingering input.
+    Row 0 is the read-only header (column titles); data row ``r`` (driving line
+    ``r``) lives at table row ``r + 1``.  Existing rows keep their values; new
+    rows are appended with defaults; rows past the current line count are deleted
+    from the end.  Each row's cell inputs get unique ids (from a monotonic
+    counter) so a deleted-then-recreated row never collides with a lingering
+    input.
     """
     tbl: adsk.core.TableCommandInput = inputs.itemById('params')
     if tbl is None:
@@ -545,51 +599,42 @@ def _sync_table_rows(inputs, lines):
     while len(_row_ids) > n:
         _row_ids.pop()
         try:
-            tbl.deleteRow(len(_row_ids))
+            tbl.deleteRow(len(_row_ids) + 1)   # +1: row 0 is the header
         except Exception:
             pass
     while len(_row_ids) < n:
         r = len(_row_ids)
         uid = _new_uid()
-        ids = {'num': f'num_{uid}', 'joint': f'joint_{uid}',
-               'through': f'through_{uid}', 'saddle': f'saddle_{uid}',
-               'rot': f'rot_{uid}',
-               'os': f'os_{uid}', 'oe': f'oe_{uid}'}
+        ids = {'num': f'num_{uid}', 'joint_s': f'joint_s_{uid}',
+               'joint_e': f'joint_e_{uid}',
+               'through': f'through_{uid}', 'saddle': f'saddle_{uid}'}
         num = inputs.addTextBoxCommandInput(
             ids['num'], '', str(r + 1), 1, True)
-        # Joint: the corner treatment for this member, limited to what the
-        # selected profile family supports (see data/profiles.json 'joints').
-        joint = inputs.addDropDownCommandInput(
-            ids['joint'], '', adsk.core.DropDownStyles.TextListDropDownStyle)
-        _populate_joint_dropdown(joint, _selected_family(inputs))
-        # Through / Saddle: per-row checkboxes that refine a Butt joint.
-        # Through marks this member as the one that runs past the corner (its
-        # neighbour backs off); Saddle adds a boolean notch so a butt end
-        # clears an open section's hollow interior.  Both default off.
+        # Joint Start / Joint End: the corner treatment for each END of this
+        # line, limited to what the selected profile family supports (see
+        # data/profiles.json 'joints').  A joint belongs to a line end, so the
+        # two ends are configured independently and may differ.
+        joint_s = inputs.addDropDownCommandInput(
+            ids['joint_s'], '', adsk.core.DropDownStyles.TextListDropDownStyle)
+        _populate_joint_dropdown(joint_s, _selected_family(inputs))
+        joint_e = inputs.addDropDownCommandInput(
+            ids['joint_e'], '', adsk.core.DropDownStyles.TextListDropDownStyle)
+        _populate_joint_dropdown(joint_e, _selected_family(inputs))
+        # Through / Saddle: per-row checkboxes that refine a Butt joint (they
+        # apply to the line as a whole).  Through marks this member as the one
+        # that runs past the corner (its neighbour backs off); Saddle notches a
+        # butt end to the neighbour's outer surface instead of a flat square.
         through = inputs.addBoolValueInput(
             ids['through'], '', True, '', False)
         through.description = 'This member runs through the corner'
         saddle = inputs.addBoolValueInput(
             ids['saddle'], '', True, '', False)
         saddle.description = 'Notch this butt end to clear the neighbour'
-        # Rotation is a plain spinner (degrees): an editable box with NO
-        # on-canvas manipulator.  An AngleValueCommandInput would always draw a
-        # rotation wheel, and in a table cell that wheel does not write back to
-        # the box, so it is redundant -- hence a spinner here.  Its .value is in
-        # radians (the database angle unit), matching _build_weldment.
-        rot = inputs.addFloatSpinnerCommandInput(
-            ids['rot'], '', 'degree', -1000, 1000, 15, 0)
-        os_ = inputs.addDistanceValueCommandInput(
-            ids['os'], '', adsk.core.ValueInput.createByString('0 mm'))
-        oe_ = inputs.addDistanceValueCommandInput(
-            ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
-        tbl.addCommandInput(num, r, 0)
-        tbl.addCommandInput(joint, r, 1)
-        tbl.addCommandInput(through, r, 2)
-        tbl.addCommandInput(saddle, r, 3)
-        tbl.addCommandInput(rot, r, 4)
-        tbl.addCommandInput(os_, r, 5)
-        tbl.addCommandInput(oe_, r, 6)
+        tbl.addCommandInput(num, r + 1, 0)
+        tbl.addCommandInput(joint_s, r + 1, 1)
+        tbl.addCommandInput(joint_e, r + 1, 2)
+        tbl.addCommandInput(through, r + 1, 3)
+        tbl.addCommandInput(saddle, r + 1, 4)
         _row_ids.append(ids)
     # "Sync all" only means something once there are 2+ rows to keep in step, so
     # hide the toolbar checkbox otherwise rather than float a lone control.
@@ -599,41 +644,28 @@ def _sync_table_rows(inputs, lines):
 
 
 def _update_manipulators(inputs, lines):
-    """Show each row's cells and anchor its offset arrows.
+    """Anchor the (global) offset arrows on the canvas.
 
-    Rotation is a plain spinner (no canvas handle); only the offset arrows draw
-    on the canvas.  Synced (default): only row 0's arrows are shown, anchored to
-    line 0, because editing any row propagates to all -- one universal set of
-    handles.  Unsynced: row r's arrows anchor to line r, so every created
-    element carries its own arrows on the canvas.
+    Rotation is a plain spinner (no canvas handle) and the start/end offsets are
+    now single global inputs, so there is one universal pair of arrows.  Synced
+    (default) or with a single line, they anchor to line 0; unsynced with several
+    lines they still anchor to line 0 (the values are global regardless).
     """
-    sync: adsk.core.BoolValueCommandInput = inputs.itemById('sync_all')
-    synced = bool(sync and sync.value)
-    for r, ids in enumerate(_row_ids):
-        if synced:
-            anchor = lines[0] if lines else None
-            show = (r == 0)
-        else:
-            anchor = lines[r] if r < len(lines) else None
-            show = anchor is not None
-        _apply_row_manipulators(
-            inputs.itemById(ids['rot']), inputs.itemById(ids['os']),
-            inputs.itemById(ids['oe']), anchor, show)
+    anchor = lines[0] if lines else None
+    _apply_row_manipulators(inputs.itemById('rotation'),
+                            inputs.itemById('offset_start'),
+                            inputs.itemById('offset_end'), anchor,
+                            anchor is not None)
 
 
 def _apply_row_manipulators(ang, ofs, ofe, line, show):
-    """Keep a row's cells visible and anchor (or disable) its offset arrows.
+    """Anchor (or disable) the global offset arrows on ``line``.
 
-    The Rotation cell is a plain spinner (no on-canvas handle), so it is always
-    just an editable box.  The Offset Start / End arrows are the only canvas
-    manipulators: Offset Start sits at the line start and Offset End at its end,
-    both along the line direction.
-
-    A table row auto-hides when ALL of its cells are invisible, so every cell is
-    kept isVisible=True.  The offset arrows are toggled via isEnabled (the
-    manipulator draws only when isVisible AND isEnabled are both true): when
-    ``show`` is False (or there is no line) they are disabled so they never
-    strand at the default origin (0,0,0), while the row still shows.
+    The Rotation spinner has no on-canvas handle.  The Offset Start / End arrows
+    are the only canvas manipulators: Offset Start sits at the line start and
+    Offset End at its end, both along the line direction.  When ``show`` is False
+    (or there is no line) they are disabled so they never strand at the default
+    origin (0,0,0).
     """
     for inp in (ang, ofs, ofe):
         if inp is not None:
