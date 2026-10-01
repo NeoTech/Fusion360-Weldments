@@ -96,6 +96,39 @@ apex and a torus/arc segment of radius R fills the gap.
 5. [verify] Live-verify a swept 90 deg CHS/SHS bend.
 6. [accept] User acceptance test.
 
+## Phase 4 — Real corner geometry (miter / butt / cope cuts)
+
+Phase 1 only *shortens* members along their axis. Phase 4 gives the corners
+genuinely new end faces.
+
+**Todos**
+1. [lib] `lib/joints.py`: `corner_cuts(lines, joint_by_line)` -> cut plan dicts
+   `{'member', 'role', 'kind': 'plane'|'body', 'point', 'normal', 'keep',
+   'tool'}`. `kind='plane'` for miter (bisector), `kind='body'` for butt/cope
+   (saddle against the neighbour).
+2. [build] `entry.py`:
+   - miter = **waste-prism combine-cut**: a construction plane through the
+     vertex, a big square sketch on it, extruded one-sided to the waste side,
+     then `combineFeatures` Cut with `isKeepToolBodies=False` (the prism is
+     consumed). SplitBodyFeature is NOT usable in parametric designs — its
+     waste half stays shared with the member's extrude, so deleting it
+     cascade-deletes the kept half too.
+   - butt/cope = combine-cut against the neighbour's body
+     (`isKeepToolBodies=True`).
+   - Bodies are located *geometrically* (`_find_body_near`: nearest
+     bbox-centre to the member's line midpoint), because cuts prune/reparent
+     features and shift indices.
+   - `_apply_corner_cuts` returns every created object in delete order
+     (combine feature, prism extrude, prism sketch, plane-helper sketch,
+     plane) for `_clear_preview`; cutting features must go before member
+     features.
+3. [test] `TestCornerCutBuild`: miter -> 2 combines (tool consumed, no direct
+   body deletes, 2 one-sided prism extrudes); butt -> 1 combine keeping the
+   neighbour; cleanup deletes everything with zero leaks.
+4. [verify] Live: IPE 80 3-line L-frame; every mitered member ends at the same
+   volume (382.2 cm^3) and both corners read corner-to-corner in screenshots;
+   butt/cope cut correctly; `_clear_preview` leaves features=0, sketches=1.
+
 ## Conventions to keep
 
 - Pure geometry lives in `lib/` (no `adsk`), tested with stdlib `unittest`.

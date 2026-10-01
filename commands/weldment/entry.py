@@ -44,6 +44,13 @@ PREVIEW_OPACITY = 0.4
 # list is sufficient.
 _preview_objs = []
 
+# Corner-cut features (CombineFeature) and their helper geometry (waste-prism
+# extrudes, sketches, construction planes) made for the current preview.
+# Deleting a cut feature restores the member's whole
+# body, so cut features must be removed BEFORE the member
+# features they reference.
+_preview_cuts = []
+
 # Re-entrancy guard for the "Sync all" propagation: setting a table cell's value
 # programmatically can re-fire inputChanged, which would otherwise recurse.
 _syncing = False
@@ -350,8 +357,15 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref, preview=False)
 
 
 def _clear_preview():
-    """Delete the transient preview objects (feature, then sketch, then plane)."""
-    global _preview_objs
+    """Delete the transient preview objects (corner cuts first, then each
+    member's feature, sketch, and plane)."""
+    global _preview_objs, _preview_cuts
+    for obj in _preview_cuts:
+        try:
+            obj.deleteMe()
+        except Exception:
+            pass
+    _preview_cuts = []
     for feature, sketch, plane in _preview_objs:
         for obj in (feature, sketch, plane):
             try:
@@ -617,16 +631,24 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     ref = _selection_reference(saved)
     clr_by_line = _bend_radii(inputs, saved, designation)
     joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line)
+    objs, feat_idx = [], []
+    f_start = root.features.count
     for i, line in enumerate(saved):
         angle, off_s, off_e = _row_params(inputs, i)
         js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
-        objs = _build_weldment(root, line, geom, label, angle, ref,
-                               off_s + js, off_e + je, preview=True)
-        if objs:
-            _preview_objs.append(objs)
+        idx = root.features.count
+        built = _build_weldment(root, line, geom, label, angle, ref,
+                                off_s + js, off_e + je, preview=True)
+        objs.append(built)
+        feat_idx.append(idx if built else None)
+        if built:
+            _preview_objs.append(built)
     _preview_objs.extend(
         _build_bend_arcs(root, saved, _row_joints(inputs, saved),
                          clr_by_line, geom, ref, preview=True))
+    _preview_cuts.extend(
+        _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
+                           feat_idx, f_start))
     # Make sure the user's lines are still highlighted after the churn.
     _restore_selection(sel, saved)
 
@@ -649,14 +671,22 @@ def command_execute(args: adsk.core.CommandEventArgs):
     joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line)
 
     created = 0
+    objs, feat_idx = [], []
+    f_start = root.features.count
     for i, line in enumerate(saved):
         angle, off_s, off_e = _row_params(inputs, i)
         js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
-        if _build_weldment(root, line, geom, label, angle, ref,
-                           off_s + js, off_e + je):
+        idx = root.features.count
+        built = _build_weldment(root, line, geom, label, angle, ref,
+                                off_s + js, off_e + je)
+        if built:
             created += 1
+        objs.append(built)
+        feat_idx.append(idx if built else None)
     created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
                                     clr_by_line, geom, ref))
+    _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
+                       feat_idx, f_start)
 
     if created == 0:
         ui.messageBox('No weldments were created. Select 3D sketch line(s) first.')
@@ -686,6 +716,216 @@ def _line_direction(line):
 def _selection_reference(lines):
     """Shared profile "up" reference for a whole selection (see selection_reference)."""
     return prof.selection_reference([_line_direction(l) for l in lines])
+
+
+def _body_centroid(body):
+    """Centre of ``body``'s bounding box as a 3-tuple (cm)."""
+    bb = body.boundingBox
+    return ((bb.minPoint.x + bb.maxPoint.x) / 2.0,
+            (bb.minPoint.y + bb.maxPoint.y) / 2.0,
+            (bb.minPoint.z + bb.maxPoint.z) / 2.0)
+
+
+def _bbox_of(body):
+    """``((min_x, min_y, min_z), (max_x, max_y, max_z))`` of ``body``."""
+    bb = body.boundingBox
+    return ((bb.minPoint.x, bb.minPoint.y, bb.minPoint.z),
+            (bb.maxPoint.x, bb.maxPoint.y, bb.maxPoint.z))
+
+
+def _line_midpoint(line):
+    """Midpoint of a sketch line in model space (cm 3-tuple)."""
+    s, e = jt.line_endpoints(line)
+    return ((s[0] + e[0]) / 2.0, (s[1] + e[1]) / 2.0, (s[2] + e[2]) / 2.0)
+
+
+def _miter_plane(root, point, normal):
+    """Construction plane through ``point`` with the given ``normal``.
+
+    Built as a sketch with two long lines spanning the plane plus
+    ``setByTwoEdges`` -- the only angled-plane method that works reliably in
+    parametric designs.  Returns ``(plane, sketch)``.
+    """
+    a = (1.0, 0.0, 0.0) if abs(normal[0]) < 0.9 else (0.0, 1.0, 0.0)
+    u = prof._norm(prof._cross(normal, a))
+    w = prof._norm(prof._cross(normal, u))
+    sk = root.sketches.add(root.xYConstructionPlane)
+    sk.name = 'WeldMiterPlane'
+
+    def line3(d):
+        return sk.sketchCurves.sketchLines.addByTwoPoints(
+            adsk.core.Point3D.create(point[0] + d[0] * 1e3,
+                                      point[1] + d[1] * 1e3,
+                                      point[2] + d[2] * 1e3),
+            adsk.core.Point3D.create(point[0] - d[0] * 1e3,
+                                      point[1] - d[1] * 1e3,
+                                      point[2] - d[2] * 1e3))
+
+    l1 = line3(u)
+    l2 = line3(w)
+    ci = root.constructionPlanes.createInput()
+    ci.setByTwoEdges(l1, l2)
+    plane = root.constructionPlanes.add(ci)
+    return plane, sk
+
+
+def _side(pt, origin, normal):
+    """Sign of the offset of ``pt`` from the plane (origin, normal): +1/-1/0."""
+    d = sum((pt[k] - origin[k]) * normal[k] for k in range(3))
+    return 1 if d > 1e-6 else (-1 if d < -1e-6 else 0)
+
+
+def _all_bodies(root):
+    """Every BRepBody currently in ``root``, re-fetched by feature index.
+
+    Split/combine prune or reparent features, so a cached feature index can
+    point past the end; always enumerate fresh.  A feature whose bodies raise
+    (mid-edit) is skipped.
+    """
+    out = []
+    for i in range(root.features.count):
+        try:
+            f = root.features.item(i)
+            for j in range(f.bodies.count):
+                out.append(f.bodies.item(j))
+        except Exception:
+            continue
+    return out
+
+
+def _find_body_near(root, point, max_dist):
+    """The body whose bbox-centre is nearest ``point`` (within ``max_dist``).
+
+    Used to locate a member's (possibly re-homed) body without a feature index:
+    the point is the member's line midpoint, deep inside its kept material and
+    far from any neighbour, so the nearest body is unambiguous.
+    """
+    best, best_d = None, None
+    for b in _all_bodies(root):
+        try:
+            ctr = _body_centroid(b)
+        except Exception:
+            continue
+        d = sum((ctr[k] - point[k]) ** 2 for k in range(3)) ** 0.5
+        if best_d is None or d < best_d:
+            best, best_d = b, d
+    if best is not None and best_d <= max_dist:
+        return best
+    return None
+
+
+# Half-size (cm) of the waste prism drawn on a miter plane; must exceed any
+# section reach so the prism fully covers the corner's waste half-space.
+_WASTE_RADIUS = 100.0
+# Extrusion depth (cm) of the waste prism; deep enough to swallow the corner.
+_WASTE_DEPTH = 200.0
+
+
+def _waste_prism(root, V, normal, keep_side):
+    """Build a big box occupying the waste half-space beyond a miter plane.
+
+    A construction plane through ``V`` with the bisector ``normal`` hosts a
+    square sketch (side ``2*_WASTE_RADIUS``) extruded ``_WASTE_DEPTH`` to the
+    waste side (opposite ``keep_side``).  The resulting body is the cutting
+    tool for a combine-cut that trims a member to the bisector -- the miter
+    primitive.  SplitBodyFeature is unusable here: in a parametric design its
+    waste half stays shared with the member's extrude, so deleting it cascades
+    and removes the kept half too.  Returns
+    ``(feature, sketch, plane, helper_sketch)``.
+    """
+    plane, sk = _miter_plane(root, V, normal)
+    skb = root.sketches.add(plane)
+    skb.name = 'WeldWaste'
+    a1 = (1.0, 0.0, 0.0) if abs(normal[0]) < 0.9 else (0.0, 1.0, 0.0)
+    u = prof._norm(prof._cross(normal, a1))
+    w = prof._norm(prof._cross(normal, u))
+    R = _WASTE_RADIUS
+    pts = [tuple(V[c] + su * R * u[c] + sw * R * w[c] for c in range(3))
+           for su in (-1, 1) for sw in (-1, 1)]
+    loop = [pts[0], pts[1], pts[3], pts[2]]  # order into a non-self-crossing rect
+    for i in range(4):
+        _draw_model_line(skb, loop[i], loop[(i + 1) % 4])
+    ei = root.features.extrudeFeatures.createInput(
+        skb.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    ei.startExtent = adsk.fusion.ProfilePlaneStartDefinition.create()
+    # Signed distance along the plane normal: negative extrudes to the waste
+    # side when keep_side is +1 (and vice-versa).
+    ei.setDistanceExtent(False, adsk.core.ValueInput.createByReal(
+        (-keep_side) * _WASTE_DEPTH))
+    ext = root.features.extrudeFeatures.add(ei)
+    return ext, skb, plane, sk
+
+
+def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start):
+    """Shape member ends with real geometry for miter/butt/cope corners.
+
+    ``objs[i]`` is the ``(feature, sketch, plane)`` tuple built for line ``i``
+    (or None); ``feat_idx`` and ``f_start`` are retained only for the caller's
+    bookkeeping.  Bodies are located *geometrically* (nearest bbox-centre to
+    each line's midpoint) rather than by feature index, because a cut prunes or
+    reparents features and shifts every later index.  Per
+    :func:`lib.joints.corner_cuts`:
+
+    * ``kind='plane'`` (miter): combine-cut the member against a waste prism
+      occupying the half-space beyond the bisector plane through the vertex
+      (see :func:`_waste_prism`); the prism is consumed by the cut.
+    * ``kind='body'`` (butt/cope): combine-cut the member against the
+      neighbour's body (keep-tool-bodies), saddling it to the through member.
+
+    Returns the objects to track for preview cleanup, in delete order: each
+    combine feature first (removing it restores the member body), then the
+    prism extrudes/sketches/planes they consumed.  The caller must delete all
+    of these BEFORE the member features.
+    """
+    created = []
+    try:
+        cuts = jt.corner_cuts(lines, joints)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} corner cut plan')
+        return created
+    for cut in cuts:
+        m, t = cut['member'], cut['tool']
+        if m >= len(objs) or objs[m] is None:
+            continue
+        if t >= len(objs) or objs[t] is None:
+            continue
+        try:
+            reach = max(lines[m].length, 1.0)
+            body = _find_body_near(root, _line_midpoint(lines[m]), reach)
+            if body is None:
+                continue
+            if cut['kind'] == 'plane':
+                keep_side = _side(_body_centroid(body), cut['point'],
+                                  cut['normal'])
+                prism, skb, plane, sk = _waste_prism(root, cut['point'],
+                                                     cut['normal'], keep_side)
+                tools = adsk.core.ObjectCollection.create()
+                tools.add(prism.bodies.item(0))
+                ci = root.features.combineFeatures.createInput(body, tools)
+                ci.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
+                # The prism is pure waste: consume it instead of leaving a
+                # giant box in the view (unlike butt/cope, whose tool is a
+                # real neighbour body).
+                ci.isKeepToolBodies = False
+                comb = root.features.combineFeatures.add(ci)
+                created.extend([comb, prism, skb, sk, plane])
+            else:
+                tool_reach = max(lines[t].length, 1.0)
+                tool_body = _find_body_near(root, _line_midpoint(lines[t]),
+                                            tool_reach)
+                if tool_body is None:
+                    continue
+                tools = adsk.core.ObjectCollection.create()
+                tools.add(tool_body)
+                ci = root.features.combineFeatures.createInput(body, tools)
+                ci.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
+                ci.isKeepToolBodies = True
+                comb = root.features.combineFeatures.add(ci)
+                created.append(comb)
+        except Exception:
+            futil.handle_error(f'{CMD_NAME} corner cut')
+    # Cut features and prism helpers FIRST (delete order), then the rest.
+    return created
 
 
 def _draw_model_line(sketch, p_from, p_to):

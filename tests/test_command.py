@@ -521,5 +521,95 @@ class TestBendBuild(unittest.TestCase):
         self.assertEqual(len(objs), 1)   # one rounded corner
 
 
+class TestCornerCutBuild(unittest.TestCase):
+    """Real corner geometry: miter waste-prism cuts and butt/cope combine-cuts."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.root = adsk_stub.FakeRoot()
+        families = prof.annotate_families(prof.load_profiles())
+        self.geom = prof.section_geometry(prof.designations(families[0])[0])
+        # An L-corner: line 0 along +X, line 1 along +Y, meeting at (10,0,0).
+        self.lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                      adsk_stub.FakeLine((10, 0, 0), (10, 10, 0))]
+
+    def _build(self):
+        objs, idx = [], []
+        for ln in self.lines:
+            idx.append(self.root.features.count)
+            objs.append(entry._build_weldment(self.root, ln, self.geom, 'X'))
+            # Position the built body at its line midpoint so the geometric
+            # body lookup in _apply_corner_cuts can tell members apart (the
+            # stub extrude defaults to the origin otherwise).
+            mid = entry._line_midpoint(ln)
+            body = objs[-1][0].bodies.item(0)
+            body._center = mid
+            body.boundingBox = adsk_stub.FakeBoundingBox(mid)
+        return objs, idx
+
+    def test_miter_combines_both_members_against_a_waste_prism(self):
+        objs, idx = self._build()
+        cuts = entry._apply_corner_cuts(self.root, self.lines,
+                                        ['miter', 'miter'], objs, idx, 0)
+        names = [c[0] for c in adsk_stub.CALLS]
+        # Split is unusable in parametric designs (deleting the waste half
+        # cascade-deletes the kept half), so a miter is a combine against a
+        # waste prism instead.
+        self.assertNotIn('SplitBodyFeatures.add', names)
+        self.assertEqual(names.count('CombineFeatures.add'), 2)
+        for ci in [c for c in adsk_stub.CALLS if c[0] == 'CombineFeatures.add']:
+            self.assertEqual(
+                ci[1][0],
+                adsk_stub.sys.modules['adsk.fusion'].FeatureOperations
+                .CutFeatureOperation)
+            # The prism is pure waste, so it must be consumed, not kept.
+            self.assertFalse(ci[1][1])
+        # No body is deleted directly: the combine does all the trimming.
+        self.assertNotIn('Body.deleteMe', names)
+        # One one-sided prism extrude per member end.
+        self.assertEqual(
+            names.count('ExtrudeFeatureInput.setDistanceExtent'), 2)
+        # Returned objects come in (combine, prism, sketch, helper, plane)
+        # fives and lead with the combine features, which must go before the
+        # members.
+        self.assertEqual(len(cuts), 10)
+        self.assertTrue(all('Combine' in f.objectType for f in cuts[0::5]))
+
+    def test_butt_combines_incoming_member(self):
+        objs, idx = self._build()
+        cuts = entry._apply_corner_cuts(self.root, self.lines,
+                                        ['none', 'butt'], objs, idx, 0)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertEqual(names.count('CombineFeatures.add'), 1)
+        # Cut with the neighbour's body, keeping the tool.
+        ci = [c for c in adsk_stub.CALLS if c[0] == 'CombineFeatures.add'][0]
+        self.assertEqual(
+            ci[1][0],
+            adsk_stub.sys.modules['adsk.fusion'].FeatureOperations
+            .CutFeatureOperation)
+        self.assertTrue(ci[1][1])
+        self.assertEqual(len(cuts), 1)
+
+    def test_none_joints_build_no_cuts(self):
+        objs, idx = self._build()
+        cuts = entry._apply_corner_cuts(self.root, self.lines,
+                                        ['none', 'none'], objs, idx, 0)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertNotIn('SplitBodyFeatures.add', names)
+        self.assertNotIn('CombineFeatures.add', names)
+        self.assertEqual(cuts, [])
+
+    def test_cuts_delete_cleanly_before_members(self):
+        objs, idx = self._build()
+        cuts = entry._apply_corner_cuts(self.root, self.lines,
+                                        ['miter', 'miter'], objs, idx, 0)
+        for obj in cuts:
+            obj.deleteMe()
+        for o in objs:
+            for x in o:
+                x.deleteMe()
+        self.assertEqual(self.root.features.count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

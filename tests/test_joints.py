@@ -124,13 +124,19 @@ class TestButtJoint(unittest.TestCase):
 
 
 class TestMiterJoint(unittest.TestCase):
-    def test_miter_no_axial_trim(self):
-        # A miter is a real angled cut, not a setback trim.
+    def test_miter_extends_to_corner(self):
+        # A miter runs corner-to-corner, so each member EXTENDS past the
+        # centreline vertex by the setback (d/2)/tan(phi/2); the bisector plane
+        # then trims the diagonal.  For a 100 mm section at a right angle that
+        # is 50/tan(45) = 50 mm = 5 cm, applied at the corner (start) end.
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
                  FakeLine((0, 0, 0), (0, 10, 0))]
         geoms = [_rect(100), _rect(100)]
         offs = jt.corner_offsets(lines, geoms, ['miter', 'miter'])
-        self.assertEqual(offs, [(0.0, 0.0), (0.0, 0.0)])
+        self.assertAlmostEqual(offs[0][0], -5.0)
+        self.assertAlmostEqual(offs[1][0], -5.0)
+        self.assertEqual(offs[0][1], 0.0)
+        self.assertEqual(offs[1][1], 0.0)
 
     def test_miter_zero_when_collinear(self):
         # A straight run (180 deg turn) needs no miter setback.

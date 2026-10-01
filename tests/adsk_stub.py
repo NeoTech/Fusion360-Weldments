@@ -122,6 +122,9 @@ def _make_enums():
     fusion.FeatureOperations = _Enum(
         JoinFeatureOperation=0, CutFeatureOperation=1,
         IntersectFeatureOperation=2, NewBodyFeatureOperation=3)
+    fusion.PointContainment = _Enum(
+        PointInsidePointContainment=0, PointOutsidePointContainment=1,
+        PointOnPointContainment=2)
 
 
 # --- the objects the command touches ---------------------------------------- #
@@ -149,12 +152,14 @@ class FakeLine:
 
 
 class FakePlaneGeometry:
-    origin = Point3D(0, 0, 0)
-    normal = Vector3D(1, 0, 0)
+    def __init__(self, normal=(1, 0, 0)):
+        self.origin = Point3D(0, 0, 0)
+        self.normal = Vector3D(*normal)
 
 
 class FakeConstructionPlane:
-    geometry = FakePlaneGeometry()
+    def __init__(self, normal=(1, 0, 0)):
+        self.geometry = FakePlaneGeometry(normal)
 
     def deleteMe(self):
         _record("ConstructionPlane.deleteMe")
@@ -228,20 +233,40 @@ class FakeCPInput:
         _record("ConstructionPlaneInput.setByPath", dist_type, dist)
         return True
 
+    def setByTwoEdges(self, l1, l2):
+        _record("ConstructionPlaneInput.setByTwoEdges")
+        return True
+
 
 class FakeConstructionPlanes:
+    def __init__(self, root=None):
+        self._root = root
+
     def createInput(self):
         return FakeCPInput()
 
     def add(self, ci):
         _record("ConstructionPlanes.add")
-        return FakeConstructionPlane()
+        plane = FakeConstructionPlane()
+        if self._root is not None:
+            plane._root = self._root
+            self._root._planes.append(plane)
+        return plane
+
+    @property
+    def count(self):
+        return len(self._root._planes) if self._root else 0
+
+    def item(self, i):
+        return self._root._planes[i]
 
 
 class FakeSketches:
     def add(self, plane):
         _record("Sketches.add")
-        return FakeSketch()
+        sk = FakeSketch()
+        sk.attachedPlane = plane
+        return sk
 
 
 class FakeExtrudeInput:
@@ -252,15 +277,26 @@ class FakeExtrudeInput:
         _record("ExtrudeFeatureInput.setOneSideExtent", direction)
         return True
 
+    def setDistanceExtent(self, symmetric, value):
+        _record("ExtrudeFeatureInput.setDistanceExtent", symmetric, value)
+        return True
+
 
 class FakeExtrudeFeatures:
+    def __init__(self, root=None):
+        self._root = root
+
     def createInput(self, profile, operation):
         _record("ExtrudeFeatures.createInput", operation)
         return FakeExtrudeInput()
 
     def add(self, ei):
         _record("ExtrudeFeatures.add")
-        return _Node("feature")
+        feat = FakeFeature("adsk::fusion::ExtrudeFeature", self._root,
+                           [FakeBody()])
+        if self._root is not None:
+            self._root.features._items.append(feat)
+        return feat
 
 
 class FakeRevolveInput:
@@ -270,25 +306,203 @@ class FakeRevolveInput:
 
 
 class FakeRevolveFeatures:
+    def __init__(self, root=None):
+        self._root = root
+
     def createInput(self, profile, axis, operation):
         _record("RevolveFeatures.createInput", operation)
         return FakeRevolveInput()
 
     def add(self, ri):
         _record("RevolveFeatures.add")
-        return _Node("feature")
+        feat = FakeFeature("adsk::fusion::RevolveFeature", self._root,
+                           [FakeBody()])
+        if self._root is not None:
+            self._root.features._items.append(feat)
+        return feat
 
 
-class FakeFeatures:
-    extrudeFeatures = FakeExtrudeFeatures()
-    revolveFeatures = FakeRevolveFeatures()
+# --- bodies, features, and boolean/split operations ------------------------ #
+class FakeBoundingBox:
+    def __init__(self, center=(0.0, 0.0, 0.0), half=1.0):
+        self.minPoint = Point3D(center[0] - half, center[1] - half,
+                                center[2] - half)
+        self.maxPoint = Point3D(center[0] + half, center[1] + half,
+                                center[2] + half)
+
+
+class FakeBody:
+    """A body with a real centroid (``center``) and a scripted pointContainment.
+
+    ``center`` drives ``boundingBox`` so the corner-cut code can tell fragments
+    apart by signed distance to the miter plane; ``contains`` still drives
+    ``pointContainment`` for any code that uses it.
+    """
+
+    def __init__(self, contains=True, name="Body", center=(0.0, 0.0, 0.0)):
+        self._contains = contains
+        self.name = name
+        self.opacity = 1.0
+        self._center = center
+        self.boundingBox = FakeBoundingBox(center)
+        self._owner = None
+
+    def pointContainment(self, pt):
+        _record("Body.pointContainment")
+        import sys as _sys
+        pc = _sys.modules["adsk.fusion"].PointContainment
+        return (pc.PointInsidePointContainment if self._contains
+                else pc.PointOutsidePointContainment)
+
+    def deleteMe(self):
+        _record("Body.deleteMe")
+        if self._owner is not None and self in self._owner._items:
+            self._owner._items.remove(self)
+        return True
+
+
+class FakeBodies:
+    def __init__(self, items=None):
+        self._items = list(items or [])
+        for it in self._items:
+            it._owner = self
+
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return self._items[i]
+
+    def append(self, b):
+        b._owner = self
+        self._items.append(b)
+
+
+class FakeFeature:
+    def __init__(self, object_type, root, bodies=None):
+        self.objectType = object_type
+        self._root = root
+        self.bodies = FakeBodies(bodies)
+
+    def deleteMe(self):
+        _record("Feature.deleteMe", self.objectType)
+        if self._root is not None and self in self._root.features._items:
+            self._root.features._items.remove(self)
+        return True
+
+
+class _FakeCollection:
+    """A list-backed count/item collection (features, planes, ...)."""
+
+    def __init__(self, items=None):
+        self._items = list(items or [])
+
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return self._items[i]
+
+
+class FakeSplitInput:
+    def __init__(self, body, tool, gap):
+        self.body = body
+        self.tool = tool
+        self.distanceGap = gap
+
+
+class FakeSplitBodyFeatures:
+    def __init__(self, root=None):
+        self._root = root
+
+    def createInput(self, body, tool, gap):
+        _record("SplitBodyFeatures.createInput", body, tool, gap)
+        return FakeSplitInput(body, tool, gap)
+
+    def add(self, si):
+        _record("SplitBodyFeatures.add")
+        # Model: the kept half stays on the member feature; the split feature
+        # lists both halves, the second being the deletable waste (placed far
+        # from the kept body's centroid so signed distance flags it as waste).
+        feat = FakeFeature("adsk::fusion::SplitBodyFeature", self._root,
+                           [si.body, FakeBody(contains=False,
+                                             center=(1e6, 2e6, 3e6))])
+        if self._root is not None:
+            self._root.features._items.append(feat)
+        return None  # real API returns None in parametric designs
+
+
+class FakeCombineInput:
+    def __init__(self, target, tools):
+        self.target = target
+        self.tools = tools
+        self.operation = None
+        self.isKeepToolBodies = False
+
+
+class FakeCombineFeatures:
+    def __init__(self, root=None):
+        self._root = root
+
+    def createInput(self, target, tools):
+        _record("CombineFeatures.createInput", target, tools)
+        return FakeCombineInput(target, tools)
+
+    def add(self, ci):
+        _record("CombineFeatures.add", ci.operation, ci.isKeepToolBodies)
+        feat = FakeFeature("adsk::fusion::CombineFeature", self._root,
+                           [ci.target])
+        if not ci.isKeepToolBodies:
+            # Real API consumes the tool bodies: their owning feature loses
+            # them and becomes empty (the waste-prism extrude in a miter cut).
+            for f in list(self._root.features._items):
+                for b in list(f.bodies._items):
+                    if any(b is t for t in ci.tools._items):
+                        f.bodies._items.remove(b)
+        if self._root is not None:
+            self._root.features._items.append(feat)
+        return feat
+
+
+class FakeFeatures(_FakeCollection):
+    def __init__(self, root=None):
+        super().__init__()
+        self.extrudeFeatures = FakeExtrudeFeatures(root)
+        self.revolveFeatures = FakeRevolveFeatures(root)
+        self.splitBodyFeatures = FakeSplitBodyFeatures(root)
+        self.combineFeatures = FakeCombineFeatures(root)
+
+
+class FakeObjectCollection:
+    def __init__(self):
+        self._items = []
+
+    @classmethod
+    def create(cls):
+        _record("ObjectCollection.create")
+        return cls()
+
+    def add(self, obj):
+        self._items.append(obj)
+        return True
+
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return self._items[i]
 
 
 class FakeRoot:
     def __init__(self):
-        self.constructionPlanes = FakeConstructionPlanes()
+        self.features = FakeFeatures(self)
+        self._planes = []
+        self.constructionPlanes = FakeConstructionPlanes(self)
         self.sketches = FakeSketches()
-        self.features = FakeFeatures()
+        self.xYConstructionPlane = FakeConstructionPlane((0, 0, 1))
 
 
 # --- command-input fakes (for driving the dialog event handlers) ----------- #
@@ -505,7 +719,8 @@ def install():
     core.ValueInput = ValueInput
     core.Application = _Node("Application")
     core.DropDownStyles = _Enum(TextListDropDownStyle=0)
-    core.LogLevels = _Enum(InfoLogLevel=0)
+    core.LogLevels = _Enum(InfoLogLevel=0, ErrorLogLevel=1, WarningLogLevel=2)
+    core.ObjectCollection = FakeObjectCollection
 
     fusion.Path = FakePath
     fusion.ToEntityExtentDefinition = _Node("ToEntityExtentDefinition")

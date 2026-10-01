@@ -241,10 +241,24 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None):
                     offs[idx] = (offs[idx][0], offs[idx][1] - sb)
                 else:
                     offs[idx] = (offs[idx][0] + sb, offs[idx][1])
-            # ``miter``/``butt``/``cope`` are realised by real boolean cuts
+            elif jid == 'miter':
+                # A miter face runs corner-to-corner, so the member must reach
+                # PAST the centreline vertex by the setback ``(d/2)/tan(phi/2)``;
+                # the bisector plane through the vertex then trims the diagonal
+                # (see :func:`corner_cuts`).  Without the extension the plane
+                # only clips the square end's centre -- no visible miter.
+                depth = member_depth(geoms[idx]) if idx < len(geoms) else 0.0
+                sb = _miter_setback(depth, phi)
+                if sb <= 0.0:
+                    continue
+                if role == 'end':
+                    offs[idx] = (offs[idx][0], offs[idx][1] + sb)
+                else:
+                    offs[idx] = (offs[idx][0] - sb, offs[idx][1])
+            # ``butt``/``cope`` are realised by a neighbour-body saddle cut
             # (see :func:`corner_cuts`), not an axial trim, so they contribute
-            # no offset here -- the member runs to the vertex and the cut
-            # (angled plane or neighbour-body saddle) shapes its end face.
+            # no offset here -- the member runs to the vertex and the saddle
+            # shapes its end face against the through-member.
     return offs
 
 
