@@ -762,11 +762,13 @@ def bend_plan(lines, joint_by_line, clr_by_line, inverse_by_line=None,
     normalize(u+v)``; ``axis`` is the bend-plane normal (revolve axis); each
     ``tangent`` entry gives the trimmed end point of one leg.
 
-    The arc centre is symmetric in the two legs, but the revolve axis is their
-    cross product ``u x v``, which changes sign when the two lines meeting at
-    the corner are picked in the opposite order -- so the same physical corner
-    sweeps +90 or -90 purely by selection order.  When either leg requests
-    ``inverse`` the axis is negated, flipping the sweep to the other side.
+    The arc centre is symmetric in the two legs, but the sweep direction is the
+    sign of the revolve angle, which Fusion derives from the ordered pair
+    ``(u, v)`` -- so the same physical corner sweeps +90 or -90 purely by
+    selection order.  When either leg requests ``inverse`` the plan's
+    ``direction`` is set to -1, flipping the sweep to the other side (the
+    builder multiplies the angle by it; negating the axis *line* would do
+    nothing, since a line has no direction).
     """
     plans = []
     for corner in detect_corners(lines, tol):
@@ -791,16 +793,18 @@ def bend_plan(lines, joint_by_line, clr_by_line, inverse_by_line=None,
         dist = (clr * MM_TO_CM) / math.cos(theta / 2.0)
         center = _add(V, _scale(bis, dist))
         axis = _norm(_cross(u, v))
-        # Inverse on either leg flips the revolve axis (and thus the sweep
-        # direction) so a corner built from reversed selection order bends the
-        # same way as one built in the natural order.
-        if inverse_by_line and any(
-                flag_at(inverse_by_line, idx, role) for idx, role in members):
-            axis = _scale(axis, -1)
+        # Inverse on either leg flips the sweep by negating the revolve angle's
+        # sign (see the builder), so a corner built from reversed selection
+        # order bends the same way as one built in the natural order.  The axis
+        # vector itself is left as the geometric normal u x v.
+        direction = -1.0 if (inverse_by_line and any(
+            flag_at(inverse_by_line, idx, role) for idx, role in members)
+        ) else 1.0
         tangent = [(i0, r0, _add(V, _scale(u, sb))),
                    (i1, r1, _add(V, _scale(v, sb)))]
         plans.append({'point': V, 'center': center, 'axis': axis,
-                      'theta': theta, 'radius_cm': clr * MM_TO_CM,
+                      'theta': theta, 'direction': direction,
+                      'radius_cm': clr * MM_TO_CM,
                       'tangent': tangent,
                       'arc_length': clr * abs(theta) * MM_TO_CM})
     return plans

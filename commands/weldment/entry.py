@@ -885,11 +885,11 @@ def _sync_table_rows(inputs, lines):
         oe_ = inputs.addDistanceValueCommandInput(
             ids['oe'], '', adsk.core.ValueInput.createByString('0 mm'))
         # Inverse: flips this line's swept-bend direction.  The arc centre is
-        # symmetric in the two legs but the revolve axis is their cross product,
-        # so a corner whose lines were picked in reverse order sweeps the wrong
-        # way (+90 instead of -90); this checkbox negates the axis.  Meaningful
-        # only when one of the line's ends is a Bend, so it is enabled solely in
-        # that case (see _update_bend_columns).
+        # symmetric in the two legs but the sweep is the sign of the revolve
+        # angle, so a corner whose lines were picked in reverse order sweeps the
+        # wrong way (+90 instead of -90); this checkbox flips that sign.  Only
+        # meaningful when one of the line's ends is a Bend, so it is enabled
+        # solely in that case (see _update_bend_columns).
         inv = inputs.addBoolValueInput(ids['inv'], '', True, '', False)
         inv.description = 'Flip the bend sweep direction (reversed line order)'
         # Bend Die: the tooling used for this line's bend.  A tube size is
@@ -1423,7 +1423,13 @@ def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False):
         rev_input = root.features.revolveFeatures.createInput(
             sketch.profiles.item(0), lines.item(lines.count - 1),
             adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-        rev_input.setAngleExtent(False, adsk.core.ValueInput.createByReal(abs(theta)))
+        # Fusion takes the sweep direction from the SIGN of the angle, not the
+        # axis-line direction (a line has none), so Inverse is applied here as
+        # +/- theta via the plan's direction.  theta is always >= 0 (a turn
+        # angle), so this is the only place the sign is introduced.
+        rev_input.setAngleExtent(
+            False,
+            adsk.core.ValueInput.createByReal(theta * plan.get('direction', 1.0)))
         feature = root.features.revolveFeatures.add(rev_input)
 
         if preview:

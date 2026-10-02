@@ -405,18 +405,21 @@ class TestSweptBend(unittest.TestCase):
         # Only one leg asks for a bend -> no swept corner.
         self.assertEqual(jt.bend_plan(lines, ['bend', 'none'], [100.0, 100.0]), [])
 
-    def test_bend_plan_inverse_flips_axis(self):
-        # The arc centre is symmetric in the two legs, but the revolve axis is
-        # their cross product, so a corner whose lines were picked in reverse
-        # order sweeps the wrong way.  Inverse negates the axis to fix it.
+    def test_bend_plan_inverse_flips_direction(self):
+        # The arc centre is symmetric in the two legs, but the sweep is the sign
+        # of the revolve angle, so a corner whose lines were picked in reverse
+        # order sweeps the wrong way.  Inverse flips that sign (direction).
         lines = [FakeLine((0, 0, 0), (30, 0, 0)),
                  FakeLine((0, 0, 0), (0, 30, 0))]
         normal = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0])[0]
         inv = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0],
                            inverse_by_line=[True, False])[0]
-        # Normal axis is +Z (u x v = x x y); inverse is the negation, -Z.
+        # Normal sweeps +1; inverse sweeps -1.  The axis vector is the geometric
+        # normal u x v (+Z) in both -- negating a line's direction is a no-op.
+        self.assertAlmostEqual(normal['direction'], 1.0)
+        self.assertAlmostEqual(inv['direction'], -1.0)
         self.assertAlmostEqual(normal['axis'][2], 1.0)
-        self.assertAlmostEqual(inv['axis'][2], -1.0)
+        self.assertAlmostEqual(inv['axis'][2], 1.0)
         # The centre and turn angle are unchanged -- only the sweep direction.
         self.assertAlmostEqual(inv['center'][0], normal['center'][0])
         self.assertAlmostEqual(inv['theta'], normal['theta'])
@@ -426,10 +429,11 @@ class TestSweptBend(unittest.TestCase):
         lines = [FakeLine((0, 0, 0), (30, 0, 0)),
                  FakeLine((0, 0, 0), (0, 30, 0))]
         a = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0],
-                         inverse_by_line=[True, False])[0]['axis']
+                         inverse_by_line=[True, False])[0]['direction']
         b = jt.bend_plan(lines, ['bend', 'bend'], [100.0, 100.0],
-                         inverse_by_line=[False, True])[0]['axis']
-        self.assertAlmostEqual(a[2], b[2])   # both flip to -Z
+                         inverse_by_line=[False, True])[0]['direction']
+        self.assertAlmostEqual(a, -1.0)   # both flip the sweep
+        self.assertAlmostEqual(b, -1.0)
 
     def test_bend_offsets_trim_legs(self):
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
