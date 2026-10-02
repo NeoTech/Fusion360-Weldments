@@ -152,6 +152,14 @@ def stop():
 def command_created(args: adsk.core.CommandCreatedEventArgs):
     inputs = args.command.commandInputs
 
+    # The table has 11 columns; at Fusion's default dialog width the text
+    # dropdowns (Joint Start/End, Bend Die) and the numeric spinners are all
+    # squeezed to a few pixels and the whole thing is unreadable.  Give the
+    # dialog a roomy initial size and a minimum that still fits every column,
+    # so resizing the window reflows the table instead of clipping it.
+    args.command.setDialogInitialSize(1040, 520)
+    args.command.setDialogMinimumSize(820, 360)
+
     # 1. The path: one or more 3D sketch lines.
     sel: adsk.core.SelectionCommandInput = inputs.addSelectionInput(
         'path', 'Lines', 'Select 3D sketch line(s)')
@@ -193,7 +201,12 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     #    header row; _sync_table_rows() adds a data row per line as the selection
     #    changes.
     tbl: adsk.core.TableCommandInput = inputs.addTableCommandInput(
-        'params', 'Per Line', 11, '1:3:3:1:1:2:2:2:1:3:2')
+        'params', 'Per Line', 11, '1:3:3:1:1:2:2:2:1:4:2')
+    # Show up to a dozen rows before scrolling (Fusion defaults to 4, which
+    # buries a multi-member frame behind a scrollbar in an otherwise tall
+    # dialog).  The columnRatio above widens the Bend Die dropdown so its
+    # "CHS-CLR-114.3 (R114.3)" label is not clipped.
+    tbl.maximumVisibleRows = 12
     sync: adsk.core.BoolValueCommandInput = inputs.addBoolValueInput(
         'sync_all', 'Sync all', True, '', True)
     tbl.addToolbarCommandInput(sync)
@@ -397,12 +410,18 @@ def _row_inverses(inputs, lines):
 
 
 def _row_cope_depths(inputs, lines):
-    """The per-line cope/saddle extra depth in mm (index-aligned with ``lines``)."""
+    """The per-line cope/saddle extra depth in mm (index-aligned with ``lines``).
+
+    The spinner's ``.value`` is in Fusion's database length unit (cm), but the
+    joint layer's ``cope_depth_by_line`` is documented in mm, so convert cm->mm
+    here (x10).  Without this a 20 mm entry reached the centreline only after
+    ~200 mm was typed -- the reported 10x bug.
+    """
     out = []
     for i in range(len(lines)):
         cd = (inputs.itemById(_row_ids[i]['cd'])
               if i < len(_row_ids) else None)
-        out.append(cd.value if cd else 0.0)
+        out.append(cd.value * 10.0 if cd else 0.0)
     return out
 
 
@@ -903,8 +922,10 @@ def _sync_table_rows(inputs, lines):
         # Cope Depth: how far (mm) a saddled/cope end bites INTO the neighbour
         # beyond its default stopping face -- deepening the fishmouth.  Only
         # meaningful when an end is saddled/copes, so it is enabled in that case.
+        # min/max are database units (cm), so 0..20 cm = 0..200 mm; the value is
+        # read back in cm and converted to mm in _row_cope_depths.
         cd = inputs.addFloatSpinnerCommandInput(
-            ids['cd'], '', 'mm', 0, 100, 1, 0)
+            ids['cd'], '', 'mm', 0, 20, 1, 0)
         cd.description = 'Extra depth a cope/saddle bites into the neighbour'
         tbl.addCommandInput(num, r + 1, 0)
         tbl.addCommandInput(joint_s, r + 1, 1)
@@ -1222,6 +1243,54 @@ def _find_body_near(root, point, max_dist):
     return None
 
 
+def _remove_combine_orphans(root, comb, tool_body):
+    """Delete the disconnected slivers a cope/saddle cut leaves inside the tool.
+
+    A cope runs the member's tip just past the tool's near wall, so the boolean
+    shaves a thin plug off the member that ends up floating in the tube's hollow
+    void -- a body that is neither the (kept) tool nor the member's main run.
+    Those are pure waste.  We cannot tell them apart by body identity (Fusion
+    re-homes the member's identity onto the wrong fragment), so we keep the tool
+    and the single largest remaining body (the member's main run -- a plug is
+    always a small sliver of it) and issue a ``Remove`` feature on the rest.
+    ``Remove`` deletes bodies without disturbing the parametric flow, and
+    deleting it later (preview teardown) restores them.  Returns the Remove
+    features created.
+    """
+    removed = []
+    try:
+        bodies = comb.bodies
+    except Exception:
+        return removed
+    # Partition the combine's output: the tool (kept) vs. the member's pieces.
+    pieces = []
+    for bi in range(bodies.count):
+        try:
+            b = bodies.item(bi)
+        except Exception:
+            continue
+        if tool_body is not None and b == tool_body:
+            continue  # the neighbour we cut against -- keep it
+        pieces.append(b)
+    if len(pieces) <= 1:
+        return removed  # nothing to separate: the lone piece is the main run
+    # The main run is by far the largest; every smaller piece is a waste plug.
+    def vol(b):
+        try:
+            return b.volume
+        except Exception:
+            return 0.0
+    keep = max(pieces, key=vol)
+    for b in pieces:
+        if b is keep:
+            continue
+        try:
+            removed.append(root.features.removeFeatures.add(b))
+        except Exception:
+            futil.handle_error(f'{CMD_NAME} remove cope orphan')
+    return removed
+
+
 # Half-size (cm) of the waste prism drawn on a miter plane; must exceed any
 # section reach so the prism fully covers the corner's waste half-space.
 _WASTE_RADIUS = 100.0
@@ -1352,6 +1421,13 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                 ci.isKeepToolBodies = True
                 comb = root.features.combineFeatures.add(ci)
                 created.append(comb)
+                # The cope tip overshoots the near wall, shaving a thin plug off
+                # the member that floats in the tool's hollow void.  Remove those
+                # orphans (a Remove feature, so the parametric flow is intact and
+                # deleting it on teardown restores them).  Track them BEFORE the
+                # combine so teardown deletes the Remove first, then the combine.
+                removes = _remove_combine_orphans(root, comb, tool_body)
+                created = removes + created
         except Exception:
             futil.handle_error(f'{CMD_NAME} corner cut')
     # Cut features and prism helpers FIRST (delete order), then the rest.

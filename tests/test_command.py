@@ -668,7 +668,9 @@ class TestBendCopeColumns(unittest.TestCase):
         lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
         entry._sync_table_rows(inputs, lines)
-        inputs.itemById(entry._row_ids[0]['cd']).value = 12.0
+        # The spinner's .value is in database units (cm); a 1.2 cm entry is the
+        # 12 mm the joint layer expects, so _row_cope_depths converts cm -> mm.
+        inputs.itemById(entry._row_ids[0]['cd']).value = 1.2
         self.assertEqual(entry._row_cope_depths(inputs, lines), [12.0, 0.0])
 
     def test_die_dropdown_lists_family_clrs(self):
@@ -947,6 +949,60 @@ class TestCornerCutBuild(unittest.TestCase):
             for x in o:
                 x.deleteMe()
         self.assertEqual(self.root.features.count, 0)
+
+
+class TestCopeOrphanRemoval(unittest.TestCase):
+    """A cope cut leaves a thin plug inside the tool's void; it must be Removed.
+
+    The combine output is [tool, main run, orphan plug].  _remove_combine_orphans
+    keeps the tool and the largest remaining body (the main run) and issues a
+    Remove feature on the rest, without disturbing the parametric flow.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.root = adsk_stub.FakeRoot()
+
+    def _combine(self, bodies):
+        comb = adsk_stub.FakeFeature("adsk::fusion::CombineFeature", self.root,
+                                     bodies)
+        self.root.features._items.append(comb)
+        return comb
+
+    def test_removes_only_the_smallest_non_tool_body(self):
+        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0)
+        main = adsk_stub.FakeBody(name="MAIN", volume=38.0)
+        plug = adsk_stub.FakeBody(name="PLUG", volume=3.7)
+        comb = self._combine([plug, main, tool])
+        removes = entry._remove_combine_orphans(self.root, comb, tool)
+        self.assertEqual(len(removes), 1)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertEqual(names.count("RemoveFeatures.add"), 1)
+        # The plug is gone from the design; the tool and main run remain.
+        self.assertNotIn(plug, comb.bodies._items)
+        self.assertIn(tool, comb.bodies._items)
+        self.assertIn(main, comb.bodies._items)
+
+    def test_no_orphan_when_only_the_main_run_remains(self):
+        # A solid tool (no void) yields [tool, main] -- nothing to remove.
+        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0)
+        main = adsk_stub.FakeBody(name="MAIN", volume=38.0)
+        comb = self._combine([main, tool])
+        removes = entry._remove_combine_orphans(self.root, comb, tool)
+        self.assertEqual(removes, [])
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertNotIn("RemoveFeatures.add", names)
+
+    def test_removing_then_deleting_the_remove_restores_the_body(self):
+        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0)
+        main = adsk_stub.FakeBody(name="MAIN", volume=38.0)
+        plug = adsk_stub.FakeBody(name="PLUG", volume=3.7)
+        comb = self._combine([plug, main, tool])
+        removes = entry._remove_combine_orphans(self.root, comb, tool)
+        self.assertEqual(len(removes), 1)
+        self.assertNotIn(plug, comb.bodies._items)
+        removes[0].deleteMe()   # preview teardown
+        self.assertIn(plug, comb.bodies._items)
 
 
 if __name__ == "__main__":

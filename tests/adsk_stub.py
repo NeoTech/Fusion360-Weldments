@@ -339,10 +339,12 @@ class FakeBody:
     ``pointContainment`` for any code that uses it.
     """
 
-    def __init__(self, contains=True, name="Body", center=(0.0, 0.0, 0.0)):
+    def __init__(self, contains=True, name="Body", center=(0.0, 0.0, 0.0),
+                 volume=1.0):
         self._contains = contains
         self.name = name
         self.opacity = 1.0
+        self.volume = volume
         self._center = center
         self.boundingBox = FakeBoundingBox(center)
         self._owner = None
@@ -466,6 +468,35 @@ class FakeCombineFeatures:
         return feat
 
 
+class FakeRemoveFeatures:
+    """Models root.features.removeFeatures: a Remove deletes a body from the
+    design without touching the parametric flow (deleting it restores the body)."""
+
+    def __init__(self, root=None):
+        self._root = root
+
+    def add(self, body):
+        _record("RemoveFeatures.add", body)
+        feat = FakeFeature("adsk::fusion::RemoveFeature", self._root, [])
+        owner = getattr(body, "_owner", None)
+        if owner is not None and body in owner._items:
+            owner._items.remove(body)   # the body leaves the design
+        feat._removed = (body, owner)
+
+        def deleteMe():
+            _record("RemoveFeature.deleteMe")
+            b, o = feat._removed
+            if o is not None and b not in o._items:
+                o._items.append(b)      # deleting the Remove restores it
+            if feat._root is not None and feat in feat._root.features._items:
+                feat._root.features._items.remove(feat)
+            return True
+        feat.deleteMe = deleteMe
+        if self._root is not None:
+            self._root.features._items.append(feat)
+        return feat
+
+
 class FakeFeatures(_FakeCollection):
     def __init__(self, root=None):
         super().__init__()
@@ -473,6 +504,7 @@ class FakeFeatures(_FakeCollection):
         self.revolveFeatures = FakeRevolveFeatures(root)
         self.splitBodyFeatures = FakeSplitBodyFeatures(root)
         self.combineFeatures = FakeCombineFeatures(root)
+        self.removeFeatures = FakeRemoveFeatures(root)
 
 
 class FakeObjectCollection:
@@ -627,6 +659,7 @@ class FakeTable:
         self.id = id
         self.numberOfColumns = ncols
         self.ratio = ratio
+        self.maximumVisibleRows = 4
         self._rows = 0
         self._cells = {}
         self._toolbar = []
@@ -664,6 +697,18 @@ class FakeTable:
 class FakeCommand:
     def __init__(self):
         self.commandInputs = FakeCommandInputs(self)
+        self.dialogInitialSize = None
+        self.dialogMinimumSize = None
+
+    def setDialogInitialSize(self, width, height):
+        _record("command.setDialogInitialSize", width, height)
+        self.dialogInitialSize = (width, height)
+        return True
+
+    def setDialogMinimumSize(self, width, height):
+        _record("command.setDialogMinimumSize", width, height)
+        self.dialogMinimumSize = (width, height)
+        return True
 
 
 class FakeCommandInputs:
