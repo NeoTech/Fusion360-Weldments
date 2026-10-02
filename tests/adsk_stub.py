@@ -453,7 +453,8 @@ class FakeCombineFeatures:
         return FakeCombineInput(target, tools)
 
     def add(self, ci):
-        _record("CombineFeatures.add", ci.operation, ci.isKeepToolBodies)
+        _record("CombineFeatures.add", ci.operation, ci.isKeepToolBodies,
+                list(ci.tools._items))
         feat = FakeFeature("adsk::fusion::CombineFeature", self._root,
                            [ci.target])
         if not ci.isKeepToolBodies:

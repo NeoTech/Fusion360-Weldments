@@ -584,7 +584,7 @@ def _row_saddle(inputs, lines):
 
 
 def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
-                   cope_depth_by_line=None):
+                   cope_depth_by_line=None, context=None):
     """Per-line (offset_start, offset_end) in cm from the chosen corner joints.
 
     Auto-detects the corners among ``lines`` and turns each row's joint type into
@@ -592,8 +592,11 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
     the shared profile "up" reference; when given, each line's placed section
     basis is computed so a butt/cope trim stops at the neighbour's *directional*
     face (an I-beam's flange width, not its web depth).  ``cope_depth_by_line``
-    (mm) deepens each saddled/cope end's bite into the neighbour.  The result is
-    added to the user's manual start/end offsets in the build loop.
+    (mm) deepens each saddled/cope end's bite into the neighbour.  ``context``
+    (optional) is a list of existing-member dicts (see
+    :func:`_recover_existing_members`); a selected end meeting one is trimmed
+    against it.  The result is added to the user's manual start/end offsets in
+    the build loop.
     """
     joints = _row_joints(inputs, lines)
     through = _row_through(inputs, lines)
@@ -609,7 +612,8 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
         return jt.corner_offsets(lines, geoms, joints, clr_by_line=clr_by_line,
                                  through_by_line=through, bases=bases,
                                  saddle_by_line=saddle,
-                                 cope_depth_by_line=cope_depth_by_line)
+                                 cope_depth_by_line=cope_depth_by_line,
+                                 context=context)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint offsets')
         return [(0.0, 0.0) for _ in lines]
@@ -658,7 +662,7 @@ def _bend_radii(inputs, lines, designation):
 
 
 def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
-                     inverse_by_line=None, preview=False):
+                     inverse_by_line=None, preview=False, context=None):
     """Build the swept-bend arc bodies for every ``bend`` corner among ``lines``.
 
     Returns a list of (feature, sketch, plane) tuples for the caller to track.
@@ -667,17 +671,21 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
     revolved into place, once per corner (built from that corner's first leg).
     ``inverse_by_line`` flips a corner's sweep direction (see
     :func:`lib.joints.bend_plan`) for corners whose legs were picked in reverse
-    order.
+    order.  ``context`` (existing members, see
+    :func:`_recover_existing_members`) lets a bend leg round into an already
+    placed member's END.
     """
     objs = []
     try:
         plans = jt.bend_plan(lines, joints, clr_by_line,
-                             inverse_by_line=inverse_by_line)
+                             inverse_by_line=inverse_by_line, context=context)
     except Exception:
         futil.handle_error(f'{CMD_NAME} bend plan')
         return objs
     for plan in plans:
         idx, _role, tangent = plan['tangent'][0]
+        if idx >= len(lines):
+            continue  # a context leg is never the one we revolve from
         arc = _build_bend_arc(root, lines[idx], tangent, plan, geom, ref,
                               preview=preview)
         if arc:
@@ -1033,11 +1041,18 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
         return
     root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
+    # Recover the members already in the design (from earlier weldment runs) so
+    # a new line's butt/cope/miter/bend end can join an EXISTING part directly,
+    # instead of the user drawing a shadow line and deleting a duplicate.  Done
+    # before building so the bodies created this run are not mistaken for
+    # pre-existing ones.
+    context = _recover_existing_members(root)
     clr_by_line = _bend_radii(inputs, saved, designation)
     cope_depths = _row_cope_depths(inputs, saved)
     inverses = _row_inverses(inputs, saved)
     joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref,
-                                cope_depth_by_line=cope_depths)
+                                cope_depth_by_line=cope_depths,
+                                context=context)
     objs, feat_idx = [], []
     f_start = root.features.count
     for i, line in enumerate(saved):
@@ -1053,12 +1068,13 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     _preview_objs.extend(
         _build_bend_arcs(root, saved, _row_joints(inputs, saved),
                          clr_by_line, geom, ref, inverse_by_line=inverses,
-                         preview=True))
+                         preview=True, context=context))
     _preview_cuts.extend(
         _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                            feat_idx, f_start,
                            saddle=_row_saddle(inputs, saved),
-                           through=_row_through(inputs, saved)))
+                           through=_row_through(inputs, saved),
+                           context=context))
     # Make sure the user's lines are still highlighted after the churn.
     _restore_selection(sel, saved)
 
@@ -1077,11 +1093,15 @@ def command_execute(args: adsk.core.CommandEventArgs):
         return
     root, _sel, geom, label, designation = resolved
     ref = _selection_reference(saved)
+    # See the preview path: recover the design's existing members so a new
+    # line's joint end can join them directly (no shadow part / duplicate).
+    context = _recover_existing_members(root)
     clr_by_line = _bend_radii(inputs, saved, designation)
     cope_depths = _row_cope_depths(inputs, saved)
     inverses = _row_inverses(inputs, saved)
     joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref,
-                                cope_depth_by_line=cope_depths)
+                                cope_depth_by_line=cope_depths,
+                                context=context)
 
     created = 0
     objs, feat_idx = [], []
@@ -1098,11 +1118,12 @@ def command_execute(args: adsk.core.CommandEventArgs):
         feat_idx.append(idx if built else None)
     created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
                                     clr_by_line, geom, ref,
-                                    inverse_by_line=inverses))
+                                    inverse_by_line=inverses, context=context))
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),
-                       through=_row_through(inputs, saved))
+                       through=_row_through(inputs, saved),
+                       context=context)
 
     if created == 0:
         ui.messageBox('No weldments were created. Select 3D sketch line(s) first.')
@@ -1243,6 +1264,141 @@ def _find_body_near(root, point, max_dist):
     return None
 
 
+class _CtxPoint:
+    """Minimal ``(x, y, z)`` holder matching a Fusion Point3D read interface."""
+
+    __slots__ = ('x', 'y', 'z')
+
+    def __init__(self, p):
+        self.x, self.y, self.z = p
+
+
+class _CtxGeometry:
+    """``worldGeometry``-shim exposing ``startPoint`` / ``endPoint``."""
+
+    def __init__(self, start, end):
+        self.startPoint = _CtxPoint(start)
+        self.endPoint = _CtxPoint(end)
+
+
+class _ContextLine:
+    """A recovered existing weldment member, shaped like a sketch line.
+
+    :mod:`lib.joints` only ever reads ``worldGeometry.startPoint`` /
+    ``.endPoint`` (each with ``.x/.y/.z`` in cm) and ``.length`` from a line, so
+    this shim lets an *existing* body participate in corner / T-junction
+    detection without a real sketch entity.  ``body`` is the BRepBody to use as a
+    boolean tool when a new member copes/miters/butts against it.
+    """
+
+    def __init__(self, start, end, body):
+        self.worldGeometry = _CtxGeometry(start, end)
+        self.length = sum((start[k] - end[k]) ** 2 for k in range(3)) ** 0.5
+        self.body = body
+
+
+def _member_centerline(body):
+    """Recover ``(start, end, radius_cm, inner_radius_cm)`` for a tube body.
+
+    Uses the body's dominant (largest-area) cylindrical face: its axis is the
+    member's run direction, and projecting every face origin onto that axis gives
+    the two centreline ends.  Returns ``None`` for a body with no cylindrical
+    face (a swept-bend torus, a solid block, etc.) so such bodies are skipped --
+    they are not straight members a new part can butt against.  Radii are in cm;
+    ``inner_radius_cm`` is None for a solid (single-radius) section.
+    """
+    try:
+        best, best_area = None, -1.0
+        for k in range(body.faces.count):
+            face = body.faces.item(k)
+            geo = face.geometry
+            if isinstance(geo, adsk.core.Cylinder):
+                try:
+                    area = face.area
+                except Exception:
+                    area = 0.0
+                if area > best_area:
+                    best_area, best = area, geo
+        if best is None:
+            return None
+        axis_v = best.axis
+        org_v = best.origin
+        axis = (axis_v.x, axis_v.y, axis_v.z)
+        origin = (org_v.x, org_v.y, org_v.z)
+        ts = []
+        radii = []
+        for k in range(body.faces.count):
+            geo = body.faces.item(k).geometry
+            if isinstance(geo, (adsk.core.Plane, adsk.core.Cylinder)):
+                o = geo.origin
+                p = (o.x, o.y, o.z)
+                ts.append(sum((p[c] - origin[c]) * axis[c] for c in range(3)))
+                if isinstance(geo, adsk.core.Cylinder):
+                    radii.append(geo.radius)
+        if not ts:
+            return None
+
+        def on_axis(t):
+            return tuple(origin[c] + axis[c] * t for c in range(3))
+
+        outer = max(radii) if radii else None
+        inner = min(radii) if len(set(radii)) > 1 else None
+        return on_axis(min(ts)), on_axis(max(ts)), outer, inner
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} member centerline')
+        return None
+
+
+def _recover_existing_members(root, exclude_feats=None):
+    """Enumerate existing weldment members as context lines for joint detection.
+
+    Scans every body in ``root`` (skipping the ones just built this run, whose
+    feature indices are in ``exclude_feats``) and recovers each straight tube's
+    centreline and section radii from its cylindrical faces (see
+    :func:`_member_centerline`).  Returns a list of dicts shaped for
+    :func:`lib.joints.corner_offsets`::
+
+        {'line': _ContextLine, 'geom': {'kind': 'circles', 'radii': [...]},
+         'basis': None, 'body': <BRepBody>}
+
+    The geom radii are in millimetres (the joints layer's unit), outer first,
+    with the inner radius appended for a hollow section so a cope against an
+    existing tube saddles through its wall exactly as against a selected one.
+    """
+    exclude = set(exclude_feats or ())
+    members = []
+    try:
+        feats = root.features
+        for i in range(feats.count):
+            if i in exclude:
+                continue
+            try:
+                f = feats.item(i)
+                count = f.bodies.count
+            except Exception:
+                continue
+            for j in range(count):
+                try:
+                    body = f.bodies.item(j)
+                except Exception:
+                    continue
+                cl = _member_centerline(body)
+                if cl is None:
+                    continue
+                start, end, outer, inner = cl
+                if outer is None or start == end:
+                    continue
+                radii = [outer * 10.0]
+                if inner is not None:
+                    radii.append(inner * 10.0)
+                members.append({'line': _ContextLine(start, end, body),
+                                'geom': {'kind': 'circles', 'radii': radii},
+                                'basis': None, 'body': body})
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} recover members')
+    return members
+
+
 def _remove_combine_orphans(root, comb, tool_body):
     """Delete the disconnected slivers a cope/saddle cut leaves inside the tool.
 
@@ -1334,7 +1490,7 @@ def _waste_prism(root, V, normal, keep_side):
 
 
 def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
-                       saddle=None, through=None):
+                       saddle=None, through=None, context=None):
     """Shape member ends with real geometry for miter/cope (and saddled-butt)
     corners.
 
@@ -1353,15 +1509,22 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
       member.  A plain butt (no saddle) produces no cut -- it is a pure axial
       trim handled by :func:`lib.joints.corner_offsets`.
 
+    ``context`` (optional) is the list of existing members from
+    :func:`_recover_existing_members`.  When a cut's ``tool`` index is negative
+    it names a context member, whose real ``body`` is used directly as the
+    boolean tool -- no ``objs`` entry (and no shadow part) is needed, which is
+    the whole point of detecting existing weldments.
+
     Returns the objects to track for preview cleanup, in delete order: each
     combine feature first (removing it restores the member body), then the
     prism extrudes/sketches/planes they consumed.  The caller must delete all
     of these BEFORE the member features.
     """
     created = []
+    ctx = context or []
     try:
         cuts = jt.corner_cuts(lines, joints, saddle_by_line=saddle,
-                              through_by_line=through)
+                              through_by_line=through, context=ctx)
     except Exception:
         futil.handle_error(f'{CMD_NAME} corner cut plan')
         return created
@@ -1369,7 +1532,11 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
         m, t = cut['member'], cut['tool']
         if m >= len(objs) or objs[m] is None:
             continue
-        if t >= len(objs) or objs[t] is None:
+        if t < 0:
+            # A context (existing) member is the tool: use its recovered body.
+            if ~t >= len(ctx) or ctx[~t].get('body') is None:
+                continue
+        elif t >= len(objs) or objs[t] is None:
             continue
         try:
             reach = max(lines[m].length, 1.0)
@@ -1409,9 +1576,12 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                         pass
                 created.extend([comb, prism, skb, sk, plane])
             else:
-                tool_reach = max(lines[t].length, 1.0)
-                tool_body = _find_body_near(root, _line_midpoint(lines[t]),
-                                            tool_reach)
+                if t < 0:
+                    tool_body = ctx[~t]['body']
+                else:
+                    tool_reach = max(lines[t].length, 1.0)
+                    tool_body = _find_body_near(root, _line_midpoint(lines[t]),
+                                                tool_reach)
                 if tool_body is None:
                     continue
                 tools = adsk.core.ObjectCollection.create()

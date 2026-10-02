@@ -445,6 +445,96 @@ class TestSweptBend(unittest.TestCase):
         self.assertAlmostEqual(offs[1][0], 10.0)
 
 
+class TestExistingMemberContext(unittest.TestCase):
+    """A new member joining an ALREADY-EXISTING weldment (context members).
+
+    Phase J: when adding to an existing frame, the design's placed members are
+    passed as ``context`` so a selected line's butt/cope/miter/bend end can join
+    them directly -- no shadow line / duplicate part.  Context members are never
+    edited (their offsets stay (0, 0)); a corner/T-junction against one reports
+    the context member with a negative index (~k).
+    """
+
+    def _ctx(self, start, end, depth_mm=100.0):
+        return {'line': FakeLine(start, end),
+                'geom': _rect(depth_mm), 'basis': None}
+
+    def test_butt_against_existing_corner(self):
+        # A selected line's END meets an existing member's END (a corner).  The
+        # existing member runs through (joint 'none'), so the new line backs off
+        # by the existing member's half-depth (100/2 = 5 cm).
+        lines = [FakeLine((0, -10, 0), (0, 0, 0))]
+        offs = jt.corner_offsets(lines, [_rect(100)], ['butt'],
+                                 context=[self._ctx((0, 0, 0), (10, 0, 0))])
+        self.assertAlmostEqual(offs[0][1], -5.0)
+
+    def test_cope_against_existing_t_junction(self):
+        # A selected line's END lands on the interior of an EXISTING member's
+        # run -> a cope body cut whose tool index is negative (~0).
+        lines = [FakeLine((25, 0, 20), (25, 0, 0))]
+        cuts = jt.corner_cuts(lines, ['cope'],
+                              context=[self._ctx((0, 0, 0), (50, 0, 0))])
+        self.assertEqual(len(cuts), 1)
+        self.assertEqual(cuts[0]['kind'], 'body')
+        self.assertEqual(cuts[0]['tool'], ~0)   # -1: context member 0
+
+    def test_cope_against_existing_trims_to_wall(self):
+        # A hollow existing tube (wall 2 mm) saddled by a cope: the tip stops
+        # just past the near wall.  Half-depth 5 cm, wall 0.2 cm -> reach -4.8.
+        lines = [FakeLine((25, 0, 20), (25, 0, 0))]
+        ctx = [{'line': FakeLine((0, 0, 0), (50, 0, 0)),
+                'geom': _circle(100.0), 'basis': None}]
+        offs = jt.corner_offsets(lines, [_rect(100)], ['cope'],
+                                 context=ctx)
+        self.assertAlmostEqual(offs[0][1], -4.8)
+
+    def test_miter_against_existing_corner(self):
+        # A selected miter end meeting an existing member's END gets the miter
+        # extension (the same setback a selected-vs-selected miter corner gives).
+        lines = [FakeLine((0, 0, 0), (10, 0, 0))]
+        offs = jt.corner_offsets(lines, [_rect(100)], ['miter'],
+                                 context=[self._ctx((0, 0, 0), (0, 10, 0))])
+        self.assertAlmostEqual(offs[0][0], -5.0)
+
+    def test_miter_cut_against_existing(self):
+        # A miter against an existing member emits a plane cut with a negative
+        # tool index; the existing member itself is never cut.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0))]
+        cuts = jt.corner_cuts(lines, ['miter'],
+                              context=[self._ctx((0, 0, 0), (0, 10, 0))])
+        self.assertEqual(len(cuts), 1)
+        self.assertEqual(cuts[0]['kind'], 'plane')
+        self.assertEqual(cuts[0]['member'], 0)
+        self.assertEqual(cuts[0]['tool'], ~0)
+
+    def test_context_only_corner_is_ignored(self):
+        # A corner formed ONLY by two context members must not be returned --
+        # the caller never edits existing parts.
+        corners = jt.detect_corners([],
+                                    context=[FakeLine((0, 0, 0), (10, 0, 0)),
+                                             FakeLine((0, 0, 0), (0, 10, 0))])
+        self.assertEqual(corners, [])
+
+    def test_bend_into_existing_member(self):
+        # A selected bend leg meeting an existing member's END is planned as a
+        # bend; the arc blends into the existing member's direction.  The
+        # selected leg must come first in tangent (the builder revolves from it).
+        lines = [FakeLine((0, 0, 0), (10, 0, 0))]
+        plans = jt.bend_plan(lines, ['bend'], [100.0],
+                             context=[self._ctx((0, 0, 0), (0, 10, 0))])
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]['tangent'][0][0], 0)   # selected leg first
+
+    def test_no_context_matches_old_behaviour(self):
+        # Passing no context reproduces the pure selected-lines behaviour.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        a = jt.corner_offsets(lines, [_rect(100), _rect(100)], ['none', 'butt'])
+        b = jt.corner_offsets(lines, [_rect(100), _rect(100)], ['none', 'butt'],
+                              context=[])
+        self.assertEqual(a, b)
+
+
 class TestFamilyFiltering(unittest.TestCase):
     def test_joints_for_family(self):
         self.assertEqual(jt.joints_for_family({'joints': ['none', 'butt', 'miter']}),

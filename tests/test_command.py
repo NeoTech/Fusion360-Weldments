@@ -950,6 +950,62 @@ class TestCornerCutBuild(unittest.TestCase):
                 x.deleteMe()
         self.assertEqual(self.root.features.count, 0)
 
+    def test_cope_against_existing_member_uses_its_body(self):
+        # Phase J: a cope whose END lands on the interior of an EXISTING member
+        # (passed as context) is saddled to that member's real body -- no shadow
+        # line, no objs entry for the tool.  The combine's tool must be exactly
+        # the context body.
+        self.lines = [adsk_stub.FakeLine((25, 0, 20), (25, 0, 0))]
+        objs, idx = self._build()
+        existing_body = adsk_stub.FakeBody(name="EXISTING", center=(25, 0, 0))
+        context = [{'line': entry._ContextLine((0, 0, 0), (50, 0, 0),
+                                               existing_body),
+                    'geom': {'kind': 'circles', 'radii': [21.2, 19.2]},
+                    'basis': None, 'body': existing_body}]
+        cuts = entry._apply_corner_cuts(self.root, self.lines, ['cope'],
+                                        objs, idx, 0, context=context)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertEqual(names.count('CombineFeatures.add'), 1)
+        ci = [c for c in adsk_stub.CALLS if c[0] == 'CombineFeatures.add'][0]
+        # ci[1] = (operation, isKeepToolBodies, tool_bodies)
+        self.assertTrue(ci[1][1])                 # keep the existing tool body
+        self.assertIn(existing_body, ci[1][2])    # cut against the real body
+        self.assertEqual(len(cuts), 1)
+
+    def test_miter_against_existing_member(self):
+        # A miter whose END meets an EXISTING member's END (a corner) is a
+        # bisector-plane cut (waste prism), same as a selected-vs-selected miter.
+        self.lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))]
+        objs, idx = self._build()
+        existing_body = adsk_stub.FakeBody(name="EXISTING", center=(0, 5, 0))
+        context = [{'line': entry._ContextLine((0, 0, 0), (0, 10, 0),
+                                               existing_body),
+                    'geom': {'kind': 'circles', 'radii': [21.2, 19.2]},
+                    'basis': None, 'body': existing_body}]
+        cuts = entry._apply_corner_cuts(self.root, self.lines, ['miter'],
+                                        objs, idx, 0, context=context)
+        names = [c[0] for c in adsk_stub.CALLS]
+        # One combine against a consumed waste prism (the miter primitive).
+        self.assertEqual(names.count('CombineFeatures.add'), 1)
+        ci = [c for c in adsk_stub.CALLS if c[0] == 'CombineFeatures.add'][0]
+        self.assertFalse(ci[1][1])                # prism consumed, not kept
+        self.assertEqual(len(cuts), 5)            # (combine, prism, sk, sk, plane)
+
+
+class TestRecoverExistingMembers(unittest.TestCase):
+    """Body -> centreline recovery used to feed existing parts into detection."""
+
+    def setUp(self):
+        adsk_stub.reset()
+
+    def test_context_line_exposes_world_geometry(self):
+        ln = entry._ContextLine((0, 0, 0), (10, 0, 0), object())
+        s, e = jt.line_endpoints(ln)
+        self.assertEqual(s, (0.0, 0.0, 0.0))
+        self.assertEqual(e, (10.0, 0.0, 0.0))
+        self.assertAlmostEqual(ln.length, 10.0)
+        self.assertEqual(jt.line_direction(ln), (1.0, 0.0, 0.0))
+
 
 class TestCopeOrphanRemoval(unittest.TestCase):
     """A cope cut leaves a thin plug inside the tool's void; it must be Removed.
