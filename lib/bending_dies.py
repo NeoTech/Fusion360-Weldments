@@ -20,6 +20,11 @@ Each die is one centerline radius (``clr_mm``) available for a profile family
 CLR is the only value that shapes a swept bend, so the old per-die OD/size/wall
 ranges (which the command ignored in practice) are gone: a family's dies are
 filtered by family alone and the shop picks the radius it owns.
+
+Families that share tooling are declared in ``_DIE_FAMILY_ALIASES`` (currently
+``RHS -> SHS``): a rectangular tube is rotary-draw-bent on the same flat-face
+dies as a square one, so RHS is served SHS's centreline radii rather than
+duplicating every die row under its own family name.
 """
 
 import json
@@ -30,6 +35,17 @@ MM_TO_CM = 0.1
 
 _DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "data", "bendingdies.json")
+
+# Families that share another family's bend tooling.  A rectangular hollow
+# section is rotary-draw-bent on the same flat-face dies as a square one (the
+# die bears on a face parallel to the bend plane), so RHS resolves to SHS's
+# centreline radii instead of duplicating every die entry in the catalogue.
+_DIE_FAMILY_ALIASES = {"RHS": "SHS"}
+
+
+def _die_family(abbreviation):
+    """The catalogue family whose dies ``abbreviation`` uses (alias-aware)."""
+    return _DIE_FAMILY_ALIASES.get(abbreviation, abbreviation)
 
 
 # --------------------------------------------------------------------------- #
@@ -73,8 +89,14 @@ def find_die(catalogue, die_id):
 
 
 def dies_for_family(catalogue, abbreviation):
-    """All dies whose ``profile_family`` matches ``abbreviation``."""
-    return [d for d in dies(catalogue) if d.get("profile_family") == abbreviation]
+    """All dies whose ``profile_family`` matches ``abbreviation``.
+
+    Alias-aware: a family listed in ``_DIE_FAMILY_ALIASES`` (e.g. RHS) is served
+    the dies of the family it shares tooling with (SHS), so the dropdown, the
+    default die, and the resolved CLR all agree without duplicate catalogue rows.
+    """
+    family = _die_family(abbreviation)
+    return [d for d in dies(catalogue) if d.get("profile_family") == family]
 
 
 # --------------------------------------------------------------------------- #

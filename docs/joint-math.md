@@ -207,6 +207,11 @@ coping mid-run is the only physical case.
   `_remove_combine_orphans` keeps the tool + largest body and `Remove`s the rest.
 - *Cope too shallow/deep* → Cope Depth spinner is read in **cm** (database units)
   and ×10'd to mm; a 10× error here is the classic bug.
+- *Cope against an existing SHS/RHS does nothing* → the recovered section was
+  misread as **round**. A filleted square tube has four small corner
+  *cylinders*; recovery must route by the dominant face kind (≥3 planar normal
+  axes ⇒ prismatic), not "any cylinder ⇒ round", or the cope reach is computed
+  against a tiny circle instead of the real section (`_member_centerline`).
 
 ---
 
@@ -237,6 +242,17 @@ Revolve axis (bend-plane normal):
 $$a = \text{normalize}(u \times v)$$
 
 Tangent points: `T_u = V + u·SB`, `T_v = V + v·SB`.
+
+**Section orientation — a square tube bends about a FLAT face, never a rolled
+corner.** The die groove bears on a face parallel to the bend plane; bending a
+corner first collapses the tube. So each bend leg's section basis is set so
+`axis_v` is parallel to the bend axis `a = u×v` (the bend-plane normal), placing
+a pair of flat faces in the bend plane: `v = a`, `u = a×d` (see
+`_bend_bases`). For a **planar** bend this equals `compute_basis(d, ref)`
+exactly (there `a` *is* the shared `ref`), so it's a no-op on flat frames; it
+only overrides the global reference on **non-planar (3D)** bends, where the
+reference would otherwise roll a corner into the plane and twist the leg out of
+the arc.
 
 **Sweep direction = SIGN of the revolve angle**, not the axis. Fusion derives
 direction from the ordered pair `(u,v)`, so the same corner sweeps ±θ by

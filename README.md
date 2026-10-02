@@ -192,6 +192,8 @@ shapes a bend: the **centerline radius** (`clr_mm`). One entry per
 
 - **CHS:** 23 dies (rotary-draw CLRs from 57.15 mm up).
 - **SHS:** 6 dies.
+- **RHS:** shares SHS's 6 dies — a rectangular tube is bent on the same
+  flat-face tooling as a square one (see `_DIE_FAMILY_ALIASES`).
 
 The setback that trims each leg to its tangent point is `SB = R · tan(θ/2)` and
 the arc length is `L = R · θ` (θ = corner turn angle, R = CLR).

@@ -76,7 +76,6 @@ class Vector3D:
 class Matrix3D:
     def __init__(self):
         self._inv = False
-
     @staticmethod
     def create():
         return Matrix3D()
@@ -103,6 +102,106 @@ class ValueInput:
     @staticmethod
     def createByString(s):
         return ValueInput(s)
+
+
+# --- BRep geometry (for existing-member recovery tests) -------------------- #
+class Cylinder:
+    """A cylindrical face geometry: an axis (Vector3D), origin (Point3D), radius."""
+
+    def __init__(self, axis=(1, 0, 0), origin=(0, 0, 0), radius=1.0):
+        self.axis = Vector3D(*axis)
+        self.origin = Point3D(*origin)
+        self.radius = radius
+
+
+class Plane:
+    """A planar face geometry: an origin (Point3D) and unit normal (Vector3D)."""
+
+    def __init__(self, normal=(0, 0, 1), origin=(0, 0, 0)):
+        self.normal = Vector3D(*normal)
+        self.origin = Point3D(*origin)
+
+
+class FakeFace:
+    def __init__(self, geometry, area=1.0):
+        self.geometry = geometry
+        self.area = area
+
+
+class FakeFaces:
+    def __init__(self, items=None):
+        self._items = list(items or [])
+
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return self._items[i]
+
+
+def _unit(v):
+    m = sum(c * c for c in v) ** 0.5
+    return tuple(c / m for c in v) if m else (0.0, 0.0, 0.0)
+
+
+def make_round_tube(start, end, outer_cm, inner_cm=None):
+    """A straight round tube body (cylindrical faces) for recovery tests."""
+    axis = _unit(tuple(end[k] - start[k] for k in range(3)))
+    mid = tuple((start[k] + end[k]) / 2.0 for k in range(3))
+    faces = [FakeFace(Cylinder(axis, start, outer_cm), 100.0)]
+    if inner_cm is not None:
+        faces.append(FakeFace(Cylinder(axis, start, inner_cm), 90.0))
+    faces.append(FakeFace(Plane(axis, start), 1.0))
+    faces.append(FakeFace(Plane(tuple(-c for c in axis), end), 1.0))
+    return FakeBody(name="round", center=mid, faces=faces)
+
+
+def make_square_tube(start, end, hw1_cm, hw2_cm, wall_cm=0.0, roll=0.0,
+                     fillet_cm=0.0):
+    """A straight prismatic (SHS/RHS) tube body (planar faces) for recovery.
+
+    ``hw1_cm``/``hw2_cm`` are the section half-extents along the two in-plane
+    axes; ``wall_cm`` (if > 0) adds an inner wall loop (hollow).  ``roll``
+    rotates the section about the run axis (radians) so a rotated tube's basis
+    can be checked.  ``fillet_cm`` (if > 0) adds four corner cylinders (axis
+    parallel to the run) -- exactly what a real filleted SHS/RHS extrusion has
+    (r_mm corner radii), which must NOT make recovery misroute the tube as round.
+    The run is ``start``->``end``.
+    """
+    import math
+    d = _unit(tuple(end[k] - start[k] for k in range(3)))
+    mid = tuple((start[k] + end[k]) / 2.0 for k in range(3))
+    # Two in-plane reference axes perpendicular to d.
+    a = (1.0, 0.0, 0.0) if abs(d[0]) < 0.9 else (0.0, 1.0, 0.0)
+    e1 = _unit((d[1] * a[2] - d[2] * a[1], d[2] * a[0] - d[0] * a[2],
+                d[0] * a[1] - d[1] * a[0]))
+    e2 = _unit((d[1] * e1[2] - d[2] * e1[1], d[2] * e1[0] - d[0] * e1[2],
+                d[0] * e1[1] - d[1] * e1[0]))
+    if roll:
+        c, s = math.cos(roll), math.sin(roll)
+        e1, e2 = _unit(tuple(c * e1[k] + s * e2[k] for k in range(3))), \
+            _unit(tuple(-s * e1[k] + c * e2[k] for k in range(3)))
+    faces = [FakeFace(Plane(d, start), 1.0),
+             FakeFace(Plane(tuple(-x for x in d), end), 1.0)]
+    for (n, hw) in ((e1, hw1_cm), (e2, hw2_cm)):
+        for sign in (1, -1):
+            o = tuple(mid[k] + sign * hw * n[k] for k in range(3))
+            faces.append(FakeFace(Plane(tuple(sign * n[k] for k in range(3)), o),
+                                  50.0))
+            if wall_cm > 0:
+                iw = hw - wall_cm
+                oi = tuple(mid[k] + sign * iw * n[k] for k in range(3))
+                faces.append(FakeFace(
+                    Plane(tuple(-sign * n[k] for k in range(3)), oi), 40.0))
+    if fillet_cm > 0:
+        # Four corner cylinders, axis parallel to the run, at the section corners.
+        for s1 in (1, -1):
+            for s2 in (1, -1):
+                corner = tuple(mid[k] + s1 * hw1_cm * e1[k] + s2 * hw2_cm * e2[k]
+                               for k in range(3))
+                faces.append(FakeFace(Cylinder(d, corner, fillet_cm), 5.0))
+    return FakeBody(name="square", center=mid, faces=faces)
 
 
 # --- enums (just need stable, distinguishable values) ---------------------- #
@@ -340,13 +439,14 @@ class FakeBody:
     """
 
     def __init__(self, contains=True, name="Body", center=(0.0, 0.0, 0.0),
-                 volume=1.0):
+                 volume=1.0, faces=None):
         self._contains = contains
         self.name = name
         self.opacity = 1.0
         self.volume = volume
         self._center = center
         self.boundingBox = FakeBoundingBox(center)
+        self.faces = FakeFaces(faces)
         self._owner = None
 
     def pointContainment(self, pt):
@@ -767,6 +867,8 @@ def install():
     core.DropDownStyles = _Enum(TextListDropDownStyle=0)
     core.LogLevels = _Enum(InfoLogLevel=0, ErrorLogLevel=1, WarningLogLevel=2)
     core.ObjectCollection = FakeObjectCollection
+    core.Cylinder = Cylinder
+    core.Plane = Plane
 
     fusion.Path = FakePath
     fusion.ToEntityExtentDefinition = _Node("ToEntityExtentDefinition")

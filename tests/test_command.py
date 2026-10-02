@@ -587,6 +587,46 @@ class TestBendBuild(unittest.TestCase):
                                       [150.0, 150.0], self.geom, ref=None)
         self.assertEqual(len(objs), 1)   # one rounded corner
 
+    def test_bend_bases_put_a_flat_face_in_the_bend_plane(self):
+        # Point 3: a square tube can only be bent about a FLAT face, never a
+        # rolled corner.  Each bend leg's basis must have axis_v parallel to the
+        # bend axis (a = u x v), i.e. a pair of flat faces parallel to the bend
+        # plane.  A non-bend leg gets None (uses compute_basis).
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0)),
+                 adsk_stub.FakeLine((0, 30, 0), (0, 60, 0))]   # no bend here
+        joints = [('bend', 'none'), ('bend', 'none'), ('none', 'none')]
+        clr = [150.0, 150.0, 0.0]
+        bases = entry._bend_bases(lines, joints, ref=(0, 0, 1),
+                                  clr_by_line=clr)
+        plans = jt.bend_plan(lines, joints, clr)
+        a = plans[0]['axis']
+        for idx in (0, 1):
+            self.assertIsNotNone(bases[idx])
+            _u, v = bases[idx]
+            # axis_v parallel to the bend axis -> a flat face lies in the plane.
+            cross = (v[1] * a[2] - v[2] * a[1], v[2] * a[0] - v[0] * a[2],
+                     v[0] * a[1] - v[1] * a[0])
+            self.assertAlmostEqual(sum(c * c for c in cross), 0.0, places=6)
+        self.assertIsNone(bases[2])      # not a bend leg
+
+    def test_bend_bases_planar_matches_compute_basis(self):
+        # For a PLANAR bend the flat-face basis must equal compute_basis(dir,
+        # ref) exactly -- so the fix is a no-op on existing planar frames (no
+        # regression); it only changes non-planar (3D) bends.
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        joints = ['bend', 'bend']
+        clr = [150.0, 150.0]
+        ref = (0, 0, 1)                  # the bend plane's normal (planar)
+        bases = entry._bend_bases(lines, joints, ref=ref, clr_by_line=clr)
+        for i, line in enumerate(lines):
+            expect = prof.compute_basis(entry._line_direction(line), ref)
+            got = bases[i]
+            for a, b in zip(expect, got):
+                for k in range(3):
+                    self.assertAlmostEqual(a[k], b[k], places=6)
+
 
 class TestBendCopeColumns(unittest.TestCase):
     """Per-line Inverse / Bend Die / Cope Depth columns: enablement and reads."""
@@ -1005,6 +1045,141 @@ class TestRecoverExistingMembers(unittest.TestCase):
         self.assertEqual(e, (10.0, 0.0, 0.0))
         self.assertAlmostEqual(ln.length, 10.0)
         self.assertEqual(jt.line_direction(ln), (1.0, 0.0, 0.0))
+
+    def test_recover_round_tube(self):
+        # A straight CHS tube: dominant cylindrical face -> centreline + radii.
+        body = adsk_stub.make_round_tube((0, 0, 0), (50, 0, 0),
+                                        outer_cm=2.12, inner_cm=1.92)
+        start, end, geom, basis = entry._member_centerline(body)
+        self.assertEqual(jt.line_direction(entry._ContextLine(start, end, body)),
+                         (1.0, 0.0, 0.0))
+        self.assertEqual(geom['kind'], 'circles')
+        self.assertAlmostEqual(geom['radii'][0], 21.2)      # mm, outer first
+        self.assertAlmostEqual(geom['radii'][1], 19.2)      # inner (hollow)
+        self.assertIsNone(basis)                            # round = isotropic
+
+    def test_recover_square_tube_is_detected(self):
+        # Bug 2: an SHS/RHS tube has only planar faces -- it must still be
+        # recovered (previously returned None, so a cope never saw it).
+        body = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0),
+                                         hw1_cm=2.0, hw2_cm=2.0, wall_cm=0.2)
+        cl = entry._member_centerline(body)
+        self.assertIsNotNone(cl)
+        start, end, geom, basis = cl
+        self.assertEqual(geom['kind'], 'polygons')
+        self.assertEqual(len(geom['loops']), 2)             # outer + inner wall
+        self.assertIsNotNone(basis)                         # prismatic has a roll
+
+    def test_recover_respects_rotated_square_basis(self):
+        # Bug 3: a tube rolled about its run must report a real (rotated) basis
+        # so a cope against it uses the true section shape, not an isotropic
+        # fallback.  The recovered basis is orthonormal and perpendicular to the
+        # run, and rotates with the tube (its plane differs from a rolled-back
+        # reference only by the roll).
+        import math
+        straight = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0), 3.0, 2.0)
+        rolled = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0), 3.0, 2.0,
+                                           roll=0.5)
+        _, _, _, b0 = entry._member_centerline(straight)
+        _, _, _, b1 = entry._member_centerline(rolled)
+        for u, v in (b0, b1):
+            # Orthonormal and perpendicular to the run (X).
+            self.assertAlmostEqual(sum(c * c for c in u), 1.0, places=6)
+            self.assertAlmostEqual(sum(c * c for c in v), 1.0, places=6)
+            self.assertAlmostEqual(sum(u[k] * v[k] for k in range(3)), 0.0,
+                                   places=6)
+            self.assertAlmostEqual(abs(u[0]), 0.0, places=6)   # no X component
+            self.assertAlmostEqual(abs(v[0]), 0.0, places=6)
+        # The roll moved the basis: b1's first vector is b0's rotated by 0.5 rad
+        # (their dot product is cos of the roll).
+        dot = sum(b0[0][k] * b1[0][k] for k in range(3))
+        self.assertAlmostEqual(dot, math.cos(0.5), places=6)
+
+    def test_recover_skips_non_member_bodies(self):
+        # A body with no planar/cylindrical faces (e.g. a lone torus) is skipped.
+        body = adsk_stub.FakeBody(name="blob", center=(0, 0, 0), faces=[])
+        self.assertIsNone(entry._member_centerline(body))
+
+    def test_recover_filleted_square_not_misread_as_round(self):
+        # Bug 1/2 root cause: a real SHS/RHS extrusion has r_mm corner fillets,
+        # i.e. four small CYLINDRICAL corner faces alongside its planar sides.
+        # "any cylinder -> round tube" misread it as a tiny tube, so a cope
+        # against an existing square member never bit.  It must recover as a
+        # polygons section (with the corner radius), not circles.
+        body = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0),
+                                         hw1_cm=3.0, hw2_cm=1.5, wall_cm=0.15,
+                                         fillet_cm=0.3)   # 3 mm corner radius
+        cl = entry._member_centerline(body)
+        self.assertIsNotNone(cl)
+        start, end, geom, basis = cl
+        self.assertEqual(geom['kind'], 'polygons')         # NOT 'circles'
+        self.assertEqual(len(geom['loops']), 2)            # outer + inner wall
+        self.assertIsNotNone(basis)                        # prismatic has a roll
+        # The outer loop's corner fillets carry the recovered radius (3 mm).
+        self.assertTrue(geom['fillets'][0])
+        self.assertAlmostEqual(geom['fillets'][0][0][1], 3.0, places=3)
+
+    def test_recover_existing_members_finds_square_body(self):
+        # End-to-end: a square body on a root feature is returned as context
+        # with a polygons geom + a real basis (the cope-against-existing path).
+        root = adsk_stub.FakeRoot()
+        body = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0), 2.0, 2.0,
+                                         wall_cm=0.2)
+        feat = adsk_stub.FakeFeature("adsk::fusion::ExtrudeFeature", root,
+                                     [body])
+        root.features._items.append(feat)
+        members = entry._recover_existing_members(root)
+        self.assertEqual(len(members), 1)
+        self.assertEqual(members[0]['geom']['kind'], 'polygons')
+        self.assertIsNotNone(members[0]['basis'])
+        self.assertIs(members[0]['body'], body)
+
+
+class TestCopeAgainstExistingSquareMember(unittest.TestCase):
+    """Bug 2/3 end-to-end: coping a new member onto an EXISTING square tube."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.root = adsk_stub.FakeRoot()
+
+    def test_cope_uses_existing_square_body_as_tool(self):
+        # A new line's END lands on the interior of an existing SHS tube's run.
+        existing = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0), 2.0, 2.0,
+                                             wall_cm=0.2)
+        feat = adsk_stub.FakeFeature("adsk::fusion::ExtrudeFeature", self.root,
+                                     [existing])
+        self.root.features._items.append(feat)
+        context = entry._recover_existing_members(self.root)
+        self.assertEqual(len(context), 1)
+        lines = [adsk_stub.FakeLine((25, 0, 20), (25, 0, 0))]
+        objs = [entry._build_weldment(self.root, lines[0],
+                                      {'kind': 'polygons',
+                                       'loops': [[(-2, -2), (2, -2), (2, 2),
+                                                  (-2, 2)]],
+                                       'fillets': [[]]}, 'SHS 40x40')]
+        cuts = entry._apply_corner_cuts(self.root, lines, ['cope'], objs, [0], 0,
+                                        context=context)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertEqual(names.count('CombineFeatures.add'), 1)
+        ci = [c for c in adsk_stub.CALLS if c[0] == 'CombineFeatures.add'][0]
+        self.assertIn(existing, ci[1][2])       # cut against the real square body
+
+    def test_cope_offset_uses_existing_square_directional_extent(self):
+        # The trim depth must come from the existing tube's polygons geom (via
+        # its recovered basis), not an isotropic fallback.
+        existing = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0), 3.0, 2.0)
+        feat = adsk_stub.FakeFeature("adsk::fusion::ExtrudeFeature", self.root,
+                                     [existing])
+        self.root.features._items.append(feat)
+        context = entry._recover_existing_members(self.root)
+        lines = [adsk_stub.FakeLine((25, 0, 20), (25, 0, 0))]
+        offs = jt.corner_offsets(lines, [{'kind': 'polygons',
+                                         'loops': [[(-2, -2), (2, -2), (2, 2),
+                                                    (-2, 2)]], 'fillets': [[]]}],
+                                [('none', 'cope')], context=context)
+        # The cope end (line 0's end at z=0) is pushed into the tool by its
+        # half-extent along Z (2 cm) -> a nonzero end offset.
+        self.assertNotAlmostEqual(offs[0][1], 0.0)
 
 
 class TestCopeOrphanRemoval(unittest.TestCase):

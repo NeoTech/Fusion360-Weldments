@@ -661,8 +661,49 @@ def _bend_radii(inputs, lines, designation):
     return radii
 
 
+def _bend_bases(lines, joints, ref, clr_by_line=None,
+                inverse_by_line=None, context=None):
+    """Per-line section basis forcing every bend leg to lie flat in the bend plane.
+
+    A square/rectangular tube can only be rotary-draw-bent about a **flat face**
+    (the die groove bears on a face parallel to the bend plane) -- never a rolled
+    corner, which would collapse the tube.  So for each line that is a leg of a
+    swept bend, return a basis whose ``axis_v`` is the bend-plane normal (the bend
+    axis ``a = u x v``), placing a pair of flat faces parallel to the bend plane;
+    ``None`` for lines that are not a bend leg (they use the normal
+    ``compute_basis(dir, ref)``).
+
+    For a **planar** bend this equals ``compute_basis`` exactly (there ``a`` is
+    the shared ``ref``, so ``axis_v`` already comes out as ``a``) -- no change.
+    For a **non-planar (3D)** bend it overrides the global reference, which would
+    otherwise roll the corner into the bend plane and twist the leg out of the arc
+    (the reported bug).  A round tube (CHS) is isotropic so the choice is
+    immaterial, but the same basis is harmless there.
+    """
+    n = len(lines)
+    bases = [None] * n
+    try:
+        plans = jt.bend_plan(lines, joints, clr_by_line or [1.0] * n,
+                             inverse_by_line=inverse_by_line, context=context)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} bend bases')
+        return bases
+    for plan in plans:
+        a = prof._norm(plan['axis'])
+        for idx, _role, _tangent in plan['tangent']:
+            if idx >= n:
+                continue                  # existing member, not built here
+            d = _line_direction(lines[idx])
+            u = prof._norm(prof._cross(a, d))
+            if u == (0.0, 0.0, 0.0):
+                continue                  # leg parallel to the bend axis: no plane
+            bases[idx] = (u, a)
+    return bases
+
+
 def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
-                     inverse_by_line=None, preview=False, context=None):
+                     inverse_by_line=None, preview=False, context=None,
+                     bases=None):
     """Build the swept-bend arc bodies for every ``bend`` corner among ``lines``.
 
     Returns a list of (feature, sketch, plane) tuples for the caller to track.
@@ -673,7 +714,10 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
     :func:`lib.joints.bend_plan`) for corners whose legs were picked in reverse
     order.  ``context`` (existing members, see
     :func:`_recover_existing_members`) lets a bend leg round into an already
-    placed member's END.
+    placed member's END.  ``bases`` (optional, from
+    :func:`_bend_bases`) gives each leg its flat-in-the-bend-plane section basis so
+    the arc sweeps from a face the die can bear on (a square tube bends about a
+    flat face, never a rolled corner).
     """
     objs = []
     try:
@@ -687,7 +731,8 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
         if idx >= len(lines):
             continue  # a context leg is never the one we revolve from
         arc = _build_bend_arc(root, lines[idx], tangent, plan, geom, ref,
-                              preview=preview)
+                              preview=preview,
+                              basis=(bases[idx] if bases else None))
         if arc:
             objs.append(arc)
     return objs
@@ -1053,6 +1098,11 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref,
                                 cope_depth_by_line=cope_depths,
                                 context=context)
+    # Force each bend leg flat in the bend plane (a square tube bends about a
+    # flat face, never a rolled corner; see _bend_bases).
+    tbases = _bend_bases(saved, _row_joints(inputs, saved), ref,
+                         clr_by_line=clr_by_line,
+                         inverse_by_line=inverses, context=context)
     objs, feat_idx = [], []
     f_start = root.features.count
     for i, line in enumerate(saved):
@@ -1060,7 +1110,8 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
         js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
         idx = root.features.count
         built = _build_weldment(root, line, geom, label, angle, ref,
-                                off_s + js, off_e + je, preview=True)
+                                off_s + js, off_e + je, preview=True,
+                                basis=tbases[i])
         objs.append(built)
         feat_idx.append(idx if built else None)
         if built:
@@ -1068,7 +1119,7 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     _preview_objs.extend(
         _build_bend_arcs(root, saved, _row_joints(inputs, saved),
                          clr_by_line, geom, ref, inverse_by_line=inverses,
-                         preview=True, context=context))
+                         preview=True, context=context, bases=tbases))
     _preview_cuts.extend(
         _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                            feat_idx, f_start,
@@ -1102,6 +1153,11 @@ def command_execute(args: adsk.core.CommandEventArgs):
     joint_offs = _joint_offsets(inputs, saved, geom, clr_by_line, ref,
                                 cope_depth_by_line=cope_depths,
                                 context=context)
+    # Force each bend leg flat in the bend plane (a square tube bends about a
+    # flat face, never a rolled corner; see _bend_bases).
+    tbases = _bend_bases(saved, _row_joints(inputs, saved), ref,
+                         clr_by_line=clr_by_line,
+                         inverse_by_line=inverses, context=context)
 
     created = 0
     objs, feat_idx = [], []
@@ -1111,14 +1167,15 @@ def command_execute(args: adsk.core.CommandEventArgs):
         js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
         idx = root.features.count
         built = _build_weldment(root, line, geom, label, angle, ref,
-                                off_s + js, off_e + je)
+                                off_s + js, off_e + je, basis=tbases[i])
         if built:
             created += 1
         objs.append(built)
         feat_idx.append(idx if built else None)
     created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
                                     clr_by_line, geom, ref,
-                                    inverse_by_line=inverses, context=context))
+                                    inverse_by_line=inverses, context=context,
+                                    bases=tbases))
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),
@@ -1297,53 +1354,164 @@ class _ContextLine:
         self.body = body
 
 
-def _member_centerline(body):
-    """Recover ``(start, end, radius_cm, inner_radius_cm)`` for a tube body.
+def _v3(v):
+    """A Vector3D/Point3D as a plain ``(x, y, z)`` tuple."""
+    return (v.x, v.y, v.z)
 
-    Uses the body's dominant (largest-area) cylindrical face: its axis is the
-    member's run direction, and projecting every face origin onto that axis gives
-    the two centreline ends.  Returns ``None`` for a body with no cylindrical
-    face (a swept-bend torus, a solid block, etc.) so such bodies are skipped --
-    they are not straight members a new part can butt against.  Radii are in cm;
-    ``inner_radius_cm`` is None for a solid (single-radius) section.
+
+def _face_area(face):
+    try:
+        return face.area
+    except Exception:
+        return 0.0
+
+
+def _centerline_round(faces):
+    """Recover ``(start, end, geom, None)`` for a round (cylindrical) tube.
+
+    The dominant (largest-area) cylindrical face's axis is the run direction;
+    projecting every face origin onto it gives the centreline ends.  ``geom`` is
+    a ``circles`` descriptor in mm (outer radius first, inner appended when the
+    radii differ, i.e. a hollow tube).  ``basis`` is None -- a round section is
+    isotropic, so its roll is irrelevant to a joint.
+    """
+    best, best_area = None, -1.0
+    for face, geo in faces:
+        if isinstance(geo, adsk.core.Cylinder):
+            area = _face_area(face)
+            if area > best_area:
+                best_area, best = area, geo
+    if best is None:
+        return None
+    axis = _v3(best.axis)
+    origin = _v3(best.origin)
+    ts, radii = [], []
+    for _face, geo in faces:
+        if isinstance(geo, (adsk.core.Plane, adsk.core.Cylinder)):
+            p = _v3(geo.origin)
+            ts.append(sum((p[c] - origin[c]) * axis[c] for c in range(3)))
+            if isinstance(geo, adsk.core.Cylinder):
+                radii.append(geo.radius)
+    if not ts or not radii:
+        return None
+
+    def on_axis(t):
+        return tuple(origin[c] + axis[c] * t for c in range(3))
+
+    outer = max(radii)
+    inner = min(radii) if len(set(round(r, 6) for r in radii)) > 1 else None
+    radii_mm = [outer * 10.0]
+    if inner is not None:
+        radii_mm.append(inner * 10.0)
+    return (on_axis(min(ts)), on_axis(max(ts)),
+            {'kind': 'circles', 'radii': radii_mm}, None)
+
+
+def _centerline_prismatic(body, faces):
+    """Recover ``(start, end, geom, basis)`` for a square/rectangular tube.
+
+    A prismatic hollow section's planar faces fall into three normal *axes*: the
+    two small section caps (whose common normal is the run direction ``d``) and
+    two pairs of large side faces (whose normals span the section's in-plane
+    directions).  Clustering the face normals by axis and taking the least-total-
+    area axis as ``d`` recovers the run; the other two axes are the section's
+    ``(axis_u, axis_v)`` basis -- read straight from the *actual* side-face
+    normals, so a tube rotated about its own run keeps its true orientation and a
+    cope against it respects that shape (not an isotropic fallback).
+
+    ``geom`` is a ``polygons`` descriptor in mm: an outer rectangle of the two
+    half-extents, plus an inner one when the min-projection faces sit inside the
+    max-projection faces (a hollow wall).
+    """
+    centroid = _body_centroid(body)
+    axes = []   # [unit_normal, total_area, [(offset_along_normal, face)]]
+    for face, geo in faces:
+        if not isinstance(geo, adsk.core.Plane):
+            continue
+        n = prof._norm(_v3(geo.normal))
+        off = prof._dot(prof._sub(_v3(geo.origin), centroid), n)
+        for a in axes:
+            if abs(abs(prof._dot(a[0], n)) - 1.0) < 1e-3:
+                a[1] += _face_area(face)
+                a[2].append((off, n))
+                break
+        else:
+            axes.append([n, _face_area(face), [(off, n)]])
+    if len(axes) < 3:
+        return None
+    axes.sort(key=lambda a: a[1])          # smallest total area first = the caps
+    d = axes[0][0]                          # run direction (cap normal)
+    e1, e2 = axes[1][0], axes[2][0]         # section in-plane directions
+    ts = []
+    for a in axes:
+        for off, n in a[2]:
+            # Reconstruct the face point's projection onto d from its offset.
+            p = jt._add(centroid, prof._scale(n, off))
+            ts.append(prof._dot(prof._sub(p, centroid), d))
+    if not ts:
+        return None
+    start = jt._add(centroid, prof._scale(d, min(ts)))
+    end = jt._add(centroid, prof._scale(d, max(ts)))
+
+    def half_extents(group):
+        vals = [abs(o) for o, _n in group]
+        return max(vals), (min(vals) if len(vals) > 1 else max(vals))
+    o1, i1 = half_extents(axes[1][2])
+    o2, i2 = half_extents(axes[2][2])
+    hw1, hw2 = o1 * 10.0, o2 * 10.0          # mm outer half-widths
+    loops = [[(-hw1, -hw2), (hw1, -hw2), (hw1, hw2), (-hw1, hw2)]]
+    fillets = [[]]
+    if (i1 < o1 - 1e-6) or (i2 < o2 - 1e-6):  # hollow: an inner wall loop
+        iw1, iw2 = i1 * 10.0, i2 * 10.0
+        loops.append([(-iw1, -iw2), (iw1, -iw2), (iw1, iw2), (-iw1, iw2)])
+        fillets.append([])
+    # A filleted section (SHS/RHS carry r_mm corner radii) has small corner
+    # cylinders whose axes run parallel to ``d``; their radius is the outer
+    # corner radius.  Recover it so the cope boolean matches the real rounded
+    # tube instead of a sharp rectangle (the flats still sit at the full
+    # half-extent, so this only rounds the corners -- the reach math is
+    # unchanged, but the cut face now follows the tube's true outline).
+    r_mm = max((geo.radius * 10.0 for _f, geo in faces
+                if isinstance(geo, adsk.core.Cylinder)), default=0.0)
+    if 0.0 < r_mm < 2.0 * min(hw1, hw2):
+        fillets[0] = [(i, r_mm) for i in range(4)]
+    geom = {'kind': 'polygons', 'loops': loops, 'fillets': fillets}
+    return start, end, geom, (e1, e2)
+
+
+def _member_centerline(body):
+    """Recover ``(start, end, geom, basis)`` for a straight tube body.
+
+    ``geom`` is a :mod:`lib.joints` section descriptor in millimetres (``circles``
+    for a round tube, ``polygons`` for a square/rectangular one); ``basis`` is the
+    member's placed ``(axis_u, axis_v)`` world unit vectors (None for a round
+    tube).  Returns ``None`` for a body that is not a straight prismatic member
+    (a swept-bend torus, a solid block, ...) so such bodies are skipped -- they
+    are not members a new part can butt/cope/miter against.
     """
     try:
-        best, best_area = None, -1.0
+        faces = []
         for k in range(body.faces.count):
             face = body.faces.item(k)
-            geo = face.geometry
-            if isinstance(geo, adsk.core.Cylinder):
-                try:
-                    area = face.area
-                except Exception:
-                    area = 0.0
-                if area > best_area:
-                    best_area, best = area, geo
-        if best is None:
+            faces.append((face, face.geometry))
+        if not faces:
             return None
-        axis_v = best.axis
-        org_v = best.origin
-        axis = (axis_v.x, axis_v.y, axis_v.z)
-        origin = (org_v.x, org_v.y, org_v.z)
-        ts = []
-        radii = []
-        for k in range(body.faces.count):
-            geo = body.faces.item(k).geometry
-            if isinstance(geo, (adsk.core.Plane, adsk.core.Cylinder)):
-                o = geo.origin
-                p = (o.x, o.y, o.z)
-                ts.append(sum((p[c] - origin[c]) * axis[c] for c in range(3)))
-                if isinstance(geo, adsk.core.Cylinder):
-                    radii.append(geo.radius)
-        if not ts:
-            return None
-
-        def on_axis(t):
-            return tuple(origin[c] + axis[c] * t for c in range(3))
-
-        outer = max(radii) if radii else None
-        inner = min(radii) if len(set(radii)) > 1 else None
-        return on_axis(min(ts)), on_axis(max(ts)), outer, inner
+        # Route by the DOMINANT face kind, not mere presence of a cylinder: a
+        # filleted square/rectangular tube (SHS/RHS carry r_mm corner radii) has
+        # four flat side faces PLUS four small corner cylinders, so "any
+        # cylinder" would misread it as a round tube and compute the cope reach
+        # against a tiny circle instead of the real section.  Try the prismatic
+        # path first: it clusters the PLANAR faces by normal axis and returns
+        # None unless they span three axes (two caps + two side pairs), which is
+        # exactly a square/rectangular tube.  A round tube's planes are only its
+        # two caps (one axis), so it falls through to the round path.
+        if any(isinstance(g, adsk.core.Plane) for _f, g in faces):
+            prism = _centerline_prismatic(body, faces)
+            if prism is not None:
+                return prism
+        if any(isinstance(g, adsk.core.Cylinder) for _f, g in faces):
+            return _centerline_round(faces)
+        return None
     except Exception:
         futil.handle_error(f'{CMD_NAME} member centerline')
         return None
@@ -1353,17 +1521,22 @@ def _recover_existing_members(root, exclude_feats=None):
     """Enumerate existing weldment members as context lines for joint detection.
 
     Scans every body in ``root`` (skipping the ones just built this run, whose
-    feature indices are in ``exclude_feats``) and recovers each straight tube's
-    centreline and section radii from its cylindrical faces (see
+    feature indices are in ``exclude_feats``) and recovers each straight member's
+    centreline, section geometry, and placed basis from its faces (see
     :func:`_member_centerline`).  Returns a list of dicts shaped for
     :func:`lib.joints.corner_offsets`::
 
-        {'line': _ContextLine, 'geom': {'kind': 'circles', 'radii': [...]},
-         'basis': None, 'body': <BRepBody>}
+        {'line': _ContextLine, 'geom': <section descriptor in mm>,
+         'basis': (axis_u, axis_v) or None, 'body': <BRepBody>}
 
-    The geom radii are in millimetres (the joints layer's unit), outer first,
-    with the inner radius appended for a hollow section so a cope against an
-    existing tube saddles through its wall exactly as against a selected one.
+    ``geom`` is a ``circles`` descriptor for a round tube (outer radius first,
+    inner appended when hollow) or a ``polygons`` descriptor for a square /
+    rectangular one (outer rectangle + inner wall loop).  ``basis`` is the
+    member's real in-plane ``(axis_u, axis_v)`` for a prismatic section -- so a
+    cope against an existing rotated tube respects its true shape -- or None for
+    a round tube (isotropic).  All lengths are in millimetres, the joints layer's
+    unit, so a cope against an existing member saddles through its wall exactly
+    as against a freshly previewed one.
     """
     exclude = set(exclude_feats or ())
     members = []
@@ -1385,15 +1558,11 @@ def _recover_existing_members(root, exclude_feats=None):
                 cl = _member_centerline(body)
                 if cl is None:
                     continue
-                start, end, outer, inner = cl
-                if outer is None or start == end:
+                start, end, geom, basis = cl
+                if start == end:
                     continue
-                radii = [outer * 10.0]
-                if inner is not None:
-                    radii.append(inner * 10.0)
                 members.append({'line': _ContextLine(start, end, body),
-                                'geom': {'kind': 'circles', 'radii': radii},
-                                'basis': None, 'body': body})
+                                'geom': geom, 'basis': basis, 'body': body})
     except Exception:
         futil.handle_error(f'{CMD_NAME} recover members')
     return members
@@ -1615,14 +1784,18 @@ def _draw_model_line(sketch, p_from, p_to):
     return sketch.sketchCurves.sketchLines.addByTwoPoints(a, b)
 
 
-def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False):
+def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False,
+                    basis=None):
     """Build one swept-bend arc body by revolving the section about the bend axis.
 
     ``plan`` is a dict from :func:`lib.joints.bend_plan` (center, axis, theta);
     ``tangent`` is this leg's tangent point (cm) where the arc meets the leg.
     The section is placed at the tangent point T on a plane normal to the leg,
     then revolved by ``theta`` about the bend axis (which lies in that plane,
-    through the arc centre C, at distance R from T).  Returns
+    through the arc centre C, at distance R from T).  ``basis`` (optional) is the
+    leg's flat-in-the-bend-plane section basis (see :func:`_bend_bases`) so the
+    arc sweeps from a face the die bears on; when omitted the normal
+    ``compute_basis(leg_dir, ref)`` is used.  Returns
     ``(feature, sketch, plane)`` or ``None``.
     """
     try:
@@ -1645,7 +1818,8 @@ def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False):
             adsk.core.ValueInput.createByReal(off))
         plane = root.constructionPlanes.add(cp_input)
 
-        axis_u, axis_v = prof.compute_basis(leg_dir, ref)
+        axis_u, axis_v = basis if basis is not None \
+            else prof.compute_basis(leg_dir, ref)
         sketch = root.sketches.add(plane)
         sketch.name = 'WeldBend'
 
@@ -1691,13 +1865,17 @@ def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False):
 
 
 def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
-                    ref=None, offset_start=0.0, offset_end=0.0, preview=False):
+                    ref=None, offset_start=0.0, offset_end=0.0, preview=False,
+                    basis=None):
     """Build one weldment body along ``line`` using cross-section ``geom``.
 
     ``angle_rad`` rotates the profile about the selected line (its own axis),
     turning it around its centre point without tilting about any other axis.
     ``ref`` is the shared "up" reference for the selection so that profiles on
     differently-oriented lines stay rolled consistently and their ends align.
+    ``basis`` (optional) overrides ``ref`` with a bend leg's flat-in-the-bend-plane
+    section basis (see :func:`_bend_bases`); when given, the profile starts from it
+    and only ``angle_rad`` is applied on top.
     ``offset_start``/``offset_end`` are signed distances (cm) along the line:
     the profile is created ``offset_start`` from the line's start and the body
     extends to ``line.length + offset_end`` from that same start, so both 0
@@ -1725,7 +1903,13 @@ def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
 
         origin = plane.geometry.origin
         origin_t = (origin.x, origin.y, origin.z)
-        axis_u, axis_v = prof.compute_basis(direction, ref)
+        if basis is not None:
+            # A bend leg's flat-in-the-bend-plane basis (see _bend_bases): a
+            # face is already aligned with the bend plane, so skip the global-
+            # reference basis and only apply the user's own Rotation on top.
+            axis_u, axis_v = basis
+        else:
+            axis_u, axis_v = prof.compute_basis(direction, ref)
         # Spin the profile about the line axis (its own centre point).
         axis_u, axis_v = prof.rotate_basis(axis_u, axis_v, angle_rad)
 

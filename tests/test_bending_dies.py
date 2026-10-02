@@ -59,6 +59,16 @@ class TestLoader(unittest.TestCase):
         self.assertEqual(len(bd.dies_for_family(CATALOGUE, "SHS")), 1)
         self.assertEqual(bd.dies_for_family(CATALOGUE, "IPE"), [])
 
+    def test_rhs_aliases_to_shs_dies(self):
+        # RHS shares SHS's flat-face bend tooling via _DIE_FAMILY_ALIASES, so it
+        # resolves to the same dies even though the catalogue lists none under
+        # "RHS".
+        self.assertEqual(bd.dies_for_family(CATALOGUE, "RHS"),
+                         bd.dies_for_family(CATALOGUE, "SHS"))
+        die = bd.die_for_designation(
+            CATALOGUE, {"h_mm": 40, "b_mm": 20, "t_mm": 3.0}, "RHS")
+        self.assertEqual(die["die_id"], "SHS-CLR-150")
+
 
 class TestMatching(unittest.TestCase):
     def test_family_only_match_round(self):
@@ -146,6 +156,20 @@ class TestAgainstProfiles(unittest.TestCase):
                 bd.die_for_designation(self.cat, d, "SHS"), d["designation"])
             checked += 1
         self.assertGreater(checked, 0, "SHS lists no designations")
+
+    def test_rhs_designations_share_shs_dies(self):
+        # RHS bends on the same tooling as SHS: every RHS designation resolves,
+        # and the offered CLRs are exactly SHS's.
+        fam = self.families["RHS"]
+        checked = 0
+        for d in prof.designations(fam):
+            self.assertIsNotNone(
+                bd.die_for_designation(self.cat, d, "RHS"), d["designation"])
+            checked += 1
+        self.assertGreater(checked, 0, "RHS lists no designations")
+        self.assertEqual(
+            [x["clr_mm"] for x in bd.dies_for_family(self.cat, "RHS")],
+            [x["clr_mm"] for x in bd.dies_for_family(self.cat, "SHS")])
 
     def test_open_section_family_has_no_die(self):
         # An open profile family (IPE) is not in the die catalogue at all.

@@ -186,6 +186,9 @@ Reduced to the one value that shapes a bend: **centerline radius**.
 | `die_for_designation(...)` | Tightest (default) die, or None for open sections. |
 
 Filtering is by **family alone** — a tube can be swept to any CLR the shop owns.
+A family in `_DIE_FAMILY_ALIASES` (currently `RHS → SHS`) is served the aliased
+family's dies: a rectangular tube is rotary-draw-bent on the same flat-face dies
+as a square one, so RHS shares SHS's tooling instead of duplicating every entry.
 
 ---
 
@@ -311,6 +314,11 @@ In the bend plane; θ = turn angle, R = CLR:
 - Arc centre: `V + (R/cos(θ/2))·normalize(u+v)`; axis = `normalize(u×v)`.
 - Sweep direction = **sign of the revolve angle** (`direction = ±1`), flipped by
   the Inverse column — negating the axis *line* is a no-op.
+- **Section orientation:** a square tube bends about a **flat face**, never a
+  rolled corner (the die bears on a face parallel to the bend plane). Each bend
+  leg's basis is set so `axis_v` ∥ the bend axis `a` (`_bend_bases`); planar-safe
+  (equals `compute_basis` when the bend is planar), overrides the global reference
+  only on 3D bends.
 
 The two straight legs are shortened by `SB` and a revolved arc fills the gap.
 
@@ -322,10 +330,14 @@ When adding to a frame, `entry.py` scans the design so new parts join placed
 members directly — no shadow parts, no duplicate-delete, clean history.
 
 - `_recover_existing_members(root)` → `[{'line': _ContextLine, 'geom': {...},
-  'basis': None, 'body': body}]`.
-- `_member_centerline(body)` recovers a member's run from its **dominant
-  cylindrical face** (axis + face-origin projection give start/end; radii ×10 →
-  mm). Torus faces (bends) are skipped.
+  'basis': (u, v) or None, 'body': body}]`.
+- `_member_centerline(body)` recovers a member's run + section from its faces,
+  routing by the **dominant face kind**: a round tube via its dominant
+  cylindrical face (`_centerline_round`, `basis=None`); a square/rectangular tube
+  via its planar faces clustered into three normal axes (`_centerline_prismatic`,
+  whose two side-face pairs give the real in-plane `basis` and whose corner
+  cylinders give the fillet radius). A filleted SHS/RHS has corner cylinders, so
+  it must NOT be misrouted to the round path. Torus faces (bends) are skipped.
 - `_ContextLine` is a `worldGeometry` shim (`_CtxPoint`/`_CtxGeometry`) so the
   pure `lib/` functions treat existing bodies exactly like selected lines.
 - The recovered list is passed as `context` to `corner_offsets`, `corner_cuts`,
