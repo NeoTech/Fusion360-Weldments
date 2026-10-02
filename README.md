@@ -247,13 +247,17 @@ Weldments/
 │   ├── test_bending_dies.py
 │   └── test_command.py       # command-layer tests against the stub
 ├── docs/
-│   └── corner-joints-plan.md # the phased design plan
+│   ├── architecture.md       # in-depth technical reference for the codebase
+│   └── joint-math.md         # derivations + debugging recipes per joint type
 └── README.md
 ```
 
 ---
 
 ## Architecture
+
+> Full module-by-module reference: [`docs/architecture.md`](docs/architecture.md).
+> The math behind each joint (for debugging): [`docs/joint-math.md`](docs/joint-math.md).
 
 The code is split so the hard geometry is testable without Fusion:
 
