@@ -25,6 +25,7 @@ miter, cope, and swept **tube bends** — and detection of members you have
 - [Joint types](#joint-types)
 - [Profile families](#profile-families)
 - [Bend dies](#bend-dies)
+- [Position alignment grid](#position-alignment-grid)
 - [Detecting existing members](#detecting-existing-members)
 - [Project structure](#project-structure)
 - [Architecture](#architecture)
@@ -66,6 +67,9 @@ This add-in automates all of that:
   the other).
 - **Butt / Miter / Cope / Bend** joint vocabulary, filtered to what each profile
   family can physically be fabricated as.
+- **Position alignment grid** — place each section on the layout line by its
+  centre, a face, or a corner (a global 3×3 dropdown), so members can be flush
+  on their outer faces instead of centre-aligned.
 - **Swept tube bends** driven by a bend-die catalogue (centerline radius), built
   as a revolved arc that blends the two legs.
 - **T-junction coping** — a member's end landing mid-run on another is saddled to
@@ -119,7 +123,10 @@ To reload after editing code without restarting Fusion, use
 3. **Lines** — select the 3D sketch line(s). A row appears per line in the table.
 4. **Profile** — pick the family (IPE, HEA, HEB, UPE, UPN, SHS, RHS, CHS).
 5. **Designation** — pick the size (e.g. `CHS 48.3 x 2.0`).
-6. **Per-Line table** — for each line set:
+6. **Position** — choose which point of the section sits on the layout line
+   (centre, a face, or a corner — a global 3×3 grid; see
+   [Position alignment grid](#position-alignment-grid)).
+7. **Per-Line table** — for each line set:
    - **Joint Start / Joint End** — the corner treatment at each end.
    - **Through / Saddle** — checkboxes that refine a *butt* (Through = this
      member runs past the corner; Saddle = notch the butt end to the neighbour's
@@ -130,7 +137,7 @@ To reload after editing code without restarting Fusion, use
    - **Inverse** — flip a swept bend's direction (concave vs. convex).
    - **Bend Die** — for a `bend` end, the die (centerline radius) to sweep.
    - **Cope Depth** — extra fish-mouth penetration for a saddled/cope end.
-7. Watch the **live preview**, then **OK** to commit.
+8. Watch the **live preview**, then **OK** to commit.
 
 **Sync all** (table toolbar, on by default) propagates an edit in any row to
 every row; turn it off to give each line its own values and manipulator arrows.
@@ -143,7 +150,7 @@ every row; turn it off to give each line its own values and manipulator arrows.
 |----|---------|-------------|
 | `none` | Beam runs full length to the vertex (default). | No trim. |
 | `butt` | One member stops at the through neighbour's near face; the neighbour extends past the vertex so the corner reads flush. | Pure axial trim (`corner_offsets`) — no boolean. |
-| `miter` | Both members cut on the bisector so mating faces coincide (45° each at a 90° corner). | Combine-cut against a waste prism (`corner_cuts`, `kind='plane'`). |
+| `miter` | Both members cut on the bisector so mating faces coincide (45° each at a 90° corner). | Split Body by the bisector plane + `Remove` of the waste (`corner_cuts`, `kind='plane'`). |
 | `cope` | A member's end notched/saddled to fit over the other's outer face. | Combine-cut against the neighbour's body (`kind='body'`), at a T-junction. |
 | `bend` | A continuous swept centerline arc of radius CLR replaces the sharp corner. | Revolved arc about the bend axis (`bend_plan`). |
 
@@ -197,6 +204,47 @@ shapes a bend: the **centerline radius** (`clr_mm`). One entry per
 
 The setback that trims each leg to its tangent point is `SB = R · tan(θ/2)` and
 the arc length is `L = R · θ` (θ = corner turn angle, R = CLR).
+
+---
+
+## Position alignment grid
+
+By default every section is placed with its **centroid on the picked sketch
+line**. The **Position** dropdown (global — one value for the whole selection,
+since members of a frame must share a reference plane) instead chooses *which
+point of the cross-section lies on the line*, as a 3×3 grid over the section's
+bounding box:
+
+```
+top-left     top        top-right
+left         CENTER     right
+bottom-left  bottom     bottom-right
+```
+
+This is how you build a frame whose members are flush on their **outer faces**
+(e.g. a table top where every tube's top skin is coplanar) rather than
+centre-aligned on the layout sketch.
+
+**How it works (the anchor model).** The picked line stays a *reference*: the
+chosen grid point — the section's **anchor** — is placed on it, and the whole
+section is rigidly translated by `-anchor` along its placed basis. Corner
+detection still runs on the original (undisplaced) lines, so shared vertices are
+never broken; the butt/cope/T trims simply measure each neighbour's extent
+**from its anchor** (the reference line through the vertex) instead of its
+displaced centroid — see `_half_extent_cm(..., anchor=)` in `lib/joints.py`.
+
+**Correctness by direction:**
+
+- **Out-of-plane** positions (`top`/`bottom` and the four corners' vertical
+  half) are a pure rigid translation of the member — correct for **every**
+  joint type.
+- **In-plane** positions (`left`/`right`) keep the ends on the reference line:
+  butt/cope/T trims are exact (anchor-based extent), miter is exact (its cut
+  plane normal is in-plane), and a swept bend shifts its arc by the same leg
+  displacement so the bend still tracks the displaced member.
+
+`center` (the default) reproduces the historical placement exactly — no offset
+arithmetic runs at all.
 
 ---
 
@@ -312,15 +360,18 @@ the API).
 python -m unittest discover -s tests
 ```
 
-**164 tests** cover:
+**196 tests** cover:
 
-- `test_profiles.py` — section geometry, designations, basis vectors.
+- `test_profiles.py` — section geometry, designations, basis vectors, and the
+  Position grid helpers (extents, anchors, displacement).
 - `test_joints.py` — corner/T-junction detection, butt/miter/cope/bend offsets,
-  bend plans, and **existing-member context** (a new member joining a placed one).
-- `test_bending_dies.py` — catalogue loading and die selection.
+  bend plans, **existing-member context** (a new member joining a placed one),
+  and the Position anchor trims.
+- `test_bending_dies.py` — catalogue loading and die selection (incl. the
+  RHS→SHS die alias).
 - `test_command.py` — the command layer against the stub: weldment building,
   per-line table, joint propagation, corner-cut construction, cope-orphan removal,
-  and existing-member recovery.
+  existing-member recovery, and the Position dropdown → anchor → build wiring.
 
 ---
 
@@ -343,9 +394,12 @@ changes don't regress them:
 - **Cope orphans:** a cope tip overshooting a hollow tool's near wall shaves a
   plug that floats in the void. Keep the tool + the largest remaining body and
   issue a `Remove` feature on the rest (Remove keeps the parametric flow intact).
-- **`SplitBodyFeature` is unusable in parametric designs** (deleting the waste
-  half cascade-deletes the kept half), so a miter is a combine against a hidden
-  waste prism instead.
+- **Miter = Split Body + Remove.** A `SplitBodyFeature` by the bisector plane is
+  usable in a parametric design (verified live): it returns both halves, and the
+  waste half is dropped with a reversible `Remove`. The kept half is whichever
+  piece still contains the member's own far end, so the plane normal's sign never
+  matters and both members' faces land on the identical plane. (The old hidden
+  waste-prism + combine approach is retired.)
 - **Joint/flag lookups must never receive a negative index** — Python's
   `list[-1]` is the last element. Context members are encoded as negative indices
   (`~k`) and guarded so they're treated as "never edited".

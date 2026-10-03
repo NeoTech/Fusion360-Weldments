@@ -267,7 +267,7 @@ def member_depth(geom):
 # --------------------------------------------------------------------------- #
 # Per-line offsets for a chosen joint type
 # --------------------------------------------------------------------------- #
-def _half_extent_cm(geom, basis, axis):
+def _half_extent_cm(geom, basis, axis, anchor=None):
     """Half-extent (cm) of section ``geom`` measured along a world ``axis``.
 
     ``basis`` is the member's placed ``(axis_u, axis_v)`` world unit vectors
@@ -281,6 +281,17 @@ def _half_extent_cm(geom, basis, axis):
     an I-beam that is the flange width (not the web depth), which a single
     scalar depth cannot express.
 
+    ``anchor`` (optional, local ``(u, v)`` mm) is the section point that sits ON
+    the shared reference line when the member is placed off-centre (the
+    "Position" alignment grid; see :func:`profiles.grid_anchor`).  The member's
+    body is then displaced from the reference line by ``-(au*axis_u + av*axis_v)``,
+    so measuring the extent from the anchor (the reference line through the shared
+    vertex) rather than the displaced centroid adds that shift's projection -- a
+    section tangent to the line by its left edge spans its full width to the
+    right, so a neighbour butting along that axis must clear more than the
+    symmetric half.  ``anchor`` None / ``(0, 0)`` reproduces the centred
+    (historical) extent exactly.
+
     When ``basis`` is None (a caller that has not computed the placed frame, e.g.
     a unit test) it falls back to the isotropic ``member_depth``/2, reproducing
     the historical scalar trim.
@@ -291,31 +302,48 @@ def _half_extent_cm(geom, basis, axis):
         return member_depth(geom) * 0.5 * MM_TO_CM
     axis_u, axis_v = basis
     cu, cv = _dot(axis_u, axis), _dot(axis_v, axis)
+    au, av = anchor if anchor else (0.0, 0.0)
     kind = geom.get('kind')
     if kind == 'circles':
         radii = geom.get('radii') or [0.0]
-        return max(radii) * math.sqrt(cu * cu + cv * cv) * MM_TO_CM
+        # A circle's centre is displaced from the anchor by the anchor offset;
+        # its extent along ``axis`` is the radius term plus that shift.
+        return (max(radii) * math.sqrt(cu * cu + cv * cv)
+                + abs(au * cu + av * cv)) * MM_TO_CM
     if kind == 'polygons':
         best = 0.0
         for loop in geom.get('loops') or []:
             for u, v in loop:
-                best = max(best, abs(u * cu + v * cv))
+                best = max(best, abs((u - au) * cu + (v - av) * cv))
         return best * MM_TO_CM
     return member_depth(geom) * 0.5 * MM_TO_CM
 
 
-def _miter_setback(depth_mm, phi):
-    """Symmetric miter setback (cm) for a corner turn of ``phi`` radians.
+def _miter_setback_cm(geom, basis, own, neigh, anchor, phi):
+    """Directional miter setback (cm) for a corner between outward dirs own/neigh.
 
-    Both members pull back from the sharp vertex by ``(d/2)/tan(phi/2)`` so the
-    square ends no longer overlap.  ``phi`` is the angle between the two member
-    directions pointing *away* from the corner.
+    The miter plane's normal is the bisector ``n = normalize(own - neigh)``; the
+    section is sliced along the in-plane direction ``mdir`` -- ``n`` projected
+    perpendicular to the member's own run.  The setback that brings the section's
+    far corner exactly onto the plane through the vertex is ``SB = h / tan(phi/2)``,
+    where ``h`` is the section's half-extent along ``mdir`` measured from its
+    Position anchor.  Using the *directional* extent (not the scalar
+    ``member_depth``) is what makes a rotated or off-centre I-beam miter land on
+    its flange (or its anchor edge) instead of its web height -- the max dimension
+    is blind to both the Rotation column and the Position grid.  Falls back to
+    ``member_depth/2`` when no basis is supplied (isotropic, the historical trim).
     """
+    n = _norm(_sub(own, neigh))
+    mdir = _sub(n, _scale(own, _dot(n, own)))
+    if _dot(mdir, mdir) < 1e-12:
+        return 0.0                       # n parallel to own: degenerate corner
+    mdir = _norm(mdir)
+    h = _half_extent_cm(geom, basis, mdir, anchor)
     half = phi / 2.0
     if half <= 1e-6 or half >= math.pi / 2.0 - 1e-6:
         # Collinear (phi ~ pi) or folded-back (phi ~ 0): no sensible setback.
         return 0.0
-    return (depth_mm * 0.5) / math.tan(half) * MM_TO_CM
+    return h / math.tan(half)
 
 
 def _ends(pair):
@@ -459,7 +487,7 @@ def _butt_through(members, joint_by_line, through_by_line, n=None):
 
 def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                    through_by_line=None, bases=None, saddle_by_line=None,
-                   cope_depth_by_line=None, context=None):
+                   cope_depth_by_line=None, context=None, anchor_by_line=None):
     """Compute ``(offset_start, offset_end)`` in cm for every line.
 
     ``geoms[i]`` is the section geometry of line ``i`` (from
@@ -490,6 +518,14 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
     an existing member's END is a corner (the existing member runs through);
     meeting its interior is a T-junction (cope/butt tool).
 
+    ``anchor_by_line[i]`` (optional) is line ``i``'s local ``(u, v)`` mm section
+    anchor -- the point that sits ON the shared reference line for the "Position"
+    alignment grid (see :func:`profiles.grid_anchor`).  An off-centre member's
+    body is displaced from the reference line, so the butt/cope trim measures the
+    neighbour's extent from that neighbour's anchor (the reference line through
+    the shared vertex) rather than its displaced centroid.  ``None`` / ``(0, 0)``
+    (the default, and every existing/context member) reproduces the centred trim.
+
     The result is a list of ``(offset_start, offset_end)`` tuples, one per line,
     to be *added* to the user's manual start/end offsets.  Lines whose joint is
     ``none`` (or a corner that cannot be resolved) get ``(0.0, 0.0)``.
@@ -504,6 +540,10 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
     L = list(lines) + ctx_lines
     G = list(geoms) + [c.get('geom') for c in ctx]
     B = (list(bases) + [c.get('basis') for c in ctx]) if bases else None
+    # Anchors exist only for selected lines; an existing (context) member was
+    # placed in an earlier run and its alignment is not recoverable, so it is
+    # treated as centred (anchor None -> the historical extent).
+    A = list(anchor_by_line) + [None] * len(ctx) if anchor_by_line else None
 
     def ci(i):
         return i if i >= 0 else n + (~i)
@@ -519,6 +559,9 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
 
     def basisv(i):
         return B[ci(i)] if B else None
+
+    def anchorv(i):
+        return A[ci(i)] if A else None
 
     def jointv(i, role):
         return joint_at(joint_by_line, i, role) if is_sel(i) else 'none'
@@ -586,11 +629,13 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                 g_o = geomv(O)
                 b_t = basisv(T)
                 b_o = basisv(O)
+                a_t = anchorv(T)
+                a_o = anchorv(O)
                 orole = members[o_k][1]
                 # The through member's extent along the incoming member's axis.
-                trim = _half_extent_cm(g_t, b_t, dirs[o_k]) / sinp
+                trim = _half_extent_cm(g_t, b_t, dirs[o_k], a_t) / sinp
                 # The incoming member's extent along the through member's axis.
-                grow = _half_extent_cm(g_o, b_o, dirs[t_k]) / sinp
+                grow = _half_extent_cm(g_o, b_o, dirs[t_k], a_o) / sinp
                 # How far the backing-off member's tip reaches along its axis
                 # (positive = past the vertex into the tool):
                 #   plain butt        -> near face  (-half): a flat square end.
@@ -631,12 +676,13 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                 bump(idx, role, -sb)
             elif jid == 'miter':
                 # A miter face runs corner-to-corner, so the member must reach
-                # PAST the centreline vertex by the setback ``(d/2)/tan(phi/2)``;
-                # the bisector plane through the vertex then trims the diagonal
-                # (see :func:`corner_cuts`).  Without the extension the plane
-                # only clips the square end's centre -- no visible miter.
-                depth = member_depth(geomv(idx))
-                sb = _miter_setback(depth, phi)
+                # PAST the centreline vertex by the setback; the bisector plane
+                # through the vertex then trims the diagonal (see corner_cuts).
+                # The setback is DIRECTIONAL (the section's extent in the miter
+                # plane, from its anchor), so a rotated or off-centre I-beam
+                # miters on its flange/anchor edge, not its web height.
+                sb = _miter_setback_cm(geomv(idx), basisv(idx), dirs[k],
+                                       dirs[other_k], anchorv(idx), phi)
                 if sb <= 0.0:
                     continue
                 bump(idx, role, sb)
@@ -662,8 +708,9 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
             continue
         g_tool = geomv(tool)
         b_tool = basisv(tool)
+        a_tool = anchorv(tool)
         # The tool's half-extent along the incoming member's axis (cm).
-        trim = _half_extent_cm(g_tool, b_tool, line_direction(lines[idx]))
+        trim = _half_extent_cm(g_tool, b_tool, line_direction(lines[idx]), a_tool)
         if trim <= 0.0:
             continue
         saddled = (jid == 'cope' or flag_at(saddle_by_line, idx, role))

@@ -1,3 +1,4 @@
+import math
 import os
 
 import adsk.core
@@ -179,6 +180,21 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     inputs.addDropDownCommandInput(
         'designation', 'Designation', adsk.core.DropDownStyles.TextListDropDownStyle)
 
+    # 3b. Position dropdown: which point of the cross-section sits ON the picked
+    #     line.  "Center" (default) centres the section on the line (the
+    #     historical behaviour); the other eight slide it so a face or corner is
+    #     tangent to the line -- e.g. members whose OUTER faces must be flush with
+    #     a shared reference plane.  This is GLOBAL (one control for the whole
+    #     creation): mixing alignments between members of one frame makes no
+    #     sense, so it lives above the per-line table, not in it.
+    pos: adsk.core.DropDownCommandInput = inputs.addDropDownCommandInput(
+        'position', 'Position', adsk.core.DropDownStyles.TextListDropDownStyle)
+    pos_items = pos.listItems
+    for _key, label in prof.GRID_POSITIONS:
+        pos_items.add(label, False)
+    if pos_items.count > 0:
+        pos_items.item(0).isSelected = True    # "Center"
+
     # 4. Per-line joint + rotation + offset table.  One row per selected sketch
     #    line, with columns [#, Joint Start, Joint End, Through, Saddle, Rotation,
     #    Offset Start, Offset End].  A joint belongs to a line END, so each line
@@ -231,6 +247,22 @@ def _selected_family(inputs):
     if 0 <= idx < len(_FAMILIES):
         return _FAMILIES[idx]
     return _FAMILIES[0] if _FAMILIES else None
+
+
+def _position_key(inputs):
+    """Selected section-alignment key ('center', 'top', 'bottom-right', ...).
+
+    Reads the global Position dropdown and maps its label back to the
+    :data:`profiles.GRID_POSITIONS` key.  Defaults to 'center' (the historical
+    centred placement) when the dropdown is missing or nothing is selected.
+    """
+    dd: adsk.core.DropDownCommandInput = inputs.itemById('position')
+    if dd is None:
+        return 'center'
+    idx = _dropdown_index(dd)
+    if 0 <= idx < len(prof.GRID_POSITIONS):
+        return prof.GRID_POSITIONS[idx][0]
+    return 'center'
 
 
 def _dropdown_index(dropdown):
@@ -583,6 +615,18 @@ def _row_saddle(inputs, lines):
     return [_row_flags(inputs, i)[1] for i in range(len(lines))]
 
 
+def _section_anchor(inputs, geom):
+    """Local ``(u, v)`` mm section anchor for the global Position alignment grid.
+
+    Maps the Position dropdown to the point of ``geom`` that should sit ON the
+    picked line (see :func:`profiles.grid_anchor`).  Returns ``None`` for
+    'center' (the default) so both the build placement and the joint trim take
+    the exact centred (historical) path with no offset arithmetic.
+    """
+    anchor = prof.grid_anchor(geom, _position_key(inputs))
+    return None if anchor == (0.0, 0.0) else anchor
+
+
 def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
                    cope_depth_by_line=None, context=None):
     """Per-line (offset_start, offset_end) in cm from the chosen corner joints.
@@ -605,15 +649,29 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
     bases = None
     if ref is not None:
         try:
-            bases = [prof.compute_basis(_line_direction(l), ref) for l in lines]
+            # The PLACED basis: compute_basis rolled by each row's Rotation,
+            # exactly as _build_weldment places it.  Using the rotated basis (not
+            # the raw one) is what makes a rotated member's miter/butt trim see
+            # its true orientation -- an I-beam mitered on its flange vs its web.
+            bases = [prof.rotate_basis(*prof.compute_basis(_line_direction(l), ref),
+                                       angle_rad=_row_params(inputs, i)[0])
+                     for i, l in enumerate(lines)]
         except Exception:
             bases = None
+    # Off-centre placement (the Position grid): the butt/cope/miter trim must
+    # measure the neighbour's extent from the reference line (the anchor), not its
+    # displaced centroid.  Both the basis and the anchor handed to corner_offsets
+    # are the PLACED ones -- the same rotated basis and plain local anchor
+    # _build_weldment uses -- so the trim sees the member's real orientation.
+    # None for 'center' -> exact centred behaviour.
+    anchor_local = _section_anchor(inputs, geom)
+    anchor_by_line = [anchor_local for _ in lines] if anchor_local else None
     try:
         return jt.corner_offsets(lines, geoms, joints, clr_by_line=clr_by_line,
                                  through_by_line=through, bases=bases,
                                  saddle_by_line=saddle,
                                  cope_depth_by_line=cope_depth_by_line,
-                                 context=context)
+                                 context=context, anchor_by_line=anchor_by_line)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint offsets')
         return [(0.0, 0.0) for _ in lines]
@@ -703,7 +761,7 @@ def _bend_bases(lines, joints, ref, clr_by_line=None,
 
 def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
                      inverse_by_line=None, preview=False, context=None,
-                     bases=None):
+                     bases=None, anchor=None):
     """Build the swept-bend arc bodies for every ``bend`` corner among ``lines``.
 
     Returns a list of (feature, sketch, plane) tuples for the caller to track.
@@ -717,7 +775,9 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
     placed member's END.  ``bases`` (optional, from
     :func:`_bend_bases`) gives each leg its flat-in-the-bend-plane section basis so
     the arc sweeps from a face the die can bear on (a square tube bends about a
-    flat face, never a rolled corner).
+    flat face, never a rolled corner).  ``anchor`` (optional) is the global
+    Position-grid section anchor; an off-centre leg's whole arc is shifted by it
+    so the bend follows the displaced member.
     """
     objs = []
     try:
@@ -732,7 +792,8 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
             continue  # a context leg is never the one we revolve from
         arc = _build_bend_arc(root, lines[idx], tangent, plan, geom, ref,
                               preview=preview,
-                              basis=(bases[idx] if bases else None))
+                              basis=(bases[idx] if bases else None),
+                              anchor=anchor)
         if arc:
             objs.append(arc)
     return objs
@@ -1103,6 +1164,9 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     tbases = _bend_bases(saved, _row_joints(inputs, saved), ref,
                          clr_by_line=clr_by_line,
                          inverse_by_line=inverses, context=context)
+    # Global Position-grid anchor: the section point that sits ON each picked
+    # line.  None for 'center' (the default) so placement stays centred.
+    anchor = _section_anchor(inputs, geom)
     objs, feat_idx = [], []
     f_start = root.features.count
     for i, line in enumerate(saved):
@@ -1111,7 +1175,7 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
         idx = root.features.count
         built = _build_weldment(root, line, geom, label, angle, ref,
                                 off_s + js, off_e + je, preview=True,
-                                basis=tbases[i])
+                                basis=tbases[i], anchor=anchor)
         objs.append(built)
         feat_idx.append(idx if built else None)
         if built:
@@ -1119,7 +1183,8 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     _preview_objs.extend(
         _build_bend_arcs(root, saved, _row_joints(inputs, saved),
                          clr_by_line, geom, ref, inverse_by_line=inverses,
-                         preview=True, context=context, bases=tbases))
+                         preview=True, context=context, bases=tbases,
+                         anchor=anchor))
     _preview_cuts.extend(
         _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                            feat_idx, f_start,
@@ -1158,6 +1223,8 @@ def command_execute(args: adsk.core.CommandEventArgs):
     tbases = _bend_bases(saved, _row_joints(inputs, saved), ref,
                          clr_by_line=clr_by_line,
                          inverse_by_line=inverses, context=context)
+    # Global Position-grid anchor (see the preview path): None for 'center'.
+    anchor = _section_anchor(inputs, geom)
 
     created = 0
     objs, feat_idx = [], []
@@ -1167,7 +1234,8 @@ def command_execute(args: adsk.core.CommandEventArgs):
         js, je = joint_offs[i] if i < len(joint_offs) else (0.0, 0.0)
         idx = root.features.count
         built = _build_weldment(root, line, geom, label, angle, ref,
-                                off_s + js, off_e + je, basis=tbases[i])
+                                off_s + js, off_e + je, basis=tbases[i],
+                                anchor=anchor)
         if built:
             created += 1
         objs.append(built)
@@ -1175,7 +1243,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
     created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
                                     clr_by_line, geom, ref,
                                     inverse_by_line=inverses, context=context,
-                                    bases=tbases))
+                                    bases=tbases, anchor=anchor))
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),
@@ -1274,12 +1342,6 @@ def _miter_plane(root, point, normal):
     ci.setByTwoEdges(l1, l2)
     plane = root.constructionPlanes.add(ci)
     return plane, sk
-
-
-def _side(pt, origin, normal):
-    """Sign of the offset of ``pt`` from the plane (origin, normal): +1/-1/0."""
-    d = sum((pt[k] - origin[k]) * normal[k] for k in range(3))
-    return 1 if d > 1e-6 else (-1 if d < -1e-6 else 0)
 
 
 def _all_bodies(root):
@@ -1616,46 +1678,56 @@ def _remove_combine_orphans(root, comb, tool_body):
     return removed
 
 
-# Half-size (cm) of the waste prism drawn on a miter plane; must exceed any
-# section reach so the prism fully covers the corner's waste half-space.
-_WASTE_RADIUS = 100.0
-# Extrusion depth (cm) of the waste prism; deep enough to swallow the corner.
-_WASTE_DEPTH = 200.0
+def _split_miter(root, body, V, normal, test_pt):
+    """Trim a member to a miter plane with Split Body + Remove (no boolean).
 
+    A construction plane through the vertex ``V`` with the bisector ``normal``
+    splits ``body`` into the kept half (the member's own side) and a waste
+    sliver beyond the miter face.  The waste is dropped with a ``Remove``
+    feature -- reversible (deleting it restores the body) and it leaves the
+    parametric flow intact, unlike deleting the body outright.  The kept half
+    is whichever piece still contains ``test_pt`` (a point deep inside the
+    member's own run), so no normal-sign logic is needed and the diagonal face
+    lands exactly on the shared bisector plane -- coincident with the
+    neighbour's face for any rotation or Position offset.
 
-def _waste_prism(root, V, normal, keep_side):
-    """Build a big box occupying the waste half-space beyond a miter plane.
-
-    A construction plane through ``V`` with the bisector ``normal`` hosts a
-    square sketch (side ``2*_WASTE_RADIUS``) extruded ``_WASTE_DEPTH`` to the
-    waste side (opposite ``keep_side``).  The resulting body is the cutting
-    tool for a combine-cut that trims a member to the bisector -- the miter
-    primitive.  SplitBodyFeature is unusable here: in a parametric design its
-    waste half stays shared with the member's extrude, so deleting it cascades
-    and removes the kept half too.  Returns
-    ``(feature, sketch, plane, helper_sketch)``.
+    Returns the objects to track for preview teardown, in delete order
+    (Remove, then Split, then the plane and its helper sketch).
     """
     plane, sk = _miter_plane(root, V, normal)
-    skb = root.sketches.add(plane)
-    skb.name = 'WeldWaste'
-    a1 = (1.0, 0.0, 0.0) if abs(normal[0]) < 0.9 else (0.0, 1.0, 0.0)
-    u = prof._norm(prof._cross(normal, a1))
-    w = prof._norm(prof._cross(normal, u))
-    R = _WASTE_RADIUS
-    pts = [tuple(V[c] + su * R * u[c] + sw * R * w[c] for c in range(3))
-           for su in (-1, 1) for sw in (-1, 1)]
-    loop = [pts[0], pts[1], pts[3], pts[2]]  # order into a non-self-crossing rect
-    for i in range(4):
-        _draw_model_line(skb, loop[i], loop[(i + 1) % 4])
-    ei = root.features.extrudeFeatures.createInput(
-        skb.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-    ei.startExtent = adsk.fusion.ProfilePlaneStartDefinition.create()
-    # Signed distance along the plane normal: negative extrudes to the waste
-    # side when keep_side is +1 (and vice-versa).
-    ei.setDistanceExtent(False, adsk.core.ValueInput.createByReal(
-        (-keep_side) * _WASTE_DEPTH))
-    ext = root.features.extrudeFeatures.add(ei)
-    return ext, skb, plane, sk
+    sbf = root.features.splitBodyFeatures.add(
+        root.features.splitBodyFeatures.createInput(body, plane, True))
+    # The real API returns a SplitBodyFeature whose ``bodies`` are the two
+    # halves; fall back to enumerating every body if it hands back None.
+    halves = sbf.bodies if sbf is not None else _all_bodies(root)
+    inside = adsk.fusion.PointContainment.PointInsidePointContainment
+    probe = adsk.core.Point3D.create(*test_pt)
+    waste = None
+    for i in range(halves.count):
+        b = halves.item(i)
+        try:
+            if b.pointContainment(probe) != inside:
+                waste = b
+                break
+        except Exception:
+            continue
+    created = []
+    if waste is not None:
+        rm = root.features.removeFeatures.add(waste)
+        if rm is not None:
+            created.append(rm)
+    if sbf is not None:
+        created.append(sbf)
+    # The plane and its two long helper lines are live inputs to the split, so
+    # hide them (light bulb off) rather than delete them, and track them for
+    # teardown.
+    for helper in (sk, plane):
+        try:
+            helper.isLightBulbOn = False
+        except Exception:
+            pass
+    created.extend([sk, plane])
+    return created
 
 
 def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
@@ -1670,9 +1742,9 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
     reparents features and shifts every later index.  Per
     :func:`lib.joints.corner_cuts`:
 
-    * ``kind='plane'`` (miter): combine-cut the member against a waste prism
-      occupying the half-space beyond the bisector plane through the vertex
-      (see :func:`_waste_prism`); the prism is consumed by the cut.
+    * ``kind='plane'`` (miter): split the member by the bisector plane through
+      the vertex and Remove the waste sliver (see :func:`_split_miter`) -- no
+      boolean and no setback sensitivity to rotation or Position.
     * ``kind='body'`` (cope, or a saddled butt): combine-cut the member against
       the neighbour's body (keep-tool-bodies), saddling it to the through
       member.  A plain butt (no saddle) produces no cut -- it is a pure axial
@@ -1685,8 +1757,8 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
     the whole point of detecting existing weldments.
 
     Returns the objects to track for preview cleanup, in delete order: each
-    combine feature first (removing it restores the member body), then the
-    prism extrudes/sketches/planes they consumed.  The caller must delete all
+    Remove/Split/combine feature first (removing it restores the member body),
+    then the helper sketches/planes they consumed.  The caller must delete all
     of these BEFORE the member features.
     """
     created = []
@@ -1709,67 +1781,54 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
             continue
         try:
             reach = max(lines[m].length, 1.0)
-            # Locate the member's body by its FAR end (the endpoint away from
-            # the junction), which is always deep inside the member's own
-            # material.  The line midpoint is unreliable for a short T-junction
-            # member, whose midpoint can sit nearer the tool's body than its own.
+            if cut['kind'] == 'plane':
+                # Miter: locate the member's body by its own MIDPOINT.  The far
+                # end is a vertex SHARED with the next member in a connected
+                # chain, so the nearest body to it can be the neighbour's -- and
+                # that neighbour does not cross this corner's bisector plane
+                # (SPLIT_TARGET_TOOL_NOT_INTERSECT).  The midpoint is always
+                # inside the member's own run.  Probe with it for the kept half
+                # too (deep in the member's material, so the plane normal's sign
+                # never matters).
+                probe = _line_midpoint(lines[m])
+                body = _find_body_near(root, probe, reach)
+                if body is None:
+                    continue
+                created.extend(
+                    _split_miter(root, body, cut['point'], cut['normal'], probe))
+                continue
+            # Body cut (cope / saddled butt): locate the member by its FAR end,
+            # deep inside its own material -- the midpoint is unreliable for a
+            # short T-junction stub, whose midpoint can sit nearer the tool.
             body = _find_body_near(root, _line_far_end(lines[m], cut['point']),
                                    reach)
             if body is None:
                 continue
-            if cut['kind'] == 'plane':
-                keep_side = _side(_body_centroid(body), cut['point'],
-                                  cut['normal'])
-                prism, skb, plane, sk = _waste_prism(root, cut['point'],
-                                                     cut['normal'], keep_side)
-                tools = adsk.core.ObjectCollection.create()
-                tools.add(prism.bodies.item(0))
-                ci = root.features.combineFeatures.createInput(body, tools)
-                ci.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
-                # The prism is pure waste: consume it instead of leaving a
-                # giant box in the view (unlike butt/cope, whose tool is a
-                # real neighbour body).
-                ci.isKeepToolBodies = False
-                comb = root.features.combineFeatures.add(ci)
-                # The prism is consumed, but its helper geometry -- the two very
-                # long lines in the miter-plane sketch (sk), the waste sketch
-                # (skb) and the construction plane -- would otherwise linger in
-                # the browser and clutter the canvas.  They are still needed as
-                # live inputs to the combine (deleting them breaks the feature),
-                # so turn their light bulbs off instead: hidden from the view but
-                # intact, and still tracked in ``created`` for preview teardown.
-                for helper in (skb, sk, plane):
-                    try:
-                        helper.isLightBulbOn = False
-                    except Exception:
-                        pass
-                created.extend([comb, prism, skb, sk, plane])
+            if t < 0:
+                tool_body = ctx[~t]['body']
             else:
-                if t < 0:
-                    tool_body = ctx[~t]['body']
-                else:
-                    tool_reach = max(lines[t].length, 1.0)
-                    tool_body = _find_body_near(root, _line_midpoint(lines[t]),
-                                                tool_reach)
-                if tool_body is None:
-                    continue
-                tools = adsk.core.ObjectCollection.create()
-                tools.add(tool_body)
-                ci = root.features.combineFeatures.createInput(body, tools)
-                ci.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
-                ci.isKeepToolBodies = True
-                comb = root.features.combineFeatures.add(ci)
-                created.append(comb)
-                # The cope tip overshoots the near wall, shaving a thin plug off
-                # the member that floats in the tool's hollow void.  Remove those
-                # orphans (a Remove feature, so the parametric flow is intact and
-                # deleting it on teardown restores them).  Track them BEFORE the
-                # combine so teardown deletes the Remove first, then the combine.
-                removes = _remove_combine_orphans(root, comb, tool_body)
-                created = removes + created
+                tool_reach = max(lines[t].length, 1.0)
+                tool_body = _find_body_near(root, _line_midpoint(lines[t]),
+                                            tool_reach)
+            if tool_body is None:
+                continue
+            tools = adsk.core.ObjectCollection.create()
+            tools.add(tool_body)
+            ci = root.features.combineFeatures.createInput(body, tools)
+            ci.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
+            ci.isKeepToolBodies = True
+            comb = root.features.combineFeatures.add(ci)
+            created.append(comb)
+            # The cope tip overshoots the near wall, shaving a thin plug off
+            # the member that floats in the tool's hollow void.  Remove those
+            # orphans (a Remove feature, so the parametric flow is intact and
+            # deleting it on teardown restores them).  Track them BEFORE the
+            # combine so teardown deletes the Remove first, then the combine.
+            removes = _remove_combine_orphans(root, comb, tool_body)
+            created = removes + created
         except Exception:
             futil.handle_error(f'{CMD_NAME} corner cut')
-    # Cut features and prism helpers FIRST (delete order), then the rest.
+    # Cut features and helpers FIRST (delete order), then the rest.
     return created
 
 
@@ -1785,7 +1844,7 @@ def _draw_model_line(sketch, p_from, p_to):
 
 
 def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False,
-                    basis=None):
+                    basis=None, anchor=None):
     """Build one swept-bend arc body by revolving the section about the bend axis.
 
     ``plan`` is a dict from :func:`lib.joints.bend_plan` (center, axis, theta);
@@ -1795,7 +1854,10 @@ def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False,
     through the arc centre C, at distance R from T).  ``basis`` (optional) is the
     leg's flat-in-the-bend-plane section basis (see :func:`_bend_bases`) so the
     arc sweeps from a face the die bears on; when omitted the normal
-    ``compute_basis(leg_dir, ref)`` is used.  Returns
+    ``compute_basis(leg_dir, ref)`` is used.  ``anchor`` (optional, local
+    ``(u, v)`` mm) places the leg off the reference line for the Position grid:
+    the whole arc (section AND revolve axis) is shifted by the leg's centroid
+    displacement so the swept bend follows the displaced member.  Returns
     ``(feature, sketch, plane)`` or ``None``.
     """
     try:
@@ -1820,6 +1882,13 @@ def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False,
 
         axis_u, axis_v = basis if basis is not None \
             else prof.compute_basis(leg_dir, ref)
+        # Off-centre leg (Position grid): shift the tangent point AND the arc
+        # centre by the same centroid displacement so the swept arc tracks the
+        # displaced member (a rigid translation of the whole bend).
+        if anchor:
+            disp = prof.displace_origin((0.0, 0.0, 0.0), axis_u, axis_v, anchor)
+            tangent = jt._add(tangent, disp)
+            center = jt._add(center, disp)
         sketch = root.sketches.add(plane)
         sketch.name = 'WeldBend'
 
@@ -1866,7 +1935,7 @@ def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False,
 
 def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
                     ref=None, offset_start=0.0, offset_end=0.0, preview=False,
-                    basis=None):
+                    basis=None, anchor=None):
     """Build one weldment body along ``line`` using cross-section ``geom``.
 
     ``angle_rad`` rotates the profile about the selected line (its own axis),
@@ -1880,6 +1949,10 @@ def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
     the profile is created ``offset_start`` from the line's start and the body
     extends to ``line.length + offset_end`` from that same start, so both 0
     gives the full line length.
+    ``anchor`` (optional, local ``(u, v)`` mm) is the section point that must sit
+    ON the picked line for the Position alignment grid (see
+    :func:`profiles.grid_anchor`); the centroid is displaced so that point lands
+    on the line.  None / ``(0, 0)`` centres the section on the line (default).
 
     Returns ``(feature, sketch, plane)`` on success, or ``None`` on failure.
     When ``preview`` is True the resulting body is ghosted (semi-transparent)
@@ -1912,6 +1985,11 @@ def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
             axis_u, axis_v = prof.compute_basis(direction, ref)
         # Spin the profile about the line axis (its own centre point).
         axis_u, axis_v = prof.rotate_basis(axis_u, axis_v, angle_rad)
+        # Off-centre placement (the Position grid): slide the centroid so the
+        # chosen section point lands on the picked line.  The anchor is in the
+        # section's own local frame, so it is applied against the rotated basis.
+        if anchor:
+            origin_t = prof.displace_origin(origin_t, axis_u, axis_v, anchor)
 
         sketch = root.sketches.add(plane)
         sketch.name = f'WeldProfile_{designation_label}'

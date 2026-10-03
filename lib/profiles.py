@@ -271,6 +271,102 @@ def section_geometry(designation):
     raise ValueError(f"Unknown profile abbreviation: {abbr!r}")
 
 
+# --------------------------------------------------------------------------- #
+# Section placement on the picked line (the "Position" alignment grid)
+# --------------------------------------------------------------------------- #
+# The picked sketch line is a *reference*: the Position dropdown chooses which
+# point of the cross-section lies on it.  "center" puts the centroid on the line
+# (the historical behaviour); the other eight slide the section so a face or a
+# corner is tangent to the line -- e.g. two members whose OUTER faces must be
+# flush with a shared reference plane.  The nine positions form a 3x3 grid over
+# the section's bounding box in its local (u, v) frame (u = width, v = height):
+#
+#     top-left     top        top-right
+#     left         CENTER     right
+#     bottom-left  bottom     bottom-right
+#
+# The KEYS below are the grid_anchor() selector (local +v = "top" in the
+# section's own frame).  Seen from the FRONT (looking down -Y, Z up), a
+# horizontal member's placed axis_v points +Z, so grid_anchor's +v ("top")
+# lands the section BELOW the line -- i.e. the key names are vertically
+# inverted w.r.t. what the user sees.  The LABELS are paired to the key that
+# renders in that visual cell, so picking "Top" puts the member at the top.
+GRID_POSITIONS = [
+    ("center", "Center"),
+    ("bottom", "Top"),
+    ("top", "Bottom"),
+    ("left", "Left"),
+    ("right", "Right"),
+    ("bottom-left", "Top Left"),
+    ("bottom-right", "Top Right"),
+    ("top-left", "Bottom Left"),
+    ("top-right", "Bottom Right"),
+]
+
+
+def section_extents(geom):
+    """Bounding box ``(umin, umax, vmin, vmax)`` (mm) of a section in local coords.
+
+    Every loop builder centres the section on ``(0, 0)``, so the extents are
+    symmetric for the built-in families, but this reads them from the actual
+    outline so an asymmetric section (a channel, whose web sits on -u) is
+    handled correctly.  A circle's box is the outer radius square.
+    """
+    kind = geom.get("kind")
+    if kind == "circles":
+        r = max(geom.get("radii") or [0.0])
+        return -r, r, -r, r
+    if kind == "polygons":
+        us = [u for loop in geom.get("loops") or [] for u, _v in loop]
+        vs = [v for loop in geom.get("loops") or [] for _u, v in loop]
+        if not us:
+            return 0.0, 0.0, 0.0, 0.0
+        return min(us), max(us), min(vs), max(vs)
+    return 0.0, 0.0, 0.0, 0.0
+
+
+def grid_anchor(geom, position):
+    """Local ``(u, v)`` mm point of ``geom`` that should sit ON the reference line.
+
+    ``position`` is a key from :data:`GRID_POSITIONS` (``"center"`` -> the
+    centroid ``(0, 0)``, reproducing the historical centred placement).  The
+    drawing layer offsets the section by ``-anchor`` along its basis so the
+    returned point lands on the picked line; joint trims measure the neighbour's
+    extent from this same point (see :func:`lib.joints._half_extent_cm`).
+    """
+    umin, umax, vmin, vmax = section_extents(geom)
+    umid = (umin + umax) / 2.0
+    vmid = (vmin + vmax) / 2.0
+    hsel = {"left": umin, "center": umid, "right": umax}
+    vsel = {"bottom": vmin, "center": vmid, "top": vmax}
+    if position in ("center", "top", "bottom", "left", "right"):
+        return hsel.get(position, umid), vsel.get(position, vmid)
+    if "-" in position:                       # corner: "<v>-<h>" e.g. "top-left"
+        vpart, hpart = position.split("-", 1)
+        return hsel.get(hpart, umid), vsel.get(vpart, vmid)
+    return umid, vmid
+
+
+def displace_origin(origin, axis_u, axis_v, anchor):
+    """Model-space (cm) placement origin so ``anchor`` sits on ``origin``.
+
+    ``origin`` is the point on the picked line (cm) that the section would be
+    centred on, ``axis_u``/``axis_v`` the section's placed (already-rotated) width
+    and height unit vectors, and ``anchor`` the local ``(u, v)`` mm point of the
+    section that must land on the line (see :func:`grid_anchor`).  The section's
+    centroid therefore moves to ``origin - (au*axis_u + av*axis_v)``, putting the
+    chosen grid point exactly on the reference line.  A ``(0, 0)`` / None anchor
+    returns ``origin`` unchanged (the centred, historical placement).
+    """
+    if not anchor or (anchor[0] == 0.0 and anchor[1] == 0.0):
+        return origin
+    au, av = anchor
+    k = MM_TO_CM
+    return (origin[0] - k * (au * axis_u[0] + av * axis_v[0]),
+            origin[1] - k * (au * axis_u[1] + av * axis_v[1]),
+            origin[2] - k * (au * axis_u[2] + av * axis_v[2]))
+
+
 def _infer_abbreviation(designation):
     name = designation.get("designation", "")
     for prefix in ("IPE", "HEA", "HEB", "UPE", "UPN", "SHS", "RHS", "CHS"):

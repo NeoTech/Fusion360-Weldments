@@ -14,6 +14,7 @@ maintainers. For the derivations and formulas behind each joint, see
 - [`lib/bending_dies.py` — die catalogue](#libbending_diespy--bend-die-catalogue)
 - [`commands/weldment/entry.py` — command layer](#commandsweldmententrypy--command-layer)
 - [Data flow: selection → features](#data-flow-selection--features)
+- [Position alignment grid](#position-alignment-grid-the-anchor-model)
 - [Joint semantics (authoritative)](#joint-semantics-authoritative)
 - [Detection algorithms](#detection-algorithms)
 - [Swept-bend geometry](#swept-bend-geometry) → see also [joint-math.md](joint-math.md)
@@ -33,8 +34,9 @@ maintainers. For the derivations and formulas behind each joint, see
 2. **Data-driven.** Profiles and bend dies are JSON catalogues in `data/`;
    adding a size or a die needs no code change.
 3. **Parametric-history friendly.** Features are built so the timeline stays
-   clean (e.g. a butt is a length trim, not a boolean; a miter is a combine
-   against a consumed waste prism, never a `SplitBodyFeature`).
+   clean (e.g. a butt is a length trim, not a boolean; a miter is a
+   `SplitBodyFeature` by the bisector plane plus a reversible `Remove` of the
+   waste sliver, never a giant boolean prism).
 4. **A joint belongs to a line END.** Every member has a *start* and an *end*
    vertex; the two can carry different joints.
 
@@ -103,6 +105,10 @@ Loads `data/profiles.json` and turns a designation into drawable loops.
 | `selection_reference(directions)` | One shared "up" for a whole selection (plane normal). |
 | `rotate_basis(u, v, angle)` | Spin a basis about the line (the Rotation column). |
 | `map_local_to_model(origin, u, v, um, vm)` | mm local point → cm model point. |
+| `GRID_POSITIONS` | The 9 `(key, label)` Position-grid entries (`center` first). |
+| `section_extents(geom)` | Bounding box `(umin, umax, vmin, vmax)` (mm) of a section. |
+| `grid_anchor(geom, position)` | Local `(u, v)` mm point of a section that sits on the line. |
+| `displace_origin(origin, u, v, anchor)` | cm placement origin so `anchor` lands on `origin`. |
 
 **`section_geometry` descriptor:**
 
@@ -137,7 +143,7 @@ per-line offsets, cuts, and bend arcs make the corners join cleanly?*
 | `detect_corners(lines, tol, context)` | Shared vertices: `{'point', 'members':[(idx,'start'\|'end')]}`. |
 | `detect_t_junctions(lines, tol, context)` | End-on-interior landings: `{'point','member','tool'}`. |
 | `member_depth(geom)` | Characteristic section depth (mm) for trims. |
-| `_half_extent_cm(geom, basis, axis)` | **Directional** half-extent (cm) along a neighbour's axis. |
+| `_half_extent_cm(geom, basis, axis, anchor)` | **Directional** half-extent (cm) along a neighbour's axis, measured from an optional Position anchor. |
 | `corner_offsets(...)` | Per-line `(offset_start, offset_end)` in cm. |
 | `corner_cuts(...)` | Real boolean/plane cut plans. |
 | `bend_plan(...)` | Swept-arc plans per bend corner. |
@@ -145,8 +151,9 @@ per-line offsets, cuts, and bend arcs make the corners join cleanly?*
 | `joints_for_family` / `joint_labels` / `joint_id_from_label` | Family filtering + label↔id. |
 
 **`corner_offsets(lines, geoms, joint_by_line, clr_by_line, through_by_line,
-bases, saddle_by_line, cope_depth_by_line, context)`** — the main entry. Builds a
-combined index space (`L`, `G`, `B`) over selected + context lines, then:
+bases, saddle_by_line, cope_depth_by_line, context, anchor_by_line)`** — the main
+entry. Builds a combined index space (`L`, `G`, `B`, `A`) over selected + context
+lines, then:
 
 - **Butt corners** are handled **once per corner** via `_butt_through` (which
   member runs through). The backing-off member stops at the through member's
@@ -154,8 +161,10 @@ combined index space (`L`, `G`, `B`) over selected + context lines, then:
   member grows to the other's face. Plain butt → near face (flat square, no
   boolean); saddled solid → far face; saddled hollow → just past the near wall
   (`-half + wall`) so the boolean carves a saddle without leaving a plug.
-- **Miter** bumps each member *past* the vertex by `(d/2)/tan(φ/2)` so the
-  bisector plane (from `corner_cuts`) produces a real corner-to-corner face.
+- **Miter** bumps each member *past* the vertex by `h/tan(φ/2)`, where `h` is the
+  section's half-extent **in the miter plane** (from its anchor), so the bisector
+  plane (from `corner_cuts`) produces a real corner-to-corner face even for a
+  rotated or off-centre open section (`_miter_setback_cm`).
 - **Bend** trims each leg to its tangent point (`bend_setback`).
 - **T-junctions**: a butt/cope end landing mid-run gets the same near/far/wall
   reach logic against the tool.
@@ -168,6 +177,16 @@ A plain butt emits **no** cut. A context tool is encoded negative (`~k`) / `n+k`
 'tangent','arc_length'}`. `direction` is `±1` (the **sign of the revolve angle**,
 since a sketch line has no direction to negate); `tangent` lists a selected leg
 first so the builder revolves from a line it created.
+
+**Position anchor (`anchor_by_line`).** When the global Position grid places a
+member off-centre, its body is translated away from the reference line, so the
+corner trims must measure a neighbour's extent **from that neighbour's anchor**
+(the reference line through the shared vertex), not its displaced centroid —
+that is the `anchor` argument to `_half_extent_cm`. Corner detection itself runs
+on the **original** (undisplaced) lines, so translating sections never breaks
+shared-vertex clustering (`_CORNER_TOL`). Context (existing) members always
+carry `anchor=None` — their alignment was set in an earlier run and is not
+recoverable, so they trim as centred.
 
 ---
 
@@ -213,6 +232,8 @@ panel and drives the dialog.
 **Dialog inputs:**
 - `path` — Selection input, filtered to `SketchLines`, min 1.
 - `family` / `designation` — dropdowns (designation rebuilt on family change).
+- `position` — a **global** 3×3 alignment-grid dropdown (which point of the
+  section sits on the line; `center` default). See *Position anchor* below.
 - `params` — an **11-column table**, one data row per line (row 0 is a read-only
   header). Columns:
   `# | Joint Start | Joint End | Through | Saddle | Rotation | Offset Start |
@@ -228,12 +249,14 @@ panel and drives the dialog.
 - *Dropdown rebuilds:* `_rebuild_designations`, `_rebuild_joints`,
   `_populate_joint_dropdown`, `_rebuild_dies`, `_populate_die_dropdown`,
   `_update_bend_columns` (enable Inverse/Bend Die for bends, Cope Depth for copes).
+- *Position grid:* `_position_key` (dropdown → grid key), `_section_anchor`
+  (grid key → local `(u, v)` mm anchor, `None` for `center`).
 - *Interaction:* `command_input_changed` (handles family/designation/joint/saddle
   edits, calls `_propagate_corner_joint`), `command_select`, `_sync_table_rows`,
   `_update_manipulators`, `_apply_row_manipulators`.
 - *Geometry bridge:* `_resolve`, `_joint_offsets`, `_build_bend_arcs`,
   `_build_weldment`, `_draw_section`, `_draw_model_line`.
-- *Cutting:* `_apply_corner_cuts`, `_miter_plane`, `_waste_prism`,
+- *Cutting:* `_apply_corner_cuts`, `_miter_plane`, `_split_miter`,
   `_side`, `_find_body_near`, `_all_bodies`, `_body_centroid`, `_bbox_of`,
   `_remove_combine_orphans`.
 - *Existing members:* `_CtxPoint`, `_CtxGeometry`, `_ContextLine`,
@@ -256,17 +279,55 @@ Sketch lines selected
    └─ _recover_existing_members(root) -> context (Phase J)
    └─ profiles.section_geometry(designation) -> geom per line
    └─ profiles.compute_basis / selection_reference -> bases
-   └─ joints.corner_offsets(...) -> per-line (start,end) offsets (cm)
+   └─ profiles.grid_anchor(position) -> section anchor (Position grid)
+   └─ joints.corner_offsets(..., anchor_by_line) -> per-line (start,end) offsets (cm)
    └─ joints.bend_plan(...) -> swept arcs -> _build_bend_arc (revolve)
-   └─ joints.corner_cuts(...) -> cut plans -> _apply_corner_cuts (combine/plane)
+   └─ joints.corner_cuts(...) -> cut plans -> _apply_corner_cuts (split/plane)
    └─ _build_weldment(line, geom, offsets) -> extrude/revolve per member
 preview: build ghosted, record every object in _preview_objs/_preview_cuts
 commit:  keep; destroy: _clear_preview deletes in reverse (cuts before members)
 ```
 
-`_apply_corner_cuts` returns every created object in **delete order** (combine
-feature, prism extrude, prism sketch, plane-helper sketch, plane) so
-`_clear_preview` removes cutting features before member features.
+`_apply_corner_cuts` returns every created object in **delete order** (miter:
+Remove feature, Split feature, plane-helper sketch, plane; cope/butt: combine
+feature) so `_clear_preview` removes cutting features before member features.
+
+---
+
+## Position alignment grid (the anchor model)
+
+The picked sketch line is a **reference**, not the member's centroid axis. The
+global `position` dropdown chooses which point of the cross-section lies on it,
+as a 3×3 grid over the section's local `(u, v)` bounding box (`center`, `top`,
+`bottom`, `left`, `right`, and the four corners).
+
+Flow: `_position_key` → `profiles.grid_anchor(geom, key)` → a local `(u, v)` mm
+**anchor**. Two consumers:
+
+- **Placement** (`_build_weldment` / `_build_bend_arc`): the centroid is
+  displaced by `profiles.displace_origin(origin, axis_u, axis_v, anchor)`
+  = `origin − MM_TO_CM·(au·axis_u + av·axis_v)`, so the anchor lands exactly on
+  the line. The build uses the **rotated** basis with the plain local anchor.
+- **Joint trims** (`_joint_offsets` → `corner_offsets(bases=…, anchor_by_line=…)`):
+  the trims are handed the **placed** basis (`rotate_basis(compute_basis(dir,ref),
+  row angle)`) and the **plain** local anchor — the *same* orientation and offset
+  `_build_weldment` uses — so a rotated or off-centre member's butt/cope/T/miter
+  trim measures its extent in its real orientation. (Rotating the anchor against
+  an un-rotated basis is *not* equivalent for an extent measurement, only for the
+  centroid displacement, so the placed basis is passed directly.)
+
+Why the anchor model and not shifted reference lines: `detect_corners` clusters
+by endpoint **proximity** (`_CORNER_TOL`); translating each centroid line would
+break shared-vertex detection. Keeping the lines original and displacing only at
+build/trim time preserves corner detection.
+
+**Correctness by offset direction:** out-of-plane (`top`/`bottom`) is a pure
+rigid translation → correct for every joint. In-plane (`left`/`right`, corner
+horizontals): butt/cope/T exact (anchor extent), miter exact (the plane is the
+centerline bisector through the vertex — rotation/anchor-independent — and the
+setback is directional, `h/tan(φ/2)` with `h` the extent in the miter plane from
+the anchor), bend arc shifted by the leg displacement. `center` short-circuits
+to `None` and reproduces the historical placement with no offset arithmetic.
 
 ---
 
@@ -276,7 +337,7 @@ feature, prism extrude, prism sketch, plane-helper sketch, plane) so
 |---|---|---|---|
 | `none` | Full length to vertex (default). | No offset. | No |
 | `butt` | One member runs through, the other stops at its near face. | `corner_offsets` axial trim + extend. | **No** (unless Saddle). |
-| `miter` | Both cut on the bisector (45° at 90°). | Offset past vertex + `corner_cuts` plane. | Yes (waste prism). |
+| `miter` | Both cut on the bisector (45° at 90°). | Offset past vertex + `corner_cuts` plane. | No (Split Body + Remove). |
 | `cope` | End saddled over another's outer face. | `corner_cuts` body cut **at a T-junction**. | Yes. |
 | `bend` | Swept centerline arc (radius CLR). | `bend_plan` + revolved arc. | No. |
 
@@ -369,7 +430,7 @@ SHS/RHS `h_mm,b_mm,t_mm,r_mm`; CHS `od_mm,t_mm`.
 profile_family, clr_mm}, ... ] }`. `die_id` is `<FAMILY>-CLR-<value>`.
 
 Shipped: 8 families (IPE 18, HEA 19, HEB 19, UPE 14, UPN 12, SHS 54, RHS 71,
-CHS 109 sizes); dies CHS 23, SHS 6.
+CHS 109 sizes); dies CHS 23, SHS 6 (RHS shares SHS's via `_DIE_FAMILY_ALIASES`).
 
 ---
 
@@ -379,16 +440,19 @@ CHS 109 sizes); dies CHS 23, SHS 6.
 python -m unittest discover -s tests
 ```
 
-164 tests, no Fusion needed. `tests/adsk_stub.py` fakes the `adsk` API (recording
+196 tests, no Fusion needed. `tests/adsk_stub.py` fakes the `adsk` API (recording
 created features, e.g. `CombineFeatures.add` logs tool bodies) so
 `test_command.py` exercises the command layer headlessly.
 
-- `test_profiles.py` — section geometry, designations, basis vectors.
+- `test_profiles.py` — section geometry, designations, basis vectors, and the
+  Position grid helpers (`TestGridPosition`: extents, anchors, displacement).
 - `test_joints.py` — corner/T detection, butt/miter/cope/bend offsets, bend
-  plans, and **existing-member context** (`TestExistingMemberContext`).
-- `test_bending_dies.py` — loading and die selection.
+  plans, **existing-member context** (`TestExistingMemberContext`), and the
+  Position anchor trims (`TestPositionAnchor`).
+- `test_bending_dies.py` — loading and die selection (incl. the RHS→SHS alias).
 - `test_command.py` — weldment building, per-line table, joint propagation,
-  corner-cut construction, cope-orphan removal, existing-member recovery.
+  corner-cut construction, cope-orphan removal, existing-member recovery, and
+  the Position dropdown → anchor → build wiring (`TestPositionGrid`).
 
 ---
 
@@ -405,9 +469,13 @@ Non-obvious rules that must not regress:
   `FloatSpinner`'s `.value` is also **database units (cm)** — convert ×10 before
   feeding the mm-based joint layer (this was the cope-depth 10× bug).
 - **Bend direction is the angle SIGN**, not the axis vector.
-- **`SplitBodyFeature` is unusable in parametric designs** — its waste half stays
-  shared with the member's extrude, so deleting it cascade-deletes the kept half.
-  A miter is a combine against a hidden **waste prism** instead.
+- **Miter = Split Body + Remove.** A `SplitBodyFeature` by the bisector plane
+  *is* usable in a parametric design (verified live): it returns a feature whose
+  `bodies` are the two halves, and the waste half is dropped with a reversible
+  `Remove` (deleting the Remove restores the body). The kept half is whichever
+  piece still `pointContainment`-contains the member's own far end, so no normal
+  sign is needed and both members' faces land on the identical plane. The old
+  "Split is unusable, use a hidden waste prism + combine" approach is retired.
 - **Cope orphans:** a cope tip overshooting a hollow tool's near wall shaves a
   floating plug. `_remove_combine_orphans` keeps the tool + largest remaining
   body and issues a `Remove` on the rest (Remove preserves the parametric flow).

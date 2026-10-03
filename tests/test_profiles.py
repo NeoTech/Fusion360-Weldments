@@ -219,5 +219,62 @@ class TestSectionGeometry(unittest.TestCase):
         self.assertEqual(prof._infer_abbreviation({"designation": "42.4x2.6", "od_mm": 42.4}), "CHS")
 
 
+class TestGridPosition(unittest.TestCase):
+    """The Position alignment grid: section_extents, grid_anchor, displace_origin."""
+
+    def setUp(self):
+        self.families = prof.annotate_families(prof.load_profiles())
+        self.by_abbr = {f["abbreviation"]: f for f in self.families}
+
+    def _geom(self, abbr):
+        return prof.section_geometry(prof.designations(self.by_abbr[abbr])[0])
+
+    def test_grid_positions_has_nine_with_center_first(self):
+        keys = [k for k, _ in prof.GRID_POSITIONS]
+        self.assertEqual(len(keys), 9)
+        self.assertEqual(keys[0], "center")
+        self.assertEqual(set(keys), {"center", "top", "bottom", "left", "right",
+                                     "top-left", "top-right", "bottom-left",
+                                     "bottom-right"})
+
+    def test_extents_symmetric_for_rect(self):
+        umin, umax, vmin, vmax = prof.section_extents(self._geom("SHS"))
+        self.assertAlmostEqual(umin, -umax, places=6)
+        self.assertAlmostEqual(vmin, -vmax, places=6)
+
+    def test_center_anchor_is_origin(self):
+        for abbr in ("SHS", "RHS", "CHS", "IPE"):
+            self.assertEqual(prof.grid_anchor(self._geom(abbr), "center"),
+                             (0.0, 0.0), abbr)
+
+    def test_top_anchor_is_upper_edge(self):
+        _u, _um, _v, vmax = prof.section_extents(self._geom("SHS"))
+        au, av = prof.grid_anchor(self._geom("SHS"), "top")
+        self.assertAlmostEqual(au, 0.0, places=6)
+        self.assertAlmostEqual(av, vmax, places=6)
+
+    def test_corner_anchor_is_box_corner(self):
+        umin, umax, vmin, vmax = prof.section_extents(self._geom("RHS"))
+        self.assertEqual(prof.grid_anchor(self._geom("RHS"), "top-right"),
+                         (umax, vmax))
+        self.assertEqual(prof.grid_anchor(self._geom("RHS"), "bottom-left"),
+                         (umin, vmin))
+
+    def test_displace_center_is_identity(self):
+        origin = (1.0, 2.0, 3.0)
+        self.assertEqual(prof.displace_origin(origin, (1, 0, 0), (0, 1, 0), None),
+                         origin)
+        self.assertEqual(prof.displace_origin(origin, (1, 0, 0), (0, 1, 0), (0, 0)),
+                         origin)
+
+    def test_displace_moves_centroid_off_the_line(self):
+        # A "top" anchor (v = +20 mm) on a section with basis u=+X, v=+Y must
+        # slide the centroid DOWN by 20mm (2cm) so the top edge lands on origin.
+        origin = (0.0, 0.0, 0.0)
+        got = prof.displace_origin(origin, (1, 0, 0), (0, 1, 0), (0.0, 20.0))
+        self.assertAlmostEqual(got[1], -2.0, places=9)   # 20mm -> 2cm, negative
+        self.assertAlmostEqual(got[0], 0.0, places=9)
+
+
 if __name__ == "__main__":
     unittest.main()

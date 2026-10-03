@@ -159,6 +159,67 @@ class TestBuildWeldment(unittest.TestCase):
         self.assertTrue(entry._build_weldment(self.root, line, self.geom, "IPE 80"))
 
 
+class TestPositionGrid(unittest.TestCase):
+    """The global Position dropdown -> anchor -> build displacement wiring."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.root = adsk_stub.FakeRoot()
+        families = prof.annotate_families(prof.load_profiles())
+        self.by_abbr = {f["abbreviation"]: f for f in families}
+        # SHS 10x10x1.0: half-height 5mm, so a "top" anchor displaces the
+        # centroid 0.5cm off the line.
+        self.shs = prof.section_geometry(prof.designations(self.by_abbr["SHS"])[0])
+
+    def _position_inputs(self, key):
+        cmd, inputs, _tbl = _make_dialog()
+        dd = inputs.addDropDownCommandInput('position', 'Position', 0)
+        for _k, label in prof.GRID_POSITIONS:
+            dd.listItems.add(label, _k == key)
+        return inputs
+
+    def test_position_key_defaults_to_center(self):
+        # No 'position' input at all -> historical centred placement.
+        cmd, inputs, _tbl = _make_dialog()
+        self.assertEqual(entry._position_key(inputs), "center")
+
+    def test_position_key_reads_dropdown(self):
+        for key, _label in prof.GRID_POSITIONS:
+            inputs = self._position_inputs(key)
+            self.assertEqual(entry._position_key(inputs), key)
+
+    def test_section_anchor_none_for_center(self):
+        inputs = self._position_inputs("center")
+        self.assertIsNone(entry._section_anchor(inputs, self.shs))
+
+    def test_section_anchor_is_top_edge(self):
+        inputs = self._position_inputs("top")
+        au, av = entry._section_anchor(inputs, self.shs)
+        self.assertAlmostEqual(au, 0.0, places=6)
+        self.assertAlmostEqual(av, 5.0, places=6)   # +half-height (mm)
+
+    def test_anchor_slides_top_face_onto_the_line(self):
+        # Line along +X -> axis_v = +Z.  A "top" anchor must move the section
+        # DOWN so its top face is tangent to the line: every drawn point has
+        # max z ~= 0 (vs ~+0.5cm when centred).
+        line = adsk_stub.FakeLine(start=(0, 0, 0), end=(10, 0, 0))
+        anchor = entry._section_anchor(self._position_inputs("top"), self.shs)
+        adsk_stub.reset()
+        entry._build_weldment(self.root, line, self.shs, "SHS", anchor=anchor)
+        zs = [p.z for c in adsk_stub.CALLS
+              if c[0] == "SketchLines.addByTwoPoints" for p in (c[1][0], c[1][1])]
+        self.assertTrue(zs)
+        self.assertAlmostEqual(max(zs), 0.0, places=6)
+
+    def test_no_anchor_keeps_centred_placement(self):
+        line = adsk_stub.FakeLine(start=(0, 0, 0), end=(10, 0, 0))
+        adsk_stub.reset()
+        entry._build_weldment(self.root, line, self.shs, "SHS")   # anchor=None
+        zs = [p.z for c in adsk_stub.CALLS
+              if c[0] == "SketchLines.addByTwoPoints" for p in (c[1][0], c[1][1])]
+        self.assertAlmostEqual(max(zs), 0.5, places=6)   # half-height in cm
+
+
 class TestDropdownHelpers(unittest.TestCase):
     def test_dropdown_index_reads_isSelected(self):
         # _dropdown_index must scan listItems (no selectedItem attribute exists).
@@ -903,33 +964,25 @@ class TestCornerCutBuild(unittest.TestCase):
             body.boundingBox = adsk_stub.FakeBoundingBox(mid)
         return objs, idx
 
-    def test_miter_combines_both_members_against_a_waste_prism(self):
+    def test_miter_splits_both_members_and_removes_waste(self):
         objs, idx = self._build()
         cuts = entry._apply_corner_cuts(self.root, self.lines,
                                         ['miter', 'miter'], objs, idx, 0)
         names = [c[0] for c in adsk_stub.CALLS]
-        # Split is unusable in parametric designs (deleting the waste half
-        # cascade-deletes the kept half), so a miter is a combine against a
-        # waste prism instead.
-        self.assertNotIn('SplitBodyFeatures.add', names)
-        self.assertEqual(names.count('CombineFeatures.add'), 2)
-        for ci in [c for c in adsk_stub.CALLS if c[0] == 'CombineFeatures.add']:
-            self.assertEqual(
-                ci[1][0],
-                adsk_stub.sys.modules['adsk.fusion'].FeatureOperations
-                .CutFeatureOperation)
-            # The prism is pure waste, so it must be consumed, not kept.
-            self.assertFalse(ci[1][1])
-        # No body is deleted directly: the combine does all the trimming.
+        # A miter is a Split Body by the bisector plane + a Remove of the waste
+        # sliver -- no boolean combine and no waste prism.
+        self.assertNotIn('CombineFeatures.add', names)
+        self.assertEqual(names.count('SplitBodyFeatures.add'), 2)
+        self.assertEqual(names.count('RemoveFeatures.add'), 2)
+        # The waste is chosen by pointContainment of the member's own far end.
+        self.assertIn('Body.pointContainment', names)
+        # No body is deleted directly: the Remove feature does the trimming and
+        # stays reversible (deleting it restores the body).
         self.assertNotIn('Body.deleteMe', names)
-        # One one-sided prism extrude per member end.
-        self.assertEqual(
-            names.count('ExtrudeFeatureInput.setDistanceExtent'), 2)
-        # Returned objects come in (combine, prism, sketch, helper, plane)
-        # fives and lead with the combine features, which must go before the
-        # members.
-        self.assertEqual(len(cuts), 10)
-        self.assertTrue(all('Combine' in f.objectType for f in cuts[0::5]))
+        # Returned objects come in (remove, split, sketch, plane) fours and lead
+        # with the Remove features, which must go before the members.
+        self.assertEqual(len(cuts), 8)
+        self.assertTrue(all('Remove' in f.objectType for f in cuts[0::4]))
 
     def test_butt_builds_no_cut(self):
         # A butt is a pure axial trim (handled in corner_offsets), so the cut
@@ -1014,7 +1067,7 @@ class TestCornerCutBuild(unittest.TestCase):
 
     def test_miter_against_existing_member(self):
         # A miter whose END meets an EXISTING member's END (a corner) is a
-        # bisector-plane cut (waste prism), same as a selected-vs-selected miter.
+        # bisector-plane split + Remove, same as a selected-vs-selected miter.
         self.lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))]
         objs, idx = self._build()
         existing_body = adsk_stub.FakeBody(name="EXISTING", center=(0, 5, 0))
@@ -1025,11 +1078,11 @@ class TestCornerCutBuild(unittest.TestCase):
         cuts = entry._apply_corner_cuts(self.root, self.lines, ['miter'],
                                         objs, idx, 0, context=context)
         names = [c[0] for c in adsk_stub.CALLS]
-        # One combine against a consumed waste prism (the miter primitive).
-        self.assertEqual(names.count('CombineFeatures.add'), 1)
-        ci = [c for c in adsk_stub.CALLS if c[0] == 'CombineFeatures.add'][0]
-        self.assertFalse(ci[1][1])                # prism consumed, not kept
-        self.assertEqual(len(cuts), 5)            # (combine, prism, sk, sk, plane)
+        # One split by the bisector plane + one Remove of the waste sliver.
+        self.assertNotIn('CombineFeatures.add', names)
+        self.assertEqual(names.count('SplitBodyFeatures.add'), 1)
+        self.assertEqual(names.count('RemoveFeatures.add'), 1)
+        self.assertEqual(len(cuts), 4)             # (remove, split, sk, plane)
 
 
 class TestRecoverExistingMembers(unittest.TestCase):

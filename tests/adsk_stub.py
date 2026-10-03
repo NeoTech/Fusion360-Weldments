@@ -525,15 +525,16 @@ class FakeSplitBodyFeatures:
 
     def add(self, si):
         _record("SplitBodyFeatures.add")
-        # Model: the kept half stays on the member feature; the split feature
-        # lists both halves, the second being the deletable waste (placed far
-        # from the kept body's centroid so signed distance flags it as waste).
+        # Model: the split returns a feature whose ``bodies`` are the two
+        # halves.  The kept half is the member's own body (pointContainment ->
+        # Inside); the waste sliver reports Outside for any probe point, so the
+        # caller's pointContainment test picks it out and Removes it.
         feat = FakeFeature("adsk::fusion::SplitBodyFeature", self._root,
                            [si.body, FakeBody(contains=False,
                                              center=(1e6, 2e6, 3e6))])
         if self._root is not None:
             self._root.features._items.append(feat)
-        return None  # real API returns None in parametric designs
+        return feat
 
 
 class FakeCombineInput:

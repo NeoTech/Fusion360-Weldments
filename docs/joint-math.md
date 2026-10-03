@@ -31,6 +31,7 @@ equation to check and what sign/units to expect. Code lives in
 | `R` | Bend centerline radius (CLR) | mm |
 | `t` | Wall thickness | mm |
 | `h_o` | Half-extent of a section along a given axis | cm |
+| `a_u`, `a_v` | Section **anchor** (Position grid point on the line), local | mm |
 
 **Two angles, don't confuse them:**
 - `φ` is the geometric angle between the members as drawn (90° corner → `φ=π/2`).
@@ -90,6 +91,22 @@ The `√(c_u²+c_v²)` factor is the projection of the plane's unit circle onto
 0.1` (isotropic). `member_depth` = `2·max|coordinate|` for polygons, `2·r_outer`
 for circles.
 
+**Position anchor.** When the section is placed off-centre (the Position grid),
+its body is translated away from the reference line by `-(a_u·axis_u +
+a_v·axis_v)`, where `(a_u, a_v)` is the section's local anchor — the grid point
+that sits ON the line. The trim must measure the neighbour's extent from that
+anchor (the reference line through the shared vertex), so the formulas gain the
+anchor offset:
+
+$$h_o^{\text{poly}} = \max_i \lvert (u_i - a_u) c_u + (v_i - a_v) c_v \rvert \times 0.1$$
+
+$$h_o^{\text{circ}} = \big(r\sqrt{c_u^2 + c_v^2} + \lvert a_u c_u + a_v c_v \rvert\big) \times 0.1$$
+
+A section tangent to the line by one edge (`a` at that edge) spans its **full**
+width to the other side, so a neighbour butting along that axis clears twice the
+centred half-extent. `anchor = None`/`(0,0)` (the `center` default) reduces both
+to the centred formulas exactly.
+
 **Debug:** an I-beam butt trims by the wrong amount → confirm the basis is being
 passed. Without it you get the web depth instead of the flange width. The
 directional extent is exactly what makes an I-beam corner land on the flange.
@@ -146,21 +163,49 @@ the tube wall poking through. `−trim + wall` removes exactly the wall it overl
 (45° each at a 90° corner). Realised as: extend each member *past* the vertex by
 the setback, then trim with a bisector **plane** (`corner_cuts`, `kind='plane'`).
 
-Symmetric miter setback (from `member_depth` `d`):
+**Directional miter setback.** The setback is the section's half-extent **in the
+miter plane**, not its max dimension. The plane normal `n` is the bisector; the
+in-plane direction perpendicular to the member's own run is
 
-$$SB = \frac{d/2}{\tan(\varphi/2)} \times 0.1 \quad \text{(cm)}$$
+$$m_{dir} = \text{normalize}\big(n - (n \cdot u_{own})\,u_{own}\big)$$
+
+and `h` is `_half_extent_cm(geom, basis, m_dir, anchor)` — the section's extent
+along `m_dir` measured from its Position anchor. Then
+
+$$SB = \frac{h}{\tan(\varphi/2)} \quad \text{(cm)}$$
+
+This is what makes a **rotated** or **off-centre** I-beam miter land on its
+flange (or its anchor edge) rather than its web height: an IPE 80 mitred on its
+flange uses `h = 23 mm` (setback 2.3 cm), while the same section rolled 90° uses
+`h = 40 mm` (setback 4 cm). Using the scalar `member_depth/2` (the max
+dimension) was blind to both the Rotation column and the Position grid, so every
+rotated I-beam miter over-extended and the plane cut too deep. When no basis is
+supplied (unit tests) it falls back to `member_depth/2` (isotropic).
 
 Each member bumps `+SB` (past the vertex). The cut plane's normal is the
 bisector:
 
 $$n = \text{normalize}(u_{own} - u_{neigh})$$
 
-and the kept half is the member's own outward side (`keep = u_own`).
+and the kept half is the member's own outward side (`keep = u_own`). The plane
+itself is **rotation- and anchor-independent** (it depends only on the two runs
+and the vertex), so both members' faces always coincide — only the setback that
+brings each member's material up to the plane is directional.
 
 **Why extend then cut:** a miter face runs **corner-to-corner**, so the member
 must reach past the centreline vertex; the bisector plane through `V` then slices
 the diagonal. Without the extension the plane only clips the square end's centre
 — no visible miter.
+
+**Cutting mechanism (`_split_miter`):** the member body is cut with a
+`SplitBodyFeature` by the bisector construction plane (extended to fully cross
+the body), which yields two halves; the waste half is dropped with a reversible
+`Remove` feature. The kept half is whichever piece still
+`pointContainment`-contains the member's own far end, so the plane normal's sign
+never has to be reasoned about, and because both members are split by the
+*identical* plane their diagonal faces coincide exactly — for any Rotation or
+Position. This replaces the old hidden waste-prism + combine-cut (a boolean that
+was sensitive to the setback and left orphan slivers).
 
 **Degenerate guards:** `SB=0` when `φ/2 ≤ 0` or `≥ π/2` (collinear or folded
 back). No cut when `n·n < 1e-9` (members parallel → no bisector).
@@ -169,8 +214,9 @@ back). No cut when `n·n < 1e-9` (members parallel → no bisector).
 - *Miter only cuts one member* → miter is a **two-member relationship**;
   `_propagate_corner_joint` must set it on both. A lone miter leaves the
   neighbour's square end poking through.
-- *Diagonal face in the wrong direction* → check `keep`/`normal` sign; the plane
-  keeps the half toward `u_own`.
+- *Diagonal face in the wrong direction* → the split keeps the half that
+  `pointContainment`-contains the member's far end; verify the probe point is
+  deep inside the member's own run (`_line_far_end`).
 - *No miter at 90°* → confirm `φ≈π/2` (not `θ`); using `θ` in `tan(φ/2)` gives
   the wrong setback.
 

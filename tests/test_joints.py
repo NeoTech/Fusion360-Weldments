@@ -262,6 +262,39 @@ class TestMiterJoint(unittest.TestCase):
         self.assertAlmostEqual(offs[0][1], 0.0)
         self.assertAlmostEqual(offs[1][0], 0.0)
 
+    def test_miter_setback_is_directional(self):
+        # An I-beam-shaped section (80 tall x 46 wide) at a right-angle corner.
+        # With the placed bases, the setback measures the section's extent in the
+        # MITER PLANE (the 46mm flange), NOT its max dimension (the 80mm web).
+        # Without bases it falls back to the isotropic member_depth/2 = 4cm.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        geoms = [_rect(80, 46), _rect(80, 46)]
+        # member0 runs +X with u=+Y (flange across the joint), v=+Z.
+        b0 = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        # member1 runs +Y with u=-X (flange across the joint), v=+Z.
+        b1 = ((-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        fallback = jt.corner_offsets(lines, geoms, ['miter', 'miter'])
+        directional = jt.corner_offsets(lines, geoms, ['miter', 'miter'],
+                                        bases=[b0, b1])
+        self.assertAlmostEqual(fallback[0][0], -4.0)      # member_depth/2 (80/2)
+        self.assertAlmostEqual(directional[0][0], -2.3)   # flange half (46/2)
+        self.assertAlmostEqual(directional[1][0], -2.3)
+
+    def test_miter_setback_tracks_rotation(self):
+        # Rolling member0 by 90 deg (web now across the joint) must change ONLY
+        # member0's setback to the web half (40mm -> 4cm); member1 stays flange.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0))]
+        geoms = [_rect(80, 46), _rect(80, 46)]
+        b0_flange = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        b0_web = ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0))       # u/v swapped = 90 roll
+        b1 = ((-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        offs = jt.corner_offsets(lines, geoms, ['miter', 'miter'],
+                                 bases=[b0_web, b1])
+        self.assertAlmostEqual(offs[0][0], -4.0)          # web across the joint
+        self.assertAlmostEqual(offs[1][0], -2.3)          # flange across the joint
+
 
 class TestCornerCuts(unittest.TestCase):
     def test_miter_right_angle_planes(self):
@@ -569,6 +602,63 @@ class TestDataProfileJoints(unittest.TestCase):
         for fam in self.families:
             if 'bend' in fam['joints']:
                 self.assertIn(fam['abbreviation'], {'SHS', 'RHS', 'CHS'})
+
+
+class TestPositionAnchor(unittest.TestCase):
+    """The Position grid anchor threaded into the joint trims (lib/joints)."""
+
+    _UX = (1.0, 0.0, 0.0)
+    _UY = (0.0, 1.0, 0.0)
+
+    def test_half_extent_centred_is_symmetric(self):
+        # anchor None == anchor (0,0): the historical half-width (50mm -> 5cm).
+        g = _rect(100, 100)
+        a = jt._half_extent_cm(g, (self._UX, self._UY), self._UX)
+        b = jt._half_extent_cm(g, (self._UX, self._UY), self._UX, (0.0, 0.0))
+        self.assertAlmostEqual(a, 5.0)
+        self.assertAlmostEqual(a, b, places=9)
+
+    def test_half_extent_left_anchor_spans_full_width(self):
+        # A section tangent to the line by its LEFT edge (anchor u=-50) spans its
+        # whole 100mm width to the right -> half-extent along X doubles to 10cm.
+        g = _rect(100, 100)
+        e = jt._half_extent_cm(g, (self._UX, self._UY), self._UX, (-50.0, 0.0))
+        self.assertAlmostEqual(e, 10.0)
+
+    def test_half_extent_circle_anchor_adds_shift(self):
+        # A circle (r=50) tangent to the line by its left edge (anchor u=-50):
+        # extent along X = radius + |shift| = 100mm -> 10cm.
+        g = _circle(100)
+        e = jt._half_extent_cm(g, (self._UX, self._UY), self._UX, (-50.0, 0.0))
+        self.assertAlmostEqual(e, 10.0)
+
+    def test_corner_offsets_anchor_none_backward_compatible(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_rect(100), _rect(80)]
+        a = jt.corner_offsets(lines, geoms, ['none', 'butt'])
+        b = jt.corner_offsets(lines, geoms, ['none', 'butt'],
+                              anchor_by_line=None)
+        c = jt.corner_offsets(lines, geoms, ['none', 'butt'],
+                              anchor_by_line=[None, None])
+        self.assertEqual(a, b)
+        self.assertEqual(a, c)
+
+    def test_corner_offsets_anchor_grows_butt_trim(self):
+        # The through member (line 0, running along X) is placed tangent to the
+        # reference line by its BOTTOM edge (anchor v=-50).  The incoming member
+        # (line 1) runs along Y and butts into it, so its trim measures line 0's
+        # extent ALONG Y -- from the anchor that is the full 100mm height, not
+        # the symmetric 50mm half.  The butt trim therefore doubles 5cm -> 10cm.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0))]
+        geoms = [_rect(100), _rect(100)]
+        bases = [(self._UX, self._UY), (self._UX, self._UY)]
+        plain = jt.corner_offsets(lines, geoms, ['none', 'butt'], bases=bases)
+        anchored = jt.corner_offsets(lines, geoms, ['none', 'butt'], bases=bases,
+                                     anchor_by_line=[(0.0, -50.0), None])
+        self.assertAlmostEqual(plain[1][1], -5.0)
+        self.assertAlmostEqual(anchored[1][1], -10.0)
 
 
 if __name__ == '__main__':
