@@ -586,6 +586,7 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
     # placed in an earlier run and its alignment is not recoverable, so it is
     # treated as centred (anchor None -> the historical extent).
     A = list(anchor_by_line) + [None] * len(ctx) if anchor_by_line else None
+    all_lines = list(lines) + ctx_lines
 
     def ci(i):
         return i if i >= 0 else n + (~i)
@@ -768,6 +769,17 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
         if trim <= 0.0:
             continue
         saddled = (jid == 'cope' or flag_at(saddle_by_line, idx, role))
+        # A cope onto a BEND's curved arc cannot be cut by a straight box: if the
+        # member's tip lands on the tool's arc zone, saddle it no further than a
+        # plain butt (a flat square end) -- see _bend_arc_zones.
+        if saddled and jid == 'cope':
+            ts, te = line_endpoints(L[ci(tool)])
+            if _point_in_arc_zones(jn['point'], ts, line_direction(L[ci(tool)]),
+                                   _bend_arc_zones(L, tool, joint_by_line,
+                                                   clr_by_line, all_lines,
+                                                   ctx_lines, n, _CORNER_TOL),
+                                   _CORNER_TOL):
+                saddled = False
         if not saddled:
             reach = -trim
         elif _is_hollow(g_tool):
@@ -955,6 +967,76 @@ def bend_setback(clr_mm, theta):
 def bend_arc_length(clr_mm, theta):
     """Centerline arc length (cm) of the swept bend.  ``L = R * theta``."""
     return clr_mm * abs(theta) * MM_TO_CM
+
+
+def _bend_arc_zones(L, tool_idx, joint_by_line, clr_by_line, all_lines,
+                    ctx_lines, n, tol):
+    """Every curved-arc interval [lo, hi] (cm) a bend tool occupies on its run.
+
+    A swept bend replaces the corner between one of ``tool_idx``'s ends and its
+    partner leg with a die-radius ARC.  Along the tool's own axis each such arc
+    spans from its tangent point (``bend_setback`` from the vertex, toward the
+    tool's interior) to the vertex.  A coping member whose tip lands INSIDE one
+    of these intervals meets a CURVED surface, which a straight cutter cannot
+    match -- the caller downgrades such a cope to a butt.  Returns ``[]`` when
+    the tool has no bend (every joint is 'none'/butt/miter/cope), so the run is
+    straight and a cope is legitimate.
+
+    ``tool_idx`` may be negative (a context member, which never carries a joint
+    setting of its own -> no bend -> ``[]``).  ``all_lines`` is the combined
+    selected+context line list used for corner detection.
+    """
+    if not (0 <= tool_idx < n):
+        return []
+    if 'bend' not in _ends(joint_by_line[tool_idx]):
+        return []
+    ln = L[ci_index(tool_idx, n)]
+    s, e = line_endpoints(ln)
+    d = line_direction(ln)
+    zones = []
+    for role in ('start', 'end'):
+        if joint_at(joint_by_line, tool_idx, role) != 'bend':
+            continue
+        V = s if role == 'start' else e
+        own = _outward(ln, role)
+        # The partner leg at this corner: the other member sharing vertex V.
+        partner = None
+        for corner in detect_corners(all_lines, tol, context=ctx_lines):
+            if _dot(_sub(corner['point'], V), _sub(corner['point'], V)) > tol * tol:
+                continue
+            for (mi, mr) in corner['members']:
+                if (mi, mr) != (tool_idx, role):
+                    partner = (mi, mr)
+                    break
+            break
+        if partner is None:
+            continue
+        pidx, prole = partner
+        pln = L[ci_index(pidx, n)]
+        neigh = _outward(pln, prole)
+        theta = bend_turn_angle(own, neigh)
+        if abs(theta) < 1e-6 or abs(theta) >= math.pi - 1e-6:
+            continue
+        pair = [tool_idx] + ([pidx] if 0 <= pidx < n else [])
+        clr = max((clr_by_line[j] for j in pair
+                   if clr_by_line and j < len(clr_by_line)), default=0.0)
+        if clr <= 0.0:
+            continue
+        sb = bend_setback(clr, theta)          # cm, tangent point distance from V
+        t_pt = _add(V, _scale(own, sb))        # toward the tool's interior
+        lo = _dot(_sub(t_pt, s), d)
+        hi = _dot(_sub(V, s), d)
+        zones.append((min(lo, hi), max(lo, hi)))
+    return zones
+
+
+def _point_in_arc_zones(P, s, d, zones, tol):
+    """True when the projection of ``P`` on the tool axis falls inside a zone."""
+    for z in zones or []:
+        t = _dot(_sub(P, s), d)
+        if z[0] - tol <= t <= z[1] + tol:
+            return True
+    return False
 
 
 def _outward(line, role):
@@ -1262,6 +1344,7 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
     G = list(geoms) + [c.get('geom') for c in ctx]
     B = (list(bases) + [c.get('basis') for c in ctx]) if bases else None
     A = list(anchor_by_line) + [None] * len(ctx) if anchor_by_line else None
+    all_lines = list(lines) + ctx_lines
     offs = corner_offsets(lines, geoms, joint_by_line, clr_by_line,
                           through_by_line, bases, saddle_by_line,
                           cope_depth_by_line, context, anchor_by_line)
@@ -1374,10 +1457,22 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
                     continue  # the through member is never cut
                 saddled = (jid == 'cope'
                            or flag_at(saddle_by_line, idx, role))
+                # A cope onto a BEND partner's curved arc cannot be cut by a
+                # straight box; the tip at V lands on the arc -> plain butt.
+                on_arc = False
+                if saddled and jid == 'cope':
+                    ps, pe = line_endpoints(L[ci_index(pidx, n)])
+                    if _point_in_arc_zones(
+                            V, ps, line_direction(L[ci_index(pidx, n)]),
+                            _bend_arc_zones(L, pidx, joint_by_line, clr_by_line,
+                                            all_lines, ctx_lines, n, tol), tol):
+                        saddled = False
+                        on_arc = True
                 if not saddled:
                     occs.append({'kind': 'butt', 'member': idx, 'role': role,
                                  'vertex': V, 'partner': partner,
                                  'setback': 0.0, 'cutter': None,
+                                 'on_arc': on_arc,
                                  'legs': [(idx, role), partner]})
                     continue
                 # Corner cope / saddled butt: the member's tip overlaps the
@@ -1417,10 +1512,22 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
             continue
         saddled = (jid == 'cope' or flag_at(saddle_by_line, idx, role))
         own = outward(idx, role)
+        # A cope onto a BEND tool's curved arc cannot be cut by a straight box;
+        # if the tip at P lands on the tool's arc zone, fall back to a butt.
+        on_arc = False
+        if saddled and jid == 'cope':
+            ts, te = line_endpoints(L[ci_index(pidx, n)])
+            if _point_in_arc_zones(
+                    P, ts, line_direction(L[ci_index(pidx, n)]),
+                    _bend_arc_zones(L, pidx, joint_by_line, clr_by_line,
+                                    all_lines, ctx_lines, n, tol), tol):
+                saddled = False
+                on_arc = True
         if not saddled:
             occs.append({'kind': 'butt', 'member': idx, 'role': role,
                          'vertex': P, 'partner': (pidx, None), 'setback': 0.0,
-                         'cutter': None, 'legs': [(idx, role)]})
+                         'cutter': None, 'on_arc': on_arc,
+                         'legs': [(idx, role)]})
             continue
         trim = _half_extent_cm(geomv(pidx), basisv(pidx), dirv(idx),
                                anchorv(pidx))

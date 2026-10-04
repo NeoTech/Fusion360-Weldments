@@ -45,6 +45,12 @@ PREVIEW_OPACITY = 0.4
 # list is sufficient.
 _preview_objs = []
 
+# Count of cope->butt downgrades made in the current build because a coping tip
+# landed on a bend's curved arc (a straight cutter cannot match a swept radius).
+# :func:`_apply_corner_cuts` increments it; ``command_execute`` resets and reads
+# it once to warn the user.
+_arc_downgrades = 0
+
 # Corner-cut features (CombineFeature) and their helper geometry (waste-prism
 # extrudes, sketches, construction planes) made for the current preview.
 # Deleting a cut feature restores the member's whole
@@ -1378,6 +1384,8 @@ def command_execute(args: adsk.core.CommandEventArgs):
         inverse_by_line=inverses, context=context, bases=tbases, anchor=anchor)
     created += len(bend_arcs)
     _bases, _anchor = _joint_frame(inputs, saved, geom, ref)
+    global _arc_downgrades
+    _arc_downgrades = 0
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),
@@ -1387,6 +1395,15 @@ def command_execute(args: adsk.core.CommandEventArgs):
                        cope_depth_by_line=cope_depths,
                        clr_by_line=clr_by_line,
                        bases=_bases, anchor_by_line=_anchor)
+
+    if _arc_downgrades:
+        ui.messageBox(
+            f'{_arc_downgrades} cope joint{"s were" if _arc_downgrades != 1 else " was"} '
+            'changed to a flat butt because the coping member lands on the '
+            'curved part of a bend, where a straight cope cut cannot follow the '
+            'bend radius. Move the member onto the straight section (past the '
+            'tangent point) to keep the cope.')
+        _arc_downgrades = 0
 
     if created == 0:
         ui.messageBox('No weldments were created. Select 3D sketch line(s) first.')
@@ -1466,6 +1483,14 @@ def _miter_plane(root, point, normal):
     ci = root.constructionPlanes.createInput()
     ci.setByTwoEdges(l1, l2)
     plane = root.constructionPlanes.add(ci)
+    # The two long helper lines exist only to define the plane (setByTwoEdges
+    # references them, so the sketch must stay in the tree), but they are never
+    # wanted on screen.  Hide the sketch centrally so every caller gets a clean
+    # browser -- the plane it feeds is the only thing that should show.
+    try:
+        sk.isLightBulbOn = False
+    except Exception:
+        pass
     return plane, sk
 
 
@@ -2269,6 +2294,12 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint spec')
         return created
+    # Note any cope that had to fall back to a butt because its tip landed on a
+    # bend's curved arc (a straight cutter cannot match a swept radius). The
+    # execute path reads/resets this once to warn the user; the preview path
+    # leaves it (it is reset before the committed build).
+    global _arc_downgrades
+    _arc_downgrades += sum(1 for o in occs if o.get('on_arc'))
     # Track each member's CURRENT body by reference: a cut re-homes body
     # identity, so the map is written back after every cut.  This is the state
     # the geometric probe kept guessing wrong when members touch.

@@ -1470,6 +1470,84 @@ class TestCopeOrphanRemoval(unittest.TestCase):
         self.assertIn(plug, comb.bodies._items)
 
 
+class TestCopeOntoBendArc(unittest.TestCase):
+    """A cope that T-joints onto a BEND's curved arc downgrades to a butt.
+
+    A cope cutter is a straight box, but a swept bend replaces the corner with a
+    die-radius arc.  Where a coping member's tip lands ON that arc, the straight
+    cutter cannot match the curved surface (the garbage-cut edge case), so the
+    joint must fall back to a plain butt.  A cope landing on the STRAIGHT part of
+    a bend leg (past the tangent point) is legitimate and stays a cope.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+        families = prof.annotate_families(prof.load_profiles())
+        self.geom = prof.section_geometry(prof.designations(families[0])[0])
+
+    def _spec(self, lines, joints, clr):
+        return jt.joint_spec(lines, [self.geom] * len(lines), joints,
+                             clr_by_line=clr)
+
+    def _occ(self, spec, member):
+        return [o for o in spec['occs'] if o['member'] == member]
+
+    def test_cope_on_arc_downgrades_to_butt(self):
+        # Tool = bend leg along +X (bend at its START, partner leg along +Z).
+        # R=90mm, 90-deg turn -> setback 9cm, so the arc spans x in [0, 9].
+        # The coping member's END lands at x=5 -- ON the arc -> butt, no cutter.
+        lines = [adsk_stub.FakeLine((0, 0, 0), (40, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 0, 30)),
+                 adsk_stub.FakeLine((5, 0, 20), (5, 0, 0))]
+        joints = [('bend', 'none'), ('bend', 'none'), ('none', 'cope')]
+        clr = [90.0, 90.0, 0.0]
+        spec = self._spec(lines, joints, clr)
+        occs = self._occ(spec, 2)
+        self.assertEqual(len(occs), 1)
+        self.assertEqual(occs[0]['kind'], 'butt')
+        self.assertIsNone(occs[0]['cutter'])
+        self.assertTrue(occs[0].get('on_arc'))
+
+    def test_cope_past_tangent_stays_cope(self):
+        # Same bend tool, but the coping member lands at x=20 -- PAST the tangent
+        # point (arc ends at 9), on the straight part of the leg -> real cope.
+        lines = [adsk_stub.FakeLine((0, 0, 0), (40, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 0, 30)),
+                 adsk_stub.FakeLine((20, 0, 20), (20, 0, 0))]
+        joints = [('bend', 'none'), ('bend', 'none'), ('none', 'cope')]
+        clr = [90.0, 90.0, 0.0]
+        spec = self._spec(lines, joints, clr)
+        occs = self._occ(spec, 2)
+        self.assertEqual(len(occs), 1)
+        self.assertIn(occs[0]['kind'], ('cope_t', 'cope_angle'))
+        self.assertIsNotNone(occs[0]['cutter'])
+        self.assertFalse(occs[0].get('on_arc'))
+
+    def test_cope_corner_on_bend_leg_downgrades(self):
+        # A cope whose END coincides with a bend leg's vertex (a corner) lands on
+        # the arc (the vertex is the arc's far end) -> butt, no cutter.
+        lines = [adsk_stub.FakeLine((0, 0, 0), (40, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 0, 30)),
+                 adsk_stub.FakeLine((0, 20, 0), (0, 0, 0))]
+        joints = [('bend', 'none'), ('bend', 'none'), ('none', 'cope')]
+        clr = [90.0, 90.0, 0.0]
+        spec = self._spec(lines, joints, clr)
+        occs = self._occ(spec, 2)
+        self.assertEqual(len(occs), 1)
+        self.assertEqual(occs[0]['kind'], 'butt')
+        self.assertIsNone(occs[0]['cutter'])
+
+    def test_cope_onto_straight_member_unaffected(self):
+        # No bend anywhere: a cope T-joint stays a cope (no false downgrade).
+        lines = [adsk_stub.FakeLine((0, 0, 0), (40, 0, 0)),
+                 adsk_stub.FakeLine((12, 0, 20), (12, 0, 0))]
+        joints = ['none', ('none', 'cope')]
+        spec = self._spec(lines, joints, [0.0, 0.0])
+        occs = self._occ(spec, 1)
+        self.assertEqual(len(occs), 1)
+        self.assertIn(occs[0]['kind'], ('cope_t', 'cope_angle'))
+
+
 class TestAngledTCutoffRemoval(unittest.TestCase):
     """An angled T cope leaves a wall plug the joint box must fully contain.
 
