@@ -1083,6 +1083,332 @@ def _scale(a, s):
 
 
 # --------------------------------------------------------------------------- #
+# Joint specs (refactor): ONE record per joint occurrence, carrying the axial
+# setback AND a bounded cutter spec.  The execution layer builds members from
+# ``offsets`` and trims them from ``occs`` -- no infinite-plane Split Body and
+# no pointContainment guessing: every cut is a Combine(Cut) against a finite
+# cutter solid confined to the joint box.  Material outside a joint box can
+# never be touched, by construction.
+# --------------------------------------------------------------------------- #
+
+# Safety factor on the joint-box cross extents (ratio, not cm).
+_BOX_SAFETY = 1.2
+
+
+def _frame(d):
+    """Right-handed orthonormal frame ``(d, e1, e2)`` for a unit direction ``d``.
+
+    ``e1``/``e2`` span the plane perpendicular to ``d``; the choice of helper
+    axis avoids the near-parallel case.  Used to express a joint box in the
+    member's own frame (axial + two section directions).
+    """
+    helper = (0.0, 0.0, 1.0) if abs(d[2]) < 0.9 else (1.0, 0.0, 0.0)
+    e1 = _norm(_cross(d, helper))
+    e2 = _cross(d, e1)
+    return d, e1, e2
+
+
+def _region_box(V, d, reach, perp, leg_room):
+    """A joint box: centre on the member axis, faces normal to the member.
+
+    ``V`` is the joint vertex, ``d`` the member's unit direction (vertex ->
+    into member), ``reach`` the distance from V the cutting must cover along
+    the axis (positive = into the member), and ``perp`` the needed half-extent
+    perpendicular to the axis.  The box's axial half-extent is
+    ``max(reach, leg_room)`` -- clamped by ``leg_room`` (half the shortest leg
+    at the joint) so the box can never reach past a leg's midpoint: elements
+    farther out along a member are untouchable by construction.
+
+    Returns ``{'center': c, 'axes': (d, e1, e2), 'half': (ha, hb, hc)}`` in cm.
+    """
+    d, e1, e2 = _frame(d)
+    axial = max(reach, leg_room) * _BOX_SAFETY
+    perp = perp * _BOX_SAFETY
+    return {'center': _add(V, _scale(d, axial)),
+            'axes': (d, e1, e2),
+            'half': (axial, perp, perp)}
+
+
+def _leg_room(L, members, V, n):
+    """Half the shortest leg's length from the vertex (cm) -- the box clamp.
+
+    Every member at the joint bounds how far a joint box may extend along its
+    run: never past the midpoint of the shortest one.
+    """
+    room = float('inf')
+    for idx, _role in members:
+        ln = L[ci_index(idx, n)]
+        s, e = line_endpoints(ln)
+        to_v = _dot(_sub(V, s), line_direction(ln))
+        length = math.sqrt(_dot(_sub(e, s), _sub(e, s)))
+        from_v_far = length - abs(to_v)   # distance V -> the far end
+        room = min(room, 0.5 * max(from_v_far, 0.0))
+    return room if room != float('inf') else 0.0
+
+
+def ci_index(idx, n):
+    """Detection index -> combined-array index (selected 0..n-1, then context).
+
+    A corner reports a context member as ``~k``; a T-junction reports it as
+    ``n+k``.  Both encodings land on combined slot ``n+k`` for context member
+    ``k``.
+    """
+    return idx if idx >= 0 else n + (~idx)
+
+
+def bend_path(V, u, v, radius_cm):
+    """Die-radius centerline path rounding the corner between outward dirs u/v.
+
+    ``V`` is the sharp vertex (cm), ``u``/``v`` the unit directions from V into
+    each leg, ``radius_cm`` the bending die's centerline radius.  Returns::
+
+        {'point': V, 'theta': rad, 'radius_cm': R, 'center': C, 'axis': a,
+         't1': T1, 't2': T2, 'arc_start': A1, 'arc_end': A2,
+         'segments': [('line', P, Q), ('arc', C, A1, A2), ('line', Q2, T2)]}
+
+    The path runs leg0 -> leg1: straight to the first tangent point T1, a
+    tangent arc of radius R, straight from T2.  Because the arc is tangent to
+    both legs, its endpoints ARE the tangent points, so the arc alone is the
+    corner's path; the builder extends it with straight runs to each member's
+    far end when sweeping a whole chain (``entry``/``exit`` give the tangent
+    point and its incoming/outgoing direction for that).  The arc's sweep
+    direction is inherent in the ordered pair (start, end) plus the bend-plane
+    normal ``axis = normalize(u x v)`` -- reversing the legs reverses the path,
+    which is the only ambiguity left (the caller orders legs so the member it
+    built comes first).  ``theta`` is the turn angle (0 straight, pi/2 for a
+    square corner); degenerate (collinear/folded) corners return None.
+    """
+    theta = bend_turn_angle(u, v)
+    if abs(theta) < 1e-6 or abs(theta) >= math.pi - 1e-6 or radius_cm <= 0.0:
+        return None
+    sb = radius_cm * math.tan(theta / 2.0)
+    bis = _norm(_add(u, v))
+    center = _add(V, _scale(bis, radius_cm / math.cos(theta / 2.0)))
+    axis = _norm(_cross(u, v))
+    t1 = _add(V, _scale(u, sb))
+    t2 = _add(V, _scale(v, sb))
+    return {'point': V, 'theta': theta, 'radius_cm': radius_cm,
+            'center': center, 'axis': axis,
+            't1': t1, 't2': t2,
+            'entry': (t1, u), 'exit': (t2, v)}
+
+
+def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
+               through_by_line=None, saddle_by_line=None,
+               cope_depth_by_line=None, bases=None, context=None,
+               anchor_by_line=None, tol=_CORNER_TOL):
+    """Single source of truth for every joint among ``lines`` (+ ``context``).
+
+    Same inputs as :func:`corner_offsets` (see its docstring for the index
+    space, context dicts, bases, and anchors).  Returns::
+
+        {'offsets': [(start, end), ...],   # cm, one per SELECTED line
+         'occs':    [occurrence, ...]}
+
+    ``offsets`` is exactly what :func:`corner_offsets` computes (the builder
+    draws each member to the trimmed length).  Each occurrence describes one
+    member END's joint::
+
+        {'kind':   'miter' | 'butt' | 'butt_saddle' | 'cope_end' |
+                   'cope_t' | 'cope_angle' | 'bend',
+         'member': line_index, 'role': 'start'|'end', 'vertex': V,
+         'partner': (pidx, prole) | None,
+         'setback': cm,             # the axial offset already in ``offsets``
+         'cutter':  cutter | None,  # what to remove, as a FINITE solid
+         'legs':    [(idx, role), ...]}   # both legs for 'bend'
+
+    ``cutter`` is one of:
+      ``{'type': 'plane', 'point': P, 'normal': nrm, 'region': box}``
+          -- remove the member's material on the +normal side of the plane
+          through P, but only inside ``region`` (a joint box).  The execution
+          layer builds the cutter solid as ``region`` ∩ half-space and
+          Combine(Cut)s it: no Split Body, no pointContainment.
+      ``{'type': 'body', 'tool': line_index, 'region': box}``
+          -- remove the member's material inside ``region`` that is also
+          inside the partner member's body (a bounded cope/saddle: the tool
+          body ∩ region is the cutter).  ``tool`` may be negative (context).
+      ``None`` -- nothing to cut (a plain butt is a pure axial trim).
+
+    ``region`` boxes are clamped to half the shortest leg (see
+    :func:`_region_box`), so a cut can never touch material far along a run.
+    """
+    n = len(lines)
+    ctx = context or []
+    ctx_lines = [c['line'] if isinstance(c, dict) else c for c in ctx]
+    L = list(lines) + ctx_lines
+    G = list(geoms) + [c.get('geom') for c in ctx]
+    B = (list(bases) + [c.get('basis') for c in ctx]) if bases else None
+    A = list(anchor_by_line) + [None] * len(ctx) if anchor_by_line else None
+    offs = corner_offsets(lines, geoms, joint_by_line, clr_by_line,
+                          through_by_line, bases, saddle_by_line,
+                          cope_depth_by_line, context, anchor_by_line)
+
+    def is_sel(i):
+        return 0 <= i < n
+
+    def dirv(i):
+        return line_direction(L[ci_index(i, n)])
+
+    def outward(i, role):
+        d = dirv(i)
+        return _scale(d, -1) if role == 'end' else d
+
+    def geomv(i):
+        return G[ci_index(i, n)]
+
+    def basisv(i):
+        return B[ci_index(i, n)] if B else None
+
+    def anchorv(i):
+        return A[ci_index(i, n)] if A else None
+
+    def perp_extent(i, role, V):
+        """Max section half-extent (cm) of member ``i`` perpendicular to its run.
+
+        Measured in the member's own placed basis (so an I-beam contributes its
+        flange width / web height, not a bounding guess).
+        """
+        g, b, a = geomv(i), basisv(i), anchorv(i)
+        if b is None:
+            return member_depth(g) * 0.5 * MM_TO_CM
+        d = dirv(i)
+        u, v = b
+        # Extents along both perpendicular axes, from the anchor.
+        cu, cv = _dot(u, d), _dot(v, d)
+        au, av = a if a else (0.0, 0.0)
+        if g and g.get('kind') == 'circles':
+            r = max(g.get('radii') or [0.0])
+            return (r * math.sqrt(max(0.0, 1.0 - cu * cu - cv * cv) + 0.0)
+                    + abs(au * cu + av * cv)) * MM_TO_CM or r * MM_TO_CM
+        best = 0.0
+        for loop in (g or {}).get('loops') or [[(0, 0)]]:
+            for p0, p1 in loop:
+                pu, pv = p0 - au, p1 - av
+                # Component of the local point perpendicular to d, in the basis.
+                par = pu * cu + pv * cv
+                best = max(best, math.sqrt(max(
+                    0.0, pu * pu + pv * pv - par * par)))
+        return best * MM_TO_CM
+
+    occs = []
+
+    # ---- corners ---------------------------------------------------------- #
+    for corner in detect_corners(lines, tol, context=ctx_lines):
+        V = corner['point']
+        members = corner['members']
+        room = _leg_room(L, members, V, n)
+        through_idx = _butt_through(members, joint_by_line, through_by_line,
+                                    n=n)
+        for k, (idx, role) in enumerate(members):
+            if not is_sel(idx):
+                continue
+            jid = joint_at(joint_by_line, idx, role)
+            if jid in ('none',):
+                continue
+            partner = _corner_partner(members, idx, role, joint_by_line,
+                                      through_by_line, n=n)
+            if partner is None:
+                continue
+            pidx, prole = partner
+            own = outward(idx, role)
+            neigh = outward(pidx, prole)
+            phi = _angle_between(own, neigh)
+            if phi <= 1e-6 or phi >= math.pi - 1e-6:
+                continue  # folded-back or straight run: no joint geometry
+            if jid == 'miter':
+                nrm = _norm(_sub(own, neigh))
+                if _dot(nrm, nrm) < 1e-9:
+                    continue
+                sb = _miter_setback_cm(geomv(idx), basisv(idx), own, neigh,
+                                       anchorv(idx), phi)
+                perp = max(perp_extent(idx, role, V),
+                           perp_extent(pidx, prole, V))
+                # The waste is the wedge past the bisector plane; its farthest
+                # point sits sb*cos(phi/2) into the member along the axis.
+                reach = max(sb * math.cos(phi / 2.0), 0.0)
+                box = _region_box(V, own, reach, perp, room)
+                occs.append({'kind': 'miter', 'member': idx, 'role': role,
+                             'vertex': V, 'partner': partner, 'setback': sb,
+                             'cutter': {'type': 'plane', 'point': V,
+                                        'normal': nrm, 'region': box},
+                             'legs': [(idx, role), partner]})
+            elif jid == 'bend':
+                pair = [idx] + ([pidx] if is_sel(pidx) else [])
+                clr = max((clr_by_line[j] for j in pair
+                           if clr_by_line and j < len(clr_by_line)),
+                          default=0.0)
+                path = (bend_path(V, own, neigh, clr * MM_TO_CM)
+                        if clr > 0.0 else None)
+                occs.append({'kind': 'bend', 'member': idx, 'role': role,
+                             'vertex': V, 'partner': partner, 'setback': 0.0,
+                             'cutter': None, 'clr_mm': clr,
+                             'path': path,
+                             'legs': [(idx, role), partner]})
+            elif jid in ('butt', 'cope'):
+                if idx == through_idx:
+                    continue  # the through member is never cut
+                saddled = (jid == 'cope'
+                           or flag_at(saddle_by_line, idx, role))
+                if not saddled:
+                    occs.append({'kind': 'butt', 'member': idx, 'role': role,
+                                 'vertex': V, 'partner': partner,
+                                 'setback': 0.0, 'cutter': None,
+                                 'legs': [(idx, role), partner]})
+                    continue
+                # Corner cope / saddled butt: the member's tip overlaps the
+                # neighbour's end region; cut it against the neighbour's BODY,
+                # bounded to a box covering both sections at the vertex.
+                trim = _half_extent_cm(geomv(pidx), basisv(pidx), own,
+                                       anchorv(pidx))
+                depth = _depth_cm(cope_depth_by_line, idx)
+                reach = trim + abs(depth)
+                perp = max(perp_extent(idx, role, V),
+                           perp_extent(pidx, prole, V))
+                box = _region_box(V, own, reach, perp, room)
+                kind = 'cope_end' if jid == 'cope' else 'butt_saddle'
+                occs.append({'kind': kind, 'member': idx, 'role': role,
+                             'vertex': V, 'partner': partner, 'setback': 0.0,
+                             'cutter': {'type': 'body', 'tool': pidx,
+                                        'region': box},
+                             'legs': [(idx, role), partner]})
+
+    # ---- T-junctions ------------------------------------------------------- #
+    for jn in detect_t_junctions(lines, tol, context=ctx_lines):
+        idx, role = jn['member']
+        if not is_sel(idx):
+            continue
+        P = jn['point']
+        tool = jn['tool']
+        pidx = tool if tool < n else ~(tool - n)
+        jid = joint_at(joint_by_line, idx, role)
+        if jid not in ('butt', 'cope'):
+            continue
+        saddled = (jid == 'cope' or flag_at(saddle_by_line, idx, role))
+        own = outward(idx, role)
+        if not saddled:
+            occs.append({'kind': 'butt', 'member': idx, 'role': role,
+                         'vertex': P, 'partner': (pidx, None), 'setback': 0.0,
+                         'cutter': None, 'legs': [(idx, role)]})
+            continue
+        trim = _half_extent_cm(geomv(pidx), basisv(pidx), dirv(idx),
+                               anchorv(pidx))
+        depth = _depth_cm(cope_depth_by_line, idx)
+        reach = trim + abs(depth)
+        perp = max(perp_extent(idx, role, P), perp_extent(pidx, None, P))
+        room = _leg_room(L, [(idx, role), (pidx, None)], P, n)
+        box = _region_box(P, own, reach, perp, room)
+        angle = _angle_between(dirv(idx), dirv(pidx))
+        kind = ('cope_t' if abs(angle - math.pi / 2.0) <= 0.02
+                else 'cope_angle')
+        occs.append({'kind': kind, 'member': idx, 'role': role, 'vertex': P,
+                     'partner': (pidx, None), 'setback': 0.0,
+                     'cutter': {'type': 'body', 'tool': pidx, 'region': box},
+                     'legs': [(idx, role)]})
+
+    return {'offsets': offs, 'occs': occs}
+
+
+# --------------------------------------------------------------------------- #
 # Family joint filtering
 # --------------------------------------------------------------------------- #
 def joints_for_family(family):
