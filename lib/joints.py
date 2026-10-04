@@ -1109,22 +1109,24 @@ def _frame(d):
 
 
 def _region_box(V, d, reach, perp, leg_room):
-    """A joint box: centre on the member axis, faces normal to the member.
+    """A joint box: centred ON the vertex, faces normal to the member.
 
     ``V`` is the joint vertex, ``d`` the member's unit direction (vertex ->
     into member), ``reach`` the distance from V the cutting must cover along
-    the axis (positive = into the member), and ``perp`` the needed half-extent
-    perpendicular to the axis.  The box's axial half-extent is
-    ``max(reach, leg_room)`` -- clamped by ``leg_room`` (half the shortest leg
-    at the joint) so the box can never reach past a leg's midpoint: elements
-    farther out along a member are untouchable by construction.
+    the axis, and ``perp`` the needed half-extent perpendicular to the axis.
+    The box is symmetric about V (the waste of a miter pokes PAST the vertex
+    toward the neighbour, and a cope plug sits inside the tool just past V, so
+    the cutter must straddle the vertex on both sides).  Its axial half-extent
+    is ``reach`` but CLAMPED to ``leg_room`` (half the shortest leg at the
+    joint) so the box can never reach past a leg's midpoint: elements farther
+    out along a member are untouchable by construction.
 
-    Returns ``{'center': c, 'axes': (d, e1, e2), 'half': (ha, hb, hc)}`` in cm.
+    Returns ``{'center': V, 'axes': (d, e1, e2), 'half': (ha, hb, hc)}`` in cm.
     """
     d, e1, e2 = _frame(d)
-    axial = max(reach, leg_room) * _BOX_SAFETY
+    axial = min(max(reach, 0.0), leg_room) * _BOX_SAFETY
     perp = perp * _BOX_SAFETY
-    return {'center': _add(V, _scale(d, axial)),
+    return {'center': V,
             'axes': (d, e1, e2),
             'half': (axial, perp, perp)}
 
@@ -1323,9 +1325,11 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
                                        anchorv(idx), phi)
                 perp = max(perp_extent(idx, role, V),
                            perp_extent(pidx, prole, V))
-                # The waste is the wedge past the bisector plane; its farthest
-                # point sits sb*cos(phi/2) into the member along the axis.
-                reach = max(sb * math.cos(phi / 2.0), 0.0)
+                # The builder grows the member by sb so its raw end pokes sb
+                # PAST the vertex (toward the neighbour); the bisector plane
+                # through V trims that poke.  The waste spans sb on the far side
+                # of V, so the box's axial half-extent is sb (symmetric about V).
+                reach = sb
                 box = _region_box(V, own, reach, perp, room)
                 occs.append({'kind': 'miter', 'member': idx, 'role': role,
                              'vertex': V, 'partner': partner, 'setback': sb,

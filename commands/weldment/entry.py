@@ -677,6 +677,28 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
         return [(0.0, 0.0) for _ in lines]
 
 
+def _joint_frame(inputs, lines, geom, ref):
+    """The PLACED ``(bases, anchor_by_line)`` a joint cut must measure extents in.
+
+    Identical to what :func:`_joint_offsets` derives internally -- each line's
+    section basis (``compute_basis`` rolled by the row's Rotation) and the
+    Position-grid anchor -- so the cutter geometry sees the same orientation and
+    offset the builder used.  Returns ``(None, None)`` when no reference plane
+    is available (isotropic extents).
+    """
+    bases = None
+    if ref is not None:
+        try:
+            bases = [prof.rotate_basis(*prof.compute_basis(_line_direction(l), ref),
+                                       angle_rad=_row_params(inputs, i)[0])
+                     for i, l in enumerate(lines)]
+        except Exception:
+            bases = None
+    anchor_local = _section_anchor(inputs, geom)
+    anchor_by_line = [anchor_local for _ in lines] if anchor_local else None
+    return bases, anchor_by_line
+
+
 def _row_die_clr(inputs, r, designation):
     """Centerline radius (mm) of the die chosen in row ``r``'s Bend Die dropdown.
 
@@ -1282,12 +1304,17 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     # Context-end trims (a bend rounding into an existing member) are cut
     # features: tear them down with the other cuts, before the members.
     _preview_cuts.extend(bend_trims)
+    _bases, _anchor = _joint_frame(inputs, saved, geom, ref)
     _preview_cuts.extend(
         _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                            feat_idx, f_start,
                            saddle=_row_saddle(inputs, saved),
                            through=_row_through(inputs, saved),
-                           context=context))
+                           context=context,
+                           geoms=[geom for _ in saved],
+                           cope_depth_by_line=cope_depths,
+                           clr_by_line=clr_by_line,
+                           bases=_bases, anchor_by_line=_anchor))
     # Make sure the user's lines are still highlighted after the churn.
     _restore_selection(sel, saved)
 
@@ -1341,11 +1368,16 @@ def command_execute(args: adsk.core.CommandEventArgs):
         root, saved, _row_joints(inputs, saved), clr_by_line, geom, ref,
         inverse_by_line=inverses, context=context, bases=tbases, anchor=anchor)
     created += len(bend_arcs)
+    _bases, _anchor = _joint_frame(inputs, saved, geom, ref)
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),
                        through=_row_through(inputs, saved),
-                       context=context)
+                       context=context,
+                       geoms=[geom for _ in saved],
+                       cope_depth_by_line=cope_depths,
+                       clr_by_line=clr_by_line,
+                       bases=_bases, anchor_by_line=_anchor)
 
     if created == 0:
         ui.messageBox('No weldments were created. Select 3D sketch line(s) first.')
@@ -1790,6 +1822,169 @@ def _stub_line(line, role, vertex):
     return _ContextLine(s, vertex, body)
 
 
+def _region_axes(region):
+    """Orthonormal axes ``(d, e1, e2)`` of a joint region box (from joint_spec)."""
+    return region['axes']
+
+
+def _box_corners(region):
+    """The 8 corners (cm tuples) of a joint region box."""
+    c = region['center']
+    d, e1, e2 = region['axes']
+    ha, hb, hc = region['half']
+    out = []
+    for sa in (-1, 1):
+        for sb in (-1, 1):
+            for sc in (-1, 1):
+                out.append((c[0] + sa * ha * d[0] + sb * hb * e1[0] + sc * hc * e2[0],
+                            c[1] + sa * ha * d[1] + sb * hb * e1[1] + sc * hc * e2[1],
+                            c[2] + sa * ha * d[2] + sb * hb * e1[2] + sc * hc * e2[2]))
+    return out
+
+
+def _point_in_region(point, region, tol=1e-6):
+    """True when ``point`` lies inside the (rotated) joint region box."""
+    c = region['center']
+    d, e1, e2 = region['axes']
+    ha, hb, hc = region['half']
+    v = (point[0] - c[0], point[1] - c[1], point[2] - c[2])
+    return (abs(jt._dot(v, d)) <= ha + tol and
+            abs(jt._dot(v, e1)) <= hb + tol and
+            abs(jt._dot(v, e2)) <= hc + tol)
+
+
+def _body_in_region(body, region):
+    """True when a body's whole bounding box lies inside the joint region.
+
+    A fragment that stays entirely within the box is a cutoff (waste); a body
+    that pokes outside it is real member material and must never be touched.
+    """
+    try:
+        bb = body.boundingBox
+        lo, hi = bb.minPoint, bb.maxPoint
+    except Exception:
+        return False
+    corners = ((lo.x, lo.y, lo.z), (lo.x, lo.y, hi.z), (lo.x, hi.y, lo.z),
+               (lo.x, hi.y, hi.z), (hi.x, lo.y, lo.z), (hi.x, lo.y, hi.z),
+               (hi.x, hi.y, lo.z), (hi.x, hi.y, hi.z))
+    return all(_point_in_region(p, region) for p in corners)
+
+
+def _remove_inside_region(root, comb, keep_body, region):
+    """Remove combine-output fragments that lie entirely inside the joint box.
+
+    After a cope/saddle boolean the member's main run pokes out of the joint
+    region (protected) while a thin plug pushed into the tool's hollow void sits
+    entirely inside it (waste).  Keep the tool and every body that reaches past
+    the box; issue a reversible ``Remove`` on the rest.  Returns the Remove
+    features (tracked BEFORE the combine so teardown deletes them first).
+    """
+    removed = []
+    try:
+        bodies = comb.bodies
+    except Exception:
+        return removed
+    for bi in range(bodies.count):
+        try:
+            b = bodies.item(bi)
+        except Exception:
+            continue
+        if keep_body is not None and b is keep_body:
+            continue
+        if _body_in_region(b, region):
+            try:
+                rm = root.features.removeFeatures.add(b)
+                if rm is not None:
+                    removed.append(rm)
+            except Exception:
+                futil.handle_error(f'{CMD_NAME} remove region cutoff')
+    return removed
+
+
+def _combine(root, target, tools, operation, keep_tool, preview=False):
+    """Combine ``target`` against ``tools`` with ``operation`` (Cut/Intersect).
+
+    ``keep_tool`` keeps the tool body(ies) after the operation (a cope saddles
+    against a neighbour it must not consume, or an Intersect keeps the real tool
+    body while reshaping the target to the overlap) or drops them (a disposable
+    cutter box).  Returns the CombineFeature.
+    """
+    coll = adsk.core.ObjectCollection.create()
+    for b in tools:
+        coll.add(b)
+    ci = root.features.combineFeatures.createInput(target, coll)
+    ci.operation = operation
+    ci.isKeepToolBodies = keep_tool
+    return root.features.combineFeatures.add(ci)
+
+
+def _combine_cut(root, target, tools, keep_tool, preview=False):
+    """Combine(Cut) ``target`` against ``tools`` (a list of bodies)."""
+    return _combine(root, target, tools,
+                    adsk.fusion.FeatureOperations.CutFeatureOperation,
+                    keep_tool, preview)
+
+
+def _draw_rect(sketch, center, e1, e2, r1, r2):
+    """Draw an axis-aligned-in-(e1,e2) rectangle of half-sizes r1,r2 on a sketch.
+
+    ``center`` is a model-space point; the rectangle lies in the sketch plane
+    spanned by the model directions ``e1``/``e2``.  Points are pushed through
+    the sketch's inverse transform (model -> sheet), as in :func:`_draw_section`.
+    """
+    to_sheet = sketch.transform.copy()
+    to_sheet.invert()
+
+    def sheet(p):
+        q = adsk.core.Point3D.create(*p)
+        q.transformBy(to_sheet)
+        return q
+
+    def corner(s1, s2):
+        return (center[0] + s1 * r1 * e1[0] + s2 * r2 * e2[0],
+                center[1] + s1 * r1 * e1[1] + s2 * r2 * e2[1],
+                center[2] + s1 * r1 * e1[2] + s2 * r2 * e2[2])
+
+    pts = [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]
+    for j in range(4):
+        sketch.sketchCurves.sketchLines.addByTwoPoints(
+            sheet(pts[j]), sheet(pts[(j + 1) % 4]))
+
+
+def _box_cutter(root, region, preview=False):
+    """Build a finite box solid filling a joint region (NewBody extrude).
+
+    The box's faces are normal to the region axes; it is the disposable cutter
+    for a bounded joint cut.  Returns ``(body, feature, sketch, plane)``.
+    """
+    c = region['center']
+    d, e1, e2 = region['axes']
+    ha, hb, hc = region['half']
+    # A construction plane through the box centre spanned by e1,e2 (normal d).
+    plane, psk = _miter_plane(root, c, d)
+    sk = root.sketches.add(plane)
+    sk.name = 'WeldCutter'
+    _draw_rect(sk, c, e1, e2, hb, hc)
+    if sk.profiles.count == 0:
+        sk.deleteMe()
+        psk.deleteMe()
+        plane.deleteMe()
+        return None
+    ei = root.features.extrudeFeatures.createInput(
+        sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    # Symmetric about the profile plane (which sits at the box centre), so the
+    # box spans c +/- ha along d regardless of the plane normal's sign.
+    ei.setDistanceExtent(True, adsk.core.ValueInput.createByReal(2.0 * ha))
+    feat = root.features.extrudeFeatures.add(ei)
+    body = feat.bodies.item(0) if feat.bodies.count else None
+    if preview and body is not None:
+        try:
+            body.opacity = PREVIEW_OPACITY
+        except Exception:
+            pass
+    return body, feat, sk, (plane, psk)
+
+
 def _remove_combine_orphans(root, comb, tool_body):
     """Delete the disconnected slivers a cope/saddle cut leaves inside the tool.
 
@@ -1896,49 +2091,137 @@ def _split_miter(root, body, V, normal, test_pt):
     return created, kept
 
 
+def _miter_cutter(root, V, nrm, perp, depth, preview=False):
+    """Build the finite wedge cutter for a miter: a prism on the bisector plane.
+
+    A construction plane through the vertex ``V`` with the bisector ``nrm``
+    carries a rectangle (centred on V, in-plane half-size ``perp`` so it covers
+    both members' sections); extruding it ``depth`` to the waste side of the
+    plane yields a solid whose ``+nrm`` face lies exactly ON the miter face.
+    Combine(Cut)-ing a member with it produces the flat diagonal miter face with
+    no Split Body and no pointContainment guess.  The extrude direction is
+    chosen from the plane's actual normal sign so the prism grows toward the
+    waste (the ``-nrm`` side, away from the kept member).
+
+    Returns ``(body, [combine-trackables])`` or ``(None, [])``.
+    """
+    plane, psk = _miter_plane(root, V, nrm)
+    sk = root.sketches.add(plane)
+    sk.name = 'WeldMiterCutter'
+    # In-plane rectangle axes: any orthonormal pair perpendicular to nrm.
+    d, e1, e2 = jt._frame(nrm)
+    _draw_rect(sk, V, e1, e2, perp, perp)
+    if sk.profiles.count == 0:
+        sk.deleteMe()
+        psk.deleteMe()
+        plane.deleteMe()
+        return None, []
+    ei = root.features.extrudeFeatures.createInput(
+        sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    ei.startExtent = adsk.fusion.ProfilePlaneStartDefinition.create()
+    # Grow toward the waste (-nrm).  PositiveExtentDirection follows the plane
+    # normal; flip when the plane normal points the same way as nrm.
+    try:
+        pn = plane.geometry.normal
+        same = jt._dot((pn.x, pn.y, pn.z), nrm) >= 0.0
+    except Exception:
+        same = True
+    direction = (adsk.fusion.ExtentDirections.NegativeExtentDirection if same
+                 else adsk.fusion.ExtentDirections.PositiveExtentDirection)
+    ei.setOneSideExtent(
+        adsk.fusion.DistanceExtentDefinition.create(
+            adsk.core.ValueInput.createByReal(depth)), direction)
+    feat = root.features.extrudeFeatures.add(ei)
+    body = feat.bodies.item(0) if feat.bodies.count else None
+    if preview and body is not None:
+        try:
+            body.opacity = PREVIEW_OPACITY
+        except Exception:
+            pass
+    # Track: the combine (drops the cutter body) then the extrude + helpers.
+    return body, [feat, sk, plane, psk]
+
+
+def _survivor_after_cut(comb, keep_body, region):
+    """The member's main run in a combine output: the piece poking OUT of region.
+
+    A cut fragments the member inside the joint box; the surviving run is the
+    body that is neither the kept tool nor wholly contained in the box (real
+    material always reaches past the joint).  Falls back to the largest such
+    body, then to ``keep_body``.
+    """
+    best, best_v = None, None
+    try:
+        bodies = comb.bodies
+    except Exception:
+        return None
+    for k in range(bodies.count):
+        try:
+            b = bodies.item(k)
+        except Exception:
+            continue
+        if keep_body is not None and b is keep_body:
+            continue
+        if _body_in_region(b, region):
+            continue          # wholly inside the box: a cutoff, not the run
+        try:
+            v = b.volume
+        except Exception:
+            v = 0.0
+        if best_v is None or v > best_v:
+            best, best_v = b, v
+    return best
+
+
 def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
-                       saddle=None, through=None, context=None):
-    """Shape member ends with real geometry for miter/cope (and saddled-butt)
-    corners.
+                       saddle=None, through=None, context=None,
+                       geoms=None, bases=None, anchor_by_line=None,
+                       cope_depth_by_line=None, clr_by_line=None):
+    """Shape member ends with real geometry using bounded cutter solids.
+
+    Every joint is realised by a FINITE cutter confined to a joint box, so
+    material outside the box can never be touched -- no infinite-plane Split
+    Body and no pointContainment guess (the two sources of the wrong-body and
+    NOT_INTERSECT regressions).  The plan comes from
+    :func:`lib.joints.joint_spec`, the single source of truth:
+
+    * ``cutter.type == 'plane'`` (miter): a prism on the bisector plane through
+      the vertex (see :func:`_miter_cutter`), Combine(Cut)-ed against the
+      member and dropped.
+    * ``cutter.type == 'body'`` (cope / saddled butt): the neighbour's body
+      bounded to the joint box (Intersect), Combine(Cut)-ed against the member;
+      fragments wholly inside the box are Removed as cutoffs.
+    * ``cutter is None`` (plain butt): a pure axial trim already applied by the
+      caller's offsets -- nothing to cut.
 
     ``objs[i]`` is the ``(feature, sketch, plane)`` tuple built for line ``i``
-    (or None); ``feat_idx`` and ``f_start`` are retained only for the caller's
-    bookkeeping.  Bodies are located *geometrically* (nearest bbox-centre to
-    each line's midpoint) rather than by feature index, because a cut prunes or
-    reparents features and shifts every later index.  Per
-    :func:`lib.joints.corner_cuts`:
-
-    * ``kind='plane'`` (miter): split the member by the bisector plane through
-      the vertex and Remove the waste sliver (see :func:`_split_miter`) -- no
-      boolean and no setback sensitivity to rotation or Position.
-    * ``kind='body'`` (cope, or a saddled butt): combine-cut the member against
-      the neighbour's body (keep-tool-bodies), saddling it to the through
-      member.  A plain butt (no saddle) produces no cut -- it is a pure axial
-      trim handled by :func:`lib.joints.corner_offsets`.
-
-    ``context`` (optional) is the list of existing members from
-    :func:`_recover_existing_members`.  When a cut's ``tool`` index is negative
-    it names a context member, whose real ``body`` is used directly as the
-    boolean tool -- no ``objs`` entry (and no shadow part) is needed, which is
-    the whole point of detecting existing weldments.
+    (or None).  ``context`` (optional) is the list of existing members from
+    :func:`_recover_existing_members`; a negative tool index names one, whose
+    recovered ``body`` is the boolean tool directly.  ``geoms``/``bases``/
+    ``anchor_by_line``/``cope_depth_by_line``/``clr_by_line`` feed joint_spec
+    (see :func:`lib.joints.joint_spec`).
 
     Returns the objects to track for preview cleanup, in delete order: each
-    Remove/Split/combine feature first (removing it restores the member body),
-    then the helper sketches/planes they consumed.  The caller must delete all
-    of these BEFORE the member features.
+    Remove/Combine/cutter feature first (removing it restores the member body),
+    then the helper sketches/planes they consumed.  The caller deletes all of
+    these BEFORE the member features.
     """
     created = []
     ctx = context or []
     try:
-        cuts = jt.corner_cuts(lines, joints, saddle_by_line=saddle,
-                              through_by_line=through, context=ctx)
+        spec = jt.joint_spec(lines, geoms or [None] * len(lines), joints,
+                             clr_by_line=clr_by_line, through_by_line=through,
+                             saddle_by_line=saddle,
+                             cope_depth_by_line=cope_depth_by_line,
+                             bases=bases, context=ctx,
+                             anchor_by_line=anchor_by_line)
+        occs = spec['occs']
     except Exception:
-        futil.handle_error(f'{CMD_NAME} corner cut plan')
+        futil.handle_error(f'{CMD_NAME} joint spec')
         return created
-    # Track each member's CURRENT body by reference instead of re-finding it by
-    # proximity: a cut re-homes body identity, so the map is written back after
-    # every split/combine.  This is the state the geometric probe kept guessing
-    # wrong when members touch (the miter NOT_INTERSECT and cope regressions).
+    # Track each member's CURRENT body by reference: a cut re-homes body
+    # identity, so the map is written back after every cut.  This is the state
+    # the geometric probe kept guessing wrong when members touch.
     body_of = {}
     for i, o in enumerate(objs):
         if o is not None:
@@ -1946,55 +2229,55 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                 body_of[i] = o[0].bodies.item(0)
             except Exception:
                 body_of[i] = None
-    for cut in cuts:
-        m, t = cut['member'], cut['tool']
+    for occ in occs:
+        cut = occ.get('cutter')
+        if cut is None:
+            continue
+        m = occ['member']
         if m >= len(objs) or objs[m] is None:
             continue
-        if t < 0:
-            # A context (existing) member is the tool: use its recovered body.
-            if ~t >= len(ctx) or ctx[~t].get('body') is None:
-                continue
-        elif t >= len(objs) or objs[t] is None:
+        body = body_of.get(m)
+        if body is None:
             continue
+        region = cut['region']
         try:
-            body = body_of.get(m)
-            if body is None:
+            if cut['type'] == 'plane':
+                # Miter: a finite prism on the bisector plane, cut and dropped.
+                perp = max(region['half'][1], region['half'][2])
+                depth = 2.0 * region['half'][0] + perp
+                cutter, track = _miter_cutter(root, occ['vertex'],
+                                              cut['normal'], perp, depth)
+                if cutter is None:
+                    continue
+                comb = _combine_cut(root, body, [cutter], keep_tool=False)
+                created = [comb] + track + created
+                body_of[m] = _survivor_after_cut(comb, None, region) or body
                 continue
-            if cut['kind'] == 'plane':
-                # Miter: split the member's OWN (tracked) body by the bisector
-                # plane and Remove the waste sliver.  Probe the kept half with
-                # the member's midpoint -- deep in its own material, so the plane
-                # normal's sign never matters.  Write the surviving half back so a
-                # later cut on this member's other end targets the re-homed body.
-                new_objs, kept = _split_miter(
-                    root, body, cut['point'], cut['normal'],
-                    _line_midpoint(lines[m]))
-                created.extend(new_objs)
-                body_of[m] = kept
-                continue
-            # Body cut (cope / saddled butt): combine the member's OWN (tracked)
-            # body against the neighbour's -- both by reference, never re-found by
-            # proximity, which mis-picks a touching neighbour.  Then drop the plug
-            # the overshooting tip leaves in the tool's void and write the member's
-            # surviving main run back into the map.
-            tool_body = ctx[~t]['body'] if t < 0 else body_of.get(t)
+            # Body cut (cope / saddled butt): combine the member against the
+            # neighbour's body (keep-tool), saddling it to the through member.
+            # The member's tip only overlaps the tool near the joint, so the cut
+            # is inherently local; the joint box is used only to CLASSIFY the
+            # result -- a fragment wholly inside it is a cutoff (the plug pushed
+            # into the tool's void), one that pokes out is the surviving run.
+            t = cut['tool']
+            if t < 0:
+                if ~t >= len(ctx) or ctx[~t].get('body') is None:
+                    continue
+                tool_body = ctx[~t]['body']
+            else:
+                if t >= len(objs) or objs[t] is None:
+                    continue
+                tool_body = body_of.get(t)
             if tool_body is None:
                 continue
-            tools = adsk.core.ObjectCollection.create()
-            tools.add(tool_body)
-            ci = root.features.combineFeatures.createInput(body, tools)
-            ci.operation = adsk.fusion.FeatureOperations.CutFeatureOperation
-            ci.isKeepToolBodies = True
-            comb = root.features.combineFeatures.add(ci)
-            created.append(comb)
-            # The cope tip overshoots the near wall, shaving a thin plug off
-            # the member that floats in the tool's hollow void.  Remove those
-            # orphans (a Remove feature, so the parametric flow is intact and
-            # deleting it on teardown restores them).  Track them BEFORE the
-            # combine so teardown deletes the Remove first, then the combine.
-            removes = _remove_combine_orphans(root, comb, tool_body)
-            created = removes + created
-            body_of[m] = _combine_survivor(comb, tool_body) or body
+            comb = _combine_cut(root, body, [tool_body], keep_tool=True)
+            # Remove cutoffs wholly inside the joint box (the cope plug), never
+            # the tool.  Track the Removes BEFORE the combine so teardown
+            # deletes them first, then the combine (restoring the whole body).
+            removes = _remove_inside_region(root, comb, tool_body, region)
+            created = removes + [comb] + created
+            body_of[m] = (_survivor_after_cut(comb, tool_body, region)
+                          or body)
         except Exception:
             futil.handle_error(f'{CMD_NAME} corner cut')
     # Cut features and helpers FIRST (delete order), then the rest.

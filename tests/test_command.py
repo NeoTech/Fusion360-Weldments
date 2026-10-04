@@ -1083,25 +1083,29 @@ class TestCornerCutBuild(unittest.TestCase):
             body.boundingBox = adsk_stub.FakeBoundingBox(mid)
         return objs, idx
 
-    def test_miter_splits_both_members_and_removes_waste(self):
+    def test_miter_cuts_both_members_with_a_wedge_prism(self):
+        # A miter is a FINITE wedge prism on the bisector plane, Combine(Cut)-ed
+        # against each member and dropped -- no infinite-plane Split Body and no
+        # pointContainment guess (the two sources of the wrong-body regressions).
         objs, idx = self._build()
         cuts = entry._apply_corner_cuts(self.root, self.lines,
                                         ['miter', 'miter'], objs, idx, 0)
         names = [c[0] for c in adsk_stub.CALLS]
-        # A miter is a Split Body by the bisector plane + a Remove of the waste
-        # sliver -- no boolean combine and no waste prism.
-        self.assertNotIn('CombineFeatures.add', names)
-        self.assertEqual(names.count('SplitBodyFeatures.add'), 2)
-        self.assertEqual(names.count('RemoveFeatures.add'), 2)
-        # The waste is chosen by pointContainment of the member's own far end.
-        self.assertIn('Body.pointContainment', names)
-        # No body is deleted directly: the Remove feature does the trimming and
-        # stays reversible (deleting it restores the body).
-        self.assertNotIn('Body.deleteMe', names)
-        # Returned objects come in (remove, split, sketch, plane) fours and lead
-        # with the Remove features, which must go before the members.
-        self.assertEqual(len(cuts), 8)
-        self.assertTrue(all('Remove' in f.objectType for f in cuts[0::4]))
+        self.assertNotIn('SplitBodyFeatures.add', names)
+        self.assertNotIn('Body.pointContainment', names)
+        self.assertNotIn('RemoveFeatures.add', names)
+        # One cutter Combine per member, each a Cut that DROPS the wedge.
+        self.assertEqual(names.count('CombineFeatures.add'), 2)
+        for c in adsk_stub.CALLS:
+            if c[0] == 'CombineFeatures.add':
+                self.assertEqual(
+                    c[1][0], adsk_stub.sys.modules['adsk.fusion']
+                    .FeatureOperations.CutFeatureOperation)
+                self.assertFalse(c[1][1])          # the wedge is consumed
+        # Two extra cutter extrudes on top of the two member builds.
+        self.assertEqual(names.count('ExtrudeFeatures.add'), 4)
+        # Track (combine, extrude, sketch, plane, plane-sketch) per miter.
+        self.assertEqual(len(cuts), 10)
 
     def test_butt_builds_no_cut(self):
         # A butt is a pure axial trim (handled in corner_offsets), so the cut
@@ -1187,7 +1191,7 @@ class TestCornerCutBuild(unittest.TestCase):
 
     def test_miter_against_existing_member(self):
         # A miter whose END meets an EXISTING member's END (a corner) is a
-        # bisector-plane split + Remove, same as a selected-vs-selected miter.
+        # bisector wedge-prism Combine(Cut), same as a selected-vs-selected miter.
         self.lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))]
         objs, idx = self._build()
         existing_body = adsk_stub.FakeBody(name="EXISTING", center=(0, 5, 0))
@@ -1198,11 +1202,11 @@ class TestCornerCutBuild(unittest.TestCase):
         cuts = entry._apply_corner_cuts(self.root, self.lines, ['miter'],
                                         objs, idx, 0, context=context)
         names = [c[0] for c in adsk_stub.CALLS]
-        # One split by the bisector plane + one Remove of the waste sliver.
-        self.assertNotIn('CombineFeatures.add', names)
-        self.assertEqual(names.count('SplitBodyFeatures.add'), 1)
-        self.assertEqual(names.count('RemoveFeatures.add'), 1)
-        self.assertEqual(len(cuts), 4)             # (remove, split, sk, plane)
+        # One wedge cutter, Combine(Cut)-ed against the member -- no Split Body.
+        self.assertNotIn('SplitBodyFeatures.add', names)
+        self.assertNotIn('Body.pointContainment', names)
+        self.assertEqual(names.count('CombineFeatures.add'), 1)
+        self.assertEqual(len(cuts), 5)             # combine + extrude + 3 helpers
 
 
 class TestRecoverExistingMembers(unittest.TestCase):
