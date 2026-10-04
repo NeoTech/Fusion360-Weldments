@@ -27,7 +27,11 @@ CMD_NAME = 'Weldment'
 CMD_Description = 'Create a weldment profile along 3D sketch lines'
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
-# Unique panel id (must not collide with any other add-in's panel).
+# Unique tab + panel ids (must not collide with any other add-in's elements).
+# A dedicated toolbar TAB (like Solid / Mesh / Sheet Metal), not a panel buried
+# on the shared Tools tab: workspace.toolbarPanels.add() lands on Tools, so the
+# panel must be created through the tab's own toolbarPanels collection.
+TAB_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_tab'
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
 PANEL_NAME = 'Weldments'
 # Legacy: the Create panel the command used to be promoted into, cleaned up on
@@ -116,6 +120,84 @@ def _make_header_row(inputs, tbl):
 # --------------------------------------------------------------------------- #
 # Add-in lifecycle
 # --------------------------------------------------------------------------- #
+def _find_weldments_panel():
+    """The existing Weldments panel (on the tab, or the workspace fallback).
+
+    Returns None if it has not been created. Never creates anything, so it is
+    safe to call from stop(). The panel now lives on the Weldments tab, so a
+    plain ``workspace.toolbarPanels.itemById`` would miss it -- every command
+    must resolve it through here.
+    """
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    if workspace is None:
+        return None
+    tab = workspace.toolbarTabs.itemById(TAB_ID)
+    if tab is not None:
+        panel = tab.toolbarPanels.itemById(PANEL_ID)
+        if panel is not None:
+            return panel
+    return workspace.toolbarPanels.itemById(PANEL_ID)
+
+
+def remove_command_from_panel(cmd_id):
+    """Delete one command's button, then the panel/tab if they are now empty.
+
+    Shared by every toolbox command's stop(). commands/__init__ stops weldment
+    BEFORE its siblings, so teardown cannot rely on ordering -- whichever
+    command removes the LAST button cleans up the panel, and whichever empties
+    the tab's last panel removes the tab. Idempotent and safe to call when the
+    panel is already gone.
+    """
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    tab = workspace.toolbarTabs.itemById(TAB_ID) if workspace else None
+    panel = _find_weldments_panel()
+    if panel:
+        control = panel.controls.itemById(cmd_id)
+        if control:
+            control.deleteMe()
+        if panel.controls.count == 0:
+            panel.deleteMe()
+            if tab is not None and tab.toolbarPanels.count == 0:
+                tab.deleteMe()
+
+
+def ensure_weldments_panel():
+    """Return the Weldments toolbar panel, creating the tab/panel if needed.
+
+    Every toolbox command (weldment, BOM, cope, ...) calls this instead of
+    ``workspace.toolbarPanels.itemById(PANEL_ID)`` directly. The old pattern
+    silently dropped a command's button whenever the panel happened not to be
+    found (e.g. a sibling command's start() ran before weldment's, or an
+    add-in reload left the panel detached) -- which is how the buttons
+    disappeared. This helper is idempotent: it reuses an existing tab/panel,
+    creates the tab on demand, and migrates a stray panel that a previous
+    version parked on the Tools tab.
+    """
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    if workspace is None:
+        return None
+    tab = workspace.toolbarTabs.itemById(TAB_ID)
+    if tab is None:
+        # A previous version parked PANEL_ID on the workspace (Tools tab). Panel
+        # ids must be globally unique, so delete that stray before creating the
+        # tab's own panel -- every command's start() re-adds its button, so no
+        # button is lost by the migration.
+        stray = workspace.toolbarPanels.itemById(PANEL_ID)
+        if stray is not None:
+            stray.deleteMe()
+        tab = workspace.toolbarTabs.add(TAB_ID, PANEL_NAME)
+    if tab is not None:
+        panel = tab.toolbarPanels.itemById(PANEL_ID)
+        if panel is None:
+            panel = tab.toolbarPanels.add(PANEL_ID, PANEL_NAME)
+        return panel
+    # Defensive fallback: no tab (older Fusion) -- use the workspace panel.
+    panel = workspace.toolbarPanels.itemById(PANEL_ID)
+    if panel is None:
+        panel = workspace.toolbarPanels.add(PANEL_ID, PANEL_NAME)
+    return panel
+
+
 def start():
     global _FAMILIES, _DIES
     try:
@@ -133,12 +215,7 @@ def start():
         CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
     futil.add_handler(cmd_def.commandCreated, command_created)
 
-    workspace = ui.workspaces.itemById(WORKSPACE_ID)
-    # Own panel (Phase 4-UI). Reuse it if a previous load created it (add-in
-    # reload keeps the panel), else create at the end of the Tools tab.
-    panel = workspace.toolbarPanels.itemById(PANEL_ID)
-    if panel is None:
-        panel = workspace.toolbarPanels.add(PANEL_ID, PANEL_NAME)
+    panel = ensure_weldments_panel()
     if panel:
         if panel.controls.itemById(CMD_ID) is None:
             panel.controls.addCommand(cmd_def)
@@ -150,15 +227,10 @@ def stop():
     workspace = ui.workspaces.itemById(WORKSPACE_ID)
     command_definition = ui.commandDefinitions.itemById(CMD_ID)
 
-    # Remove our command from the panel, then the panel itself if it is now
-    # empty (so a reload does not stack duplicate panels).
-    panel = workspace.toolbarPanels.itemById(PANEL_ID)
-    if panel:
-        command_control = panel.controls.itemById(CMD_ID)
-        if command_control:
-            command_control.deleteMe()
-        if panel.controls.count == 0:
-            panel.deleteMe()
+    # Remove our button; the shared helper also tears down the panel and the
+    # Weldments tab when this was the last button on them (order-independent --
+    # commands/__init__ stops us before our siblings, and the helper copes).
+    remove_command_from_panel(CMD_ID)
 
     # Clean up the legacy Create-panel button from before the own-panel move.
     for pid in LEGACY_PANEL_IDS:

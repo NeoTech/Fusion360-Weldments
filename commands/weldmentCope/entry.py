@@ -40,6 +40,8 @@ CMD_NAME = 'Weld Cope'
 CMD_Description = 'Cope one weldment member onto another (explicit selection)'
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
+# Shared Weldments panel on the dedicated Weldments tab (see
+# weldment.ensure_weldments_panel).
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
 
 local_handlers = []
@@ -59,19 +61,15 @@ def start():
         CMD_ID, CMD_NAME, CMD_Description)
     futil.add_handler(cmd_def.commandCreated, command_created,
                       local_handlers=local_handlers)
-    workspace = ui.workspaces.itemById(WORKSPACE_ID)
-    panel = workspace.toolbarPanels.itemById(PANEL_ID)
+    # Shared Weldments tab/panel; create it if needed so the button is never
+    # dropped when this start() runs before weldment's.
+    panel = _weldment().ensure_weldments_panel()
     if panel and panel.controls.itemById(CMD_ID) is None:
         panel.controls.addCommand(cmd_def)
 
 
 def stop():
-    workspace = ui.workspaces.itemById(WORKSPACE_ID)
-    panel = workspace.toolbarPanels.itemById(PANEL_ID)
-    if panel:
-        control = panel.controls.itemById(CMD_ID)
-        if control:
-            control.deleteMe()
+    _weldment().remove_command_from_panel(CMD_ID)
     cmd_def = ui.commandDefinitions.itemById(CMD_ID)
     if cmd_def:
         cmd_def.deleteMe()

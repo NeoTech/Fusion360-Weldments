@@ -32,7 +32,8 @@ PALETTE_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_bom_palette'
 PALETTE_NAME = 'Weldment BOM'
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
-# The command lives in the same own-panel the weldment tool uses (Phase 4-UI).
+# The button lives in the Weldments panel on the dedicated Weldments tab; the
+# panel is created/resolved through weldment.ensure_weldments_panel().
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
 
 PALETTE_URL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -51,19 +52,18 @@ def start():
         CMD_ID, CMD_NAME, CMD_Description)
     futil.add_handler(cmd_def.commandCreated, command_created)
 
-    workspace = ui.workspaces.itemById(WORKSPACE_ID)
-    panel = workspace.toolbarPanels.itemById(PANEL_ID)
+    # The panel lives on the Weldments tab; ensure_weldments_panel creates the
+    # tab/panel if weldment's start() has not run yet, so the button is never
+    # silently dropped (the bug that lost the buttons on reactivation).
+    from ..weldment import entry as weldment
+    panel = weldment.ensure_weldments_panel()
     if panel and panel.controls.itemById(CMD_ID) is None:
         panel.controls.addCommand(cmd_def)
 
 
 def stop():
-    workspace = ui.workspaces.itemById(WORKSPACE_ID)
-    panel = workspace.toolbarPanels.itemById(PANEL_ID)
-    if panel:
-        control = panel.controls.itemById(CMD_ID)
-        if control:
-            control.deleteMe()
+    from ..weldment import entry as weldment
+    weldment.remove_command_from_panel(CMD_ID)
     cmd_def = ui.commandDefinitions.itemById(CMD_ID)
     if cmd_def:
         cmd_def.deleteMe()
