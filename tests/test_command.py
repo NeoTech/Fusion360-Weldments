@@ -1413,5 +1413,62 @@ class TestCopeOrphanRemoval(unittest.TestCase):
         self.assertIn(plug, comb.bodies._items)
 
 
+class TestAngledTCutoffRemoval(unittest.TestCase):
+    """An angled T cope leaves a wall plug whose bbox overhangs the joint box.
+
+    The old classifier removed a fragment only when its whole bounding box sat
+    inside the region; on a tilted bore the plug's box pokes past the box, so it
+    survived as a stray body.  The new classifier keeps the tool and the largest
+    non-tool body (the run) and Removes every other fragment near the joint, so
+    the plug goes regardless of how its bbox is oriented.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.root = adsk_stub.FakeRoot()
+
+    def _region(self):
+        # A joint box centred at the origin, 2 cm half-extent on every axis.
+        return {'center': (0.0, 0.0, 0.0),
+                'axes': ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+                'half': (2.0, 2.0, 2.0)}
+
+    def _combine(self, bodies):
+        comb = adsk_stub.FakeFeature("adsk::fusion::CombineFeature", self.root,
+                                     bodies)
+        self.root.features._items.append(comb)
+        return comb
+
+    def test_plug_with_overhanging_bbox_is_removed(self):
+        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0, center=(0, 0, 0))
+        run = adsk_stub.FakeBody(name="RUN", volume=38.0, center=(0, 0, 0))
+        # A plug at the joint whose bbox pokes past the 2 cm box (angled bore):
+        # its centre is inside, but a corner is not -- the old test would keep it.
+        plug = adsk_stub.FakeBody(name="PLUG", volume=0.12, center=(1.5, 0, 0))
+        plug.boundingBox = adsk_stub.FakeBoundingBox((1.5, 0, 0), half=1.0)
+        comb = self._combine([tool, run, plug])
+        removes = entry._remove_inside_region(self.root, comb, tool,
+                                              self._region())
+        self.assertEqual(len(removes), 1)
+        names = [c[0] for c in adsk_stub.CALLS]
+        self.assertEqual(names.count("RemoveFeatures.add"), 1)
+        self.assertNotIn(plug, comb.bodies._items)
+        self.assertIn(tool, comb.bodies._items)
+        self.assertIn(run, comb.bodies._items)
+
+    def test_far_fragment_is_left_alone(self):
+        # A fragment of the same size but sitting far from the joint (its bbox
+        # centre outside the grown box) belongs to other material -- never touch.
+        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0, center=(0, 0, 0))
+        run = adsk_stub.FakeBody(name="RUN", volume=38.0, center=(0, 0, 0))
+        far = adsk_stub.FakeBody(name="FAR", volume=0.12, center=(50, 0, 0))
+        far.boundingBox = adsk_stub.FakeBoundingBox((50, 0, 0), half=1.0)
+        comb = self._combine([tool, run, far])
+        removes = entry._remove_inside_region(self.root, comb, tool,
+                                              self._region())
+        self.assertEqual(removes, [])
+        self.assertIn(far, comb.bodies._items)
+
+
 if __name__ == "__main__":
     unittest.main()

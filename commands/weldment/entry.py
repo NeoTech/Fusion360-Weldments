@@ -1870,34 +1870,66 @@ def _body_in_region(body, region):
     return all(_point_in_region(p, region) for p in corners)
 
 
-def _remove_inside_region(root, comb, keep_body, region):
-    """Remove combine-output fragments that lie entirely inside the joint box.
+def _bbox_center(body):
+    """Centre (cm tuple) of a body's bounding box, or None."""
+    try:
+        bb = body.boundingBox
+        return ((bb.minPoint.x + bb.maxPoint.x) * 0.5,
+                (bb.minPoint.y + bb.maxPoint.y) * 0.5,
+                (bb.minPoint.z + bb.maxPoint.z) * 0.5)
+    except Exception:
+        return None
 
-    After a cope/saddle boolean the member's main run pokes out of the joint
-    region (protected) while a thin plug pushed into the tool's hollow void sits
-    entirely inside it (waste).  Keep the tool and every body that reaches past
-    the box; issue a reversible ``Remove`` on the rest.  Returns the Remove
-    features (tracked BEFORE the combine so teardown deletes them first).
+
+def _remove_inside_region(root, comb, keep_body, region):
+    """Remove the cope/saddle cutoff fragments from a combine's output.
+
+    After a cope/saddle boolean the output is exactly {tool, member run, waste}.
+    The run is the largest non-tool body; every OTHER non-tool fragment is waste
+    by construction -- a thin wall plug the cut pushed into the tool's hollow
+    void.  Testing the plug for full containment in the joint box is not enough:
+    on an angled T the tool's bore is tilted, so the plug's bounding box pokes
+    past the box even though the plug is entirely inside the joint.  So classify
+    by role instead of containment -- keep the tool and the survivor, Remove the
+    rest -- and use the box only as a guard so a fragment sitting far from the
+    joint (belonging to some other feature) is never touched.  Returns the
+    Remove features (tracked BEFORE the combine so teardown deletes them first).
     """
     removed = []
     try:
         bodies = comb.bodies
+        # Snapshot BEFORE removing: a Remove shrinks the live collection, so
+        # iterating it by index would skip the body after each removal (two
+        # symmetric plugs -> only one deleted).
+        cand = [bodies.item(bi) for bi in range(bodies.count)]
     except Exception:
         return removed
-    for bi in range(bodies.count):
+    non_tool = [b for b in cand if keep_body is None or b is not keep_body]
+    survivor = None
+    best_v = None
+    for b in non_tool:
         try:
-            b = bodies.item(bi)
+            v = b.volume
         except Exception:
+            v = 0.0
+        if best_v is None or v > best_v:
+            survivor, best_v = b, v
+    for b in non_tool:
+        if b is survivor:
             continue
-        if keep_body is not None and b is keep_body:
+        # Guard: only a fragment at the joint is a cutoff.  Its bbox centre must
+        # fall inside the box (grown by the box's own half-extents, so a plug
+        # whose tilted bbox overhangs the box still counts).
+        c = _bbox_center(b)
+        if c is not None and not _point_in_region(
+                c, region, tol=max(region['half'])):
             continue
-        if _body_in_region(b, region):
-            try:
-                rm = root.features.removeFeatures.add(b)
-                if rm is not None:
-                    removed.append(rm)
-            except Exception:
-                futil.handle_error(f'{CMD_NAME} remove region cutoff')
+        try:
+            rm = root.features.removeFeatures.add(b)
+            if rm is not None:
+                removed.append(rm)
+        except Exception:
+            futil.handle_error(f'{CMD_NAME} remove region cutoff')
     return removed
 
 
@@ -2143,12 +2175,14 @@ def _miter_cutter(root, V, nrm, perp, depth, preview=False):
 
 
 def _survivor_after_cut(comb, keep_body, region):
-    """The member's main run in a combine output: the piece poking OUT of region.
+    """The member's main run in a combine output: the largest non-tool body.
 
-    A cut fragments the member inside the joint box; the surviving run is the
-    body that is neither the kept tool nor wholly contained in the box (real
-    material always reaches past the joint).  Falls back to the largest such
-    body, then to ``keep_body``.
+    A cope/saddle cut fragments the member inside the joint box; the surviving
+    run always carries the bulk of the member's volume, so the largest body that
+    is not the kept tool is the run.  (Classifying by box containment is wrong on
+    an angled T, where a tilted bore leaves a plug whose bbox overhangs the box.)
+    Returns None when it cannot be determined, so the caller keeps its previous
+    reference.
     """
     best, best_v = None, None
     try:
@@ -2162,8 +2196,6 @@ def _survivor_after_cut(comb, keep_body, region):
             continue
         if keep_body is not None and b is keep_body:
             continue
-        if _body_in_region(b, region):
-            continue          # wholly inside the box: a cutoff, not the run
         try:
             v = b.volume
         except Exception:
