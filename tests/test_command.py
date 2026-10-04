@@ -1414,13 +1414,12 @@ class TestCopeOrphanRemoval(unittest.TestCase):
 
 
 class TestAngledTCutoffRemoval(unittest.TestCase):
-    """An angled T cope leaves a wall plug whose bbox overhangs the joint box.
+    """An angled T cope leaves a wall plug the joint box must fully contain.
 
-    The old classifier removed a fragment only when its whole bounding box sat
-    inside the region; on a tilted bore the plug's box pokes past the box, so it
-    survived as a stray body.  The new classifier keeps the tool and the largest
-    non-tool body (the run) and Removes every other fragment near the joint, so
-    the plug goes regardless of how its bbox is oriented.
+    The box is sized (via :func:`lib.joints._plug_reach`) to span a plug driven
+    into the neighbour's tilted bore -- its axial reach grows as 1/sin(angle) --
+    so the plug sits ENTIRELY inside the box while the member's run pokes out.
+    The classifier removes bodies wholly within the box and keeps the rest.
     """
 
     def setUp(self):
@@ -1439,13 +1438,12 @@ class TestAngledTCutoffRemoval(unittest.TestCase):
         self.root.features._items.append(comb)
         return comb
 
-    def test_plug_with_overhanging_bbox_is_removed(self):
+    def test_plug_inside_box_is_removed(self):
         tool = adsk_stub.FakeBody(name="TOOL", volume=90.0, center=(0, 0, 0))
         run = adsk_stub.FakeBody(name="RUN", volume=38.0, center=(0, 0, 0))
-        # A plug at the joint whose bbox pokes past the 2 cm box (angled bore):
-        # its centre is inside, but a corner is not -- the old test would keep it.
-        plug = adsk_stub.FakeBody(name="PLUG", volume=0.12, center=(1.5, 0, 0))
-        plug.boundingBox = adsk_stub.FakeBoundingBox((1.5, 0, 0), half=1.0)
+        # A plug wholly inside the 2 cm box: a cutoff, removed.
+        plug = adsk_stub.FakeBody(name="PLUG", volume=0.12, center=(1.0, 0, 0))
+        plug.boundingBox = adsk_stub.FakeBoundingBox((1.0, 0, 0), half=0.5)
         comb = self._combine([tool, run, plug])
         removes = entry._remove_inside_region(self.root, comb, tool,
                                               self._region())
@@ -1456,9 +1454,22 @@ class TestAngledTCutoffRemoval(unittest.TestCase):
         self.assertIn(tool, comb.bodies._items)
         self.assertIn(run, comb.bodies._items)
 
+    def test_run_poking_out_of_box_is_kept(self):
+        # A fragment that reaches past the box is real member material: keep it
+        # even though it is smaller than the tool (the survivor floor aside, the
+        # containment test alone protects it).
+        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0, center=(0, 0, 0))
+        run = adsk_stub.FakeBody(name="RUN", volume=5.0, center=(0, 0, 0))
+        run.boundingBox = adsk_stub.FakeBoundingBox((0, 0, 0), half=10.0)
+        comb = self._combine([tool, run])
+        removes = entry._remove_inside_region(self.root, comb, tool,
+                                              self._region())
+        self.assertEqual(removes, [])
+        self.assertIn(run, comb.bodies._items)
+
     def test_far_fragment_is_left_alone(self):
         # A fragment of the same size but sitting far from the joint (its bbox
-        # centre outside the grown box) belongs to other material -- never touch.
+        # outside the box) belongs to other material -- never touch.
         tool = adsk_stub.FakeBody(name="TOOL", volume=90.0, center=(0, 0, 0))
         run = adsk_stub.FakeBody(name="RUN", volume=38.0, center=(0, 0, 0))
         far = adsk_stub.FakeBody(name="FAR", volume=0.12, center=(50, 0, 0))

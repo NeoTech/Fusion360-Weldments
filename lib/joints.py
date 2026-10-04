@@ -1108,6 +1108,23 @@ def _frame(d):
     return d, e1, e2
 
 
+def _plug_reach(base, perp_both, angle):
+    """Axial reach (cm) a cope/saddle box must cover along the coping member.
+
+    A wall plug pushed into the neighbour's hollow is bounded by BOTH sections:
+    its far corner sits ``perp_both`` (the tool's and the coping member's
+    perpendicular extents added) away from the neighbour's axis, and the plug
+    lies along the neighbour's bore, so projected onto the COPING member's axis
+    that corner is ``perp_both / sin(angle)`` from the joint (``angle`` between
+    the two runs).  On a perpendicular T (sin = 1) this is just ``perp_both``;
+    on a shallow angle it grows, and the box must grow with it or the plug pokes
+    out and is mis-classified as the run.  ``base`` (the tool's axial half-extent
+    + cope depth) is the floor.
+    """
+    s = math.sin(max(min(angle, math.pi - angle), 1e-3))
+    return max(base, perp_both / s)
+
+
 def _region_box(V, d, reach, perp, leg_room):
     """A joint box: centred ON the vertex, faces normal to the member.
 
@@ -1369,9 +1386,16 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
                 trim = _half_extent_cm(geomv(pidx), basisv(pidx), own,
                                        anchorv(pidx))
                 depth = _depth_cm(cope_depth_by_line, idx)
-                reach = trim + abs(depth)
                 perp = max(perp_extent(idx, role, V),
                            perp_extent(pidx, prole, V))
+                # A plug pushed into the neighbour's hollow reaches along ``own``
+                # by BOTH sections' perpendicular extents / sin(angle between the
+                # two runs); on a shallow corner that is far more than ``trim``,
+                # so grow the reach to keep the whole plug inside the box.
+                reach = _plug_reach(
+                    trim + abs(depth),
+                    perp_extent(idx, role, V) + perp_extent(pidx, prole, V),
+                    _angle_between(own, neigh))
                 box = _region_box(V, own, reach, perp, room)
                 kind = 'cope_end' if jid == 'cope' else 'butt_saddle'
                 occs.append({'kind': kind, 'member': idx, 'role': role,
@@ -1401,11 +1425,17 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
         trim = _half_extent_cm(geomv(pidx), basisv(pidx), dirv(idx),
                                anchorv(pidx))
         depth = _depth_cm(cope_depth_by_line, idx)
-        reach = trim + abs(depth)
         perp = max(perp_extent(idx, role, P), perp_extent(pidx, None, P))
         room = _leg_room(L, [(idx, role), (pidx, None)], P, n)
-        box = _region_box(P, own, reach, perp, room)
         angle = _angle_between(dirv(idx), dirv(pidx))
+        # See the corner note: a plug driven into the tool's bore along the
+        # coping member reaches (both sections' perpendicular extents summed) /
+        # sin(angle) from the joint, which on an angled T is far more than the
+        # tool's axial half-extent alone.
+        reach = _plug_reach(trim + abs(depth),
+                            perp_extent(idx, role, P) + perp_extent(pidx, None, P),
+                            angle)
+        box = _region_box(P, own, reach, perp, room)
         kind = ('cope_t' if abs(angle - math.pi / 2.0) <= 0.02
                 else 'cope_angle')
         occs.append({'kind': kind, 'member': idx, 'role': role, 'vertex': P,

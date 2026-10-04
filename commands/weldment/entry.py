@@ -1853,46 +1853,60 @@ def _point_in_region(point, region, tol=1e-6):
             abs(jt._dot(v, e2)) <= hc + tol)
 
 
+def _region_aabb(region):
+    """The world-axis-aligned envelope ``((lo), (hi))`` of a (rotated) joint box.
+
+    The joint box is oriented along the member, so on an angled joint it is
+    rotated in the world.  Comparing a body's world-aligned bounding box against
+    the rotated box corner-by-corner is wrong: an axis-aligned fragment inside a
+    rotated box has world-AABB corners that project PAST the rotated faces, so a
+    genuine cutoff reads as "outside" and is wrongly kept.  Instead take the
+    box's own world-AABB (the extent along each world axis is the sum of
+    ``|axis_component| * half`` over the box's three axes) and compare like for
+    like -- both are world-aligned boxes.
+    """
+    c = region['center']
+    d, e1, e2 = region['axes']
+    ha, hb, hc = region['half']
+    lo, hi = [], []
+    for k in range(3):
+        ext = abs(d[k]) * ha + abs(e1[k]) * hb + abs(e2[k]) * hc
+        lo.append(c[k] - ext)
+        hi.append(c[k] + ext)
+    return tuple(lo), tuple(hi)
+
+
 def _body_in_region(body, region):
     """True when a body's whole bounding box lies inside the joint region.
 
     A fragment that stays entirely within the box is a cutoff (waste); a body
     that pokes outside it is real member material and must never be touched.
+    Both the body and the region are reduced to world-axis-aligned boxes first
+    (see :func:`_region_aabb`) so the test is orientation-independent.
     """
     try:
         bb = body.boundingBox
         lo, hi = bb.minPoint, bb.maxPoint
     except Exception:
         return False
-    corners = ((lo.x, lo.y, lo.z), (lo.x, lo.y, hi.z), (lo.x, hi.y, lo.z),
-               (lo.x, hi.y, hi.z), (hi.x, lo.y, lo.z), (hi.x, lo.y, hi.z),
-               (hi.x, hi.y, lo.z), (hi.x, hi.y, hi.z))
-    return all(_point_in_region(p, region) for p in corners)
-
-
-def _bbox_center(body):
-    """Centre (cm tuple) of a body's bounding box, or None."""
-    try:
-        bb = body.boundingBox
-        return ((bb.minPoint.x + bb.maxPoint.x) * 0.5,
-                (bb.minPoint.y + bb.maxPoint.y) * 0.5,
-                (bb.minPoint.z + bb.maxPoint.z) * 0.5)
-    except Exception:
-        return None
+    blo = (lo.x, lo.y, lo.z)
+    bhi = (hi.x, hi.y, hi.z)
+    rlo, rhi = _region_aabb(region)
+    return all(blo[k] >= rlo[k] - 1e-6 and bhi[k] <= rhi[k] + 1e-6
+               for k in range(3))
 
 
 def _remove_inside_region(root, comb, keep_body, region):
     """Remove the cope/saddle cutoff fragments from a combine's output.
 
-    After a cope/saddle boolean the output is exactly {tool, member run, waste}.
-    The run is the largest non-tool body; every OTHER non-tool fragment is waste
-    by construction -- a thin wall plug the cut pushed into the tool's hollow
-    void.  Testing the plug for full containment in the joint box is not enough:
-    on an angled T the tool's bore is tilted, so the plug's bounding box pokes
-    past the box even though the plug is entirely inside the joint.  So classify
-    by role instead of containment -- keep the tool and the survivor, Remove the
-    rest -- and use the box only as a guard so a fragment sitting far from the
-    joint (belonging to some other feature) is never touched.  Returns the
+    After a cope/saddle boolean the output is {tool, member run, waste}.  The
+    joint box (from :func:`lib.joints.joint_spec`) is sized to span the WHOLE
+    joint -- including a plug driven into the neighbour's tilted bore (see
+    :func:`lib.joints._plug_reach`) -- so a cutoff sits ENTIRELY inside it while
+    the member's main run always reaches PAST it.  Classify by containment: keep
+    the tool and every body poking outside the box, Remove the ones wholly
+    within.  As a defensive floor the largest non-tool body (the run) is never
+    removed, in case a degenerate box would otherwise swallow it.  Returns the
     Remove features (tracked BEFORE the combine so teardown deletes them first).
     """
     removed = []
@@ -1916,14 +1930,9 @@ def _remove_inside_region(root, comb, keep_body, region):
             survivor, best_v = b, v
     for b in non_tool:
         if b is survivor:
-            continue
-        # Guard: only a fragment at the joint is a cutoff.  Its bbox centre must
-        # fall inside the box (grown by the box's own half-extents, so a plug
-        # whose tilted bbox overhangs the box still counts).
-        c = _bbox_center(b)
-        if c is not None and not _point_in_region(
-                c, region, tol=max(region['half'])):
-            continue
+            continue                       # never remove the main run
+        if not _body_in_region(b, region):
+            continue                       # pokes outside the box: real material
         try:
             rm = root.features.removeFeatures.add(b)
             if rm is not None:
