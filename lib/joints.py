@@ -1143,8 +1143,12 @@ def _leg_room(L, members, V, n):
         s, e = line_endpoints(ln)
         to_v = _dot(_sub(V, s), line_direction(ln))
         length = math.sqrt(_dot(_sub(e, s), _sub(e, s)))
-        from_v_far = length - abs(to_v)   # distance V -> the far end
-        room = min(room, 0.5 * max(from_v_far, 0.0))
+        # Distance from V to the member's FARTHER endpoint.  When V is at an
+        # end (a coping member's tip, or a corner) the whole run lies one way,
+        # so the box may reach half of it; the old ``length - abs(to_v)`` read
+        # 0 there and collapsed the box so its cutoffs were never classified.
+        from_v_far = max(abs(to_v), abs(length - to_v))
+        room = min(room, 0.5 * from_v_far)
     return room if room != float('inf') else 0.0
 
 
