@@ -30,10 +30,41 @@ WORKSPACE_ID = 'FusionSolidEnvironment'
 # Unique tab + panel ids (must not collide with any other add-in's elements).
 # A dedicated toolbar TAB (like Solid / Mesh / Sheet Metal), not a panel buried
 # on the shared Tools tab: workspace.toolbarPanels.add() lands on Tools, so the
-# panel must be created through the tab's own toolbarPanels collection.
+# panels must be created through the tab's own toolbarPanels collection.
 TAB_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_tab'
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
 PANEL_NAME = 'Weldments'
+
+# The tab is spread across several small panels rather than one big one: a
+# panel holding more than a handful of buttons collapses into a "+" flyout
+# (the "submenu" to avoid), so each tool gets its own visible button.
+#   SKETCH panel  -- the standard sketch commands, for in-place editing
+#   WELD panel    -- the builder (all-in-one) + the joint toolbox tools
+#   DATA panel    -- the registry BOM
+# PANEL_ID is the WELD panel that the builder and each joint tool's
+# start()/stop() adds its button to; the others are created empty here and
+# filled by the ribbon layout pass in ensure_weldments_panel().
+SKETCH_PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_sketch_panel'
+SKETCH_PANEL_NAME = 'Sketch'
+DATA_PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_data_panel'
+DATA_PANEL_NAME = 'Data'
+
+# Native Fusion sketch commands placed on our tab (ids verified against the
+# running Fusion's commandDefinitions). Reusing the built-in definitions means
+# the buttons are the real tools, not stubs.
+SKETCH_COMMAND_IDS = [
+    'SketchCreate',      # Create Sketch
+    'DrawPolyline',      # Line
+    'DrawRectangle',     # Rectangle
+    'DrawCircle',        # Circle
+    'DrawArc',           # Arc
+    'DrawSpline',        # Spline (fit point)
+    'ProjectNewCmd',     # Project / Include
+    'TrimSketchCmd',     # Trim
+    'SketchDimension',   # Dimension
+    'SketchStop',        # Finish Sketch
+]
+
 # Legacy: the Create panel the command used to be promoted into, cleaned up on
 # stop() so an upgrade from the old layout leaves no orphan button behind.
 LEGACY_PANEL_IDS = ['SolidCreatePanel', 'PlasticPartsCreatePanel']
@@ -139,6 +170,79 @@ def _find_weldments_panel():
     return workspace.toolbarPanels.itemById(PANEL_ID)
 
 
+def _panel_on_tab(panel_id):
+    """An existing panel on our tab by id (never creates; None if absent)."""
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    if workspace is None:
+        return None
+    tab = workspace.toolbarTabs.itemById(TAB_ID)
+    if tab is None:
+        return None
+    return tab.toolbarPanels.itemById(panel_id)
+
+
+def _populate_sketch_panel(panel):
+    """Add the standard native sketch commands to the Sketch panel (idempotent).
+
+    Reuses Fusion's own command definitions, so these are the real tools. A
+    missing definition (different Fusion build) is skipped rather than fatal.
+    """
+    for cid in SKETCH_COMMAND_IDS:
+        try:
+            if panel.controls.itemById(cid) is not None:
+                continue
+            cmd_def = ui.commandDefinitions.itemById(cid)
+            if cmd_def is not None:
+                panel.controls.addCommand(cmd_def)
+        except Exception:
+            futil.log(f'{CMD_NAME} sketch command {cid} not added.')
+
+
+def _sketch_panel_is_only_native(panel):
+    """True if every control on the Sketch panel is one we added.
+
+    Guards the teardown: a reload that (re)placed a tool button on the wrong
+    panel must not have the whole Sketch panel deleted with it.
+    """
+    native = set(SKETCH_COMMAND_IDS)
+    try:
+        for i in range(panel.controls.count):
+            if panel.controls.item(i).id not in native:
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def _cleanup_weldments_tab(tab):
+    """Delete our panels once empty, then the tab once it has no panels left.
+
+    The WELD and DATA panels go when their last tool button is gone; the Sketch
+    panel goes only when it still holds nothing but the native commands we
+    added. Order-independent: whichever command runs last tears the tab down.
+    """
+    if tab is None:
+        return
+    for pid in (PANEL_ID, DATA_PANEL_ID):
+        p = tab.toolbarPanels.itemById(pid)
+        if p is not None and p.controls.count == 0:
+            try:
+                p.deleteMe()
+            except Exception:
+                pass
+    sketch = tab.toolbarPanels.itemById(SKETCH_PANEL_ID)
+    if sketch is not None and _sketch_panel_is_only_native(sketch):
+        try:
+            sketch.deleteMe()
+        except Exception:
+            pass
+    try:
+        if tab.toolbarPanels.count == 0:
+            tab.deleteMe()
+    except Exception:
+        pass
+
+
 def remove_command_from_panel(cmd_id):
     """Delete one command's button, then the panel/tab if they are now empty.
 
@@ -150,28 +254,29 @@ def remove_command_from_panel(cmd_id):
     """
     workspace = ui.workspaces.itemById(WORKSPACE_ID)
     tab = workspace.toolbarTabs.itemById(TAB_ID) if workspace else None
-    panel = _find_weldments_panel()
-    if panel:
+    for pid in (PANEL_ID, DATA_PANEL_ID):
+        panel = _panel_on_tab(pid)
+        if panel is None:
+            continue
         control = panel.controls.itemById(cmd_id)
-        if control:
+        if control is not None:
             control.deleteMe()
-        if panel.controls.count == 0:
-            panel.deleteMe()
-            if tab is not None and tab.toolbarPanels.count == 0:
-                tab.deleteMe()
+    _cleanup_weldments_tab(tab)
 
 
 def ensure_weldments_panel():
-    """Return the Weldments toolbar panel, creating the tab/panel if needed.
+    """Return the WELD panel, creating the tab and all ribbon panels as needed.
 
-    Every toolbox command (weldment, BOM, cope, ...) calls this instead of
+    Every toolbox command (weldment, cope, ...) calls this instead of
     ``workspace.toolbarPanels.itemById(PANEL_ID)`` directly. The old pattern
     silently dropped a command's button whenever the panel happened not to be
     found (e.g. a sibling command's start() ran before weldment's, or an
     add-in reload left the panel detached) -- which is how the buttons
-    disappeared. This helper is idempotent: it reuses an existing tab/panel,
-    creates the tab on demand, and migrates a stray panel that a previous
-    version parked on the Tools tab.
+    disappeared. This helper is idempotent: it reuses an existing tab, creates
+    the three ribbon panels (Sketch / Weld / Data) in left-to-right order, and
+    fills the Sketch panel with the native commands. A stray PANEL_ID a
+    previous version parked on the Tools tab is migrated away first (panel ids
+    are globally unique).
     """
     workspace = ui.workspaces.itemById(WORKSPACE_ID)
     if workspace is None:
@@ -186,15 +291,41 @@ def ensure_weldments_panel():
         if stray is not None:
             stray.deleteMe()
         tab = workspace.toolbarTabs.add(TAB_ID, PANEL_NAME)
-    if tab is not None:
-        panel = tab.toolbarPanels.itemById(PANEL_ID)
+    if tab is None:
+        # Defensive fallback: no tab (older Fusion) -- single workspace panel.
+        panel = workspace.toolbarPanels.itemById(PANEL_ID)
         if panel is None:
-            panel = tab.toolbarPanels.add(PANEL_ID, PANEL_NAME)
+            panel = workspace.toolbarPanels.add(PANEL_ID, PANEL_NAME)
         return panel
-    # Defensive fallback: no tab (older Fusion) -- use the workspace panel.
-    panel = workspace.toolbarPanels.itemById(PANEL_ID)
+
+    # Create the panels in display order: Sketch, Weld, Data.
+    sketch = tab.toolbarPanels.itemById(SKETCH_PANEL_ID)
+    if sketch is None:
+        sketch = tab.toolbarPanels.add(SKETCH_PANEL_ID, SKETCH_PANEL_NAME)
+    if sketch is not None:
+        _populate_sketch_panel(sketch)
+
+    panel = tab.toolbarPanels.itemById(PANEL_ID)
     if panel is None:
-        panel = workspace.toolbarPanels.add(PANEL_ID, PANEL_NAME)
+        panel = tab.toolbarPanels.add(PANEL_ID, PANEL_NAME)
+
+    if tab.toolbarPanels.itemById(DATA_PANEL_ID) is None:
+        tab.toolbarPanels.add(DATA_PANEL_ID, DATA_PANEL_NAME)
+
+    return panel
+
+
+def ensure_data_panel():
+    """Return the Data panel (for the BOM button), creating the tab as needed."""
+    if ensure_weldments_panel() is None:
+        return None
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    tab = workspace.toolbarTabs.itemById(TAB_ID) if workspace else None
+    if tab is None:
+        return None
+    panel = tab.toolbarPanels.itemById(DATA_PANEL_ID)
+    if panel is None:
+        panel = tab.toolbarPanels.add(DATA_PANEL_ID, DATA_PANEL_NAME)
     return panel
 
 

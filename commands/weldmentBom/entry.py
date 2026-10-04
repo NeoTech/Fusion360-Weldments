@@ -52,11 +52,11 @@ def start():
         CMD_ID, CMD_NAME, CMD_Description)
     futil.add_handler(cmd_def.commandCreated, command_created)
 
-    # The panel lives on the Weldments tab; ensure_weldments_panel creates the
-    # tab/panel if weldment's start() has not run yet, so the button is never
-    # silently dropped (the bug that lost the buttons on reactivation).
+    # The BOM lives on the Data panel of the Weldments tab; ensure_data_panel
+    # creates the tab/panels if weldment's start() has not run yet, so the
+    # button is never silently dropped (the bug that lost the buttons).
     from ..weldment import entry as weldment
-    panel = weldment.ensure_weldments_panel()
+    panel = weldment.ensure_data_panel()
     if panel and panel.controls.itemById(CMD_ID) is None:
         panel.controls.addCommand(cmd_def)
 
