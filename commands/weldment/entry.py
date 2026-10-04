@@ -900,11 +900,20 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
     for plan in plans:
         idx, _role, tangent = plan['tangent'][0]
         if not 0 <= idx < len(lines):
-            continue  # a context leg is never the one we revolve from
-        arc = _build_bend_arc(root, lines[idx], tangent, plan, geom, ref,
-                              preview=preview,
-                              basis=(bases[idx] if bases else None),
-                              anchor=anchor)
+            continue  # a context leg is never the one we sweep/revolve from
+        # Prefer a true swept bend (sketch arc + Sweep): the die-radius centerline
+        # arc is the path and the tube section is swept along it, which is what a
+        # press-brake/roll bender actually produces.  Fall back to revolving the
+        # section about the bend axis when the sweep cannot be built.
+        arc = _build_bend_arc_sweep(root, lines[idx], tangent, plan, geom, ref,
+                                    preview=preview,
+                                    basis=(bases[idx] if bases else None),
+                                    anchor=anchor)
+        if arc is None:
+            arc = _build_bend_arc(root, lines[idx], tangent, plan, geom, ref,
+                                  preview=preview,
+                                  basis=(bases[idx] if bases else None),
+                                  anchor=anchor)
         if arc:
             arcs.append(arc)
         # If the other leg of this corner is an EXISTING member, its square end
@@ -925,8 +934,8 @@ def _clear_preview():
         except Exception:
             pass
     _preview_cuts = []
-    for feature, sketch, plane in _preview_objs:
-        for obj in (feature, sketch, plane):
+    for objs in _preview_objs:
+        for obj in objs:
             try:
                 obj.deleteMe()
             except Exception:
@@ -2359,6 +2368,140 @@ def _draw_model_line(sketch, p_from, p_to):
     b = adsk.core.Point3D.create(*p_to)
     b.transformBy(to_sheet)
     return sketch.sketchCurves.sketchLines.addByTwoPoints(a, b)
+
+
+def _draw_model_arc(sketch, center, p_start, p_end, normal=None):
+    """Add a sketch arc (center + two endpoints, all model-space cm tuples).
+
+    The arc lies in the plane through ``center`` with the given ``normal`` and
+    sweeps counter-clockwise (right-hand rule around ``normal``) from ``p_start``
+    to ``p_end``.  Pass ``normal`` = normalize((start-center) x (end-center)) to
+    force the MINOR arc from start to end; omitting it lets Fusion use the
+    sketch's own plane normal, which can pick the 270-degree major arc.  Points
+    are mapped model -> sheet like :func:`_draw_model_line`.  Returns the new
+    SketchArc.
+    """
+    to_sheet = sketch.transform.copy()
+    to_sheet.invert()
+
+    def sp(p):
+        q = adsk.core.Point3D.create(*p)
+        q.transformBy(to_sheet)
+        return q
+
+    if normal is not None:
+        nrm = adsk.core.Vector3D.create(*normal)
+        nrm.transformBy(to_sheet)   # keep the normal in the same sheet frame
+        return sketch.sketchCurves.sketchArcs.addByCenterStartEnd(
+            sp(center), sp(p_start), sp(p_end), nrm)
+    return sketch.sketchCurves.sketchArcs.addByCenterStartEnd(
+        sp(center), sp(p_start), sp(p_end))
+
+
+def _build_bend_arc_sweep(root, leg_line, tangent, plan, geom, ref,
+                          preview=False, basis=None, anchor=None):
+    """Build one swept-bend body by sweeping the section along a die-radius arc.
+
+    This is the physically-correct bend: the tube's cross-section is *swept*
+    along the centerline arc the bending die produces, exactly as a press brake
+    or roll bender deforms the member.  The arc (radius ``plan['radius_cm']``,
+    from tangent ``t1`` to ``t2`` about centre ``center``) lies in the bend plane
+    (normal ``plan['axis']``); the section sits at ``t1`` on a plane normal to
+    the leg, so it starts perpendicular to the path and stays so along the arc.
+
+    Returns a flat tuple of teardown objects ``(feature, path_sketch, path_plane,
+    profile_sketch, profile_plane)`` on success, or ``None`` when the sweep
+    cannot be built (the caller then falls back to :func:`_build_bend_arc`).
+    ``basis``/``anchor``/``preview`` mirror :func:`_build_bend_arc`.
+    """
+    try:
+        t2 = plan['tangent'][1][2]
+        center = plan['center']
+        axis = plan['axis']
+        leg_dir = _line_direction(leg_line)
+
+        # Off-centre leg (Position grid): shift the whole bend rigidly, exactly
+        # as the revolve builder does, so the swept arc tracks the displaced run.
+        if anchor:
+            axis_u0, axis_v0 = basis if basis is not None \
+                else prof.compute_basis(leg_dir, ref)
+            disp = prof.displace_origin((0.0, 0.0, 0.0), axis_u0, axis_v0, anchor)
+            tangent = jt._add(tangent, disp)
+            t2 = jt._add(t2, disp)
+            center = jt._add(center, disp)
+
+        # --- path: an arc in the bend plane, t1 -> t2 about centre C ---------
+        path_plane, path_helper = _miter_plane(root, center, axis)
+        path_sketch = root.sketches.add(path_plane)
+        path_sketch.name = 'WeldBendPath'
+        # Force the MINOR arc: the normal (t1-C) x (t2-C) makes the arc sweep
+        # counter-clockwise (the short way, < 180 deg) from t1 to t2.  Without
+        # it Fusion uses the sketch plane's own normal, whose sign is arbitrary,
+        # and can build the 270-degree major arc instead.
+        arc_nrm = prof._norm(prof._cross(
+            prof._sub(tangent, center), prof._sub(t2, center)))
+        _draw_model_arc(path_sketch, center, tangent, t2, normal=arc_nrm)
+        if path_sketch.sketchCurves.sketchArcs.count == 0:
+            for o in (path_sketch, path_helper, path_plane):
+                try:
+                    o.deleteMe()
+                except Exception:
+                    pass
+            return None
+        path = adsk.fusion.Path.create(
+            path_sketch.sketchCurves.sketchArcs.item(0),
+            adsk.fusion.ChainedCurveOptions.noChainedCurves)
+
+        # --- profile: the section at t1, on a plane normal to the leg --------
+        world = leg_line.worldGeometry
+        start_pt = world.startPoint
+        off = prof._dot(prof._sub(tangent,
+                                  (start_pt.x, start_pt.y, start_pt.z)), leg_dir)
+        leg_path = adsk.fusion.Path.create(
+            leg_line, adsk.fusion.ChainedCurveOptions.noChainedCurves)
+        cp_input = root.constructionPlanes.createInput()
+        cp_input.setByPath(
+            leg_path, adsk.fusion.PathDistanceTypes.PhysicalPathDistanceType,
+            adsk.core.ValueInput.createByReal(off))
+        prof_plane = root.constructionPlanes.add(cp_input)
+
+        axis_u, axis_v = basis if basis is not None \
+            else prof.compute_basis(leg_dir, ref)
+        prof_sketch = root.sketches.add(prof_plane)
+        prof_sketch.name = 'WeldBendProfile'
+        _draw_section(prof_sketch, tangent, axis_u, axis_v, geom)
+        if prof_sketch.profiles.count == 0:
+            for o in (prof_sketch, prof_plane, path_sketch, path_helper,
+                      path_plane):
+                try:
+                    o.deleteMe()
+                except Exception:
+                    pass
+            return None
+
+        sweep_input = root.features.sweepFeatures.createInput(
+            prof_sketch.profiles.item(0), path,
+            adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        try:
+            sweep_input.orientation = \
+                adsk.fusion.SweepOrientationTypes.PerpendicularOrientationType
+            sweep_input.profileScaling = \
+                adsk.fusion.SweepProfileScalingOptions.SweepProfileNoScalingOption
+        except Exception:
+            pass
+        feature = root.features.sweepFeatures.add(sweep_input)
+
+        if preview:
+            try:
+                for bi in range(feature.bodies.count):
+                    feature.bodies.item(bi).opacity = PREVIEW_OPACITY
+            except Exception:
+                pass
+        return (feature, path_sketch, path_helper, path_plane,
+                prof_sketch, prof_plane)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} build bend sweep')
+        return None
 
 
 def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False,

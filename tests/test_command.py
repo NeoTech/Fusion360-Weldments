@@ -621,6 +621,63 @@ class TestBendBuild(unittest.TestCase):
         ae = [c for c in adsk_stub.CALLS if c[0] == "RevolveFeatureInput.setAngleExtent"]
         self.assertAlmostEqual(ae[0][1][1].value, plans[0]['theta'])
 
+    def test_bend_sweep_builds_arc_path_and_sweep(self):
+        # Phase 3: a bend is a true swept body -- a die-radius centerline arc is
+        # the path and the section is swept along it (not a revolve about the
+        # bend axis).  The sweep builder draws the arc, makes a Path from it,
+        # and adds a SweepFeature as a new body.
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        plans = jt.bend_plan(lines, ['bend', 'bend'], [150.0, 150.0])
+        idx, _role, tangent = plans[0]['tangent'][0]
+        objs = entry._build_bend_arc_sweep(self.root, lines[idx], tangent,
+                                           plans[0], self.geom, ref=None)
+        self.assertIsInstance(objs, tuple)
+        names = _names()
+        self.assertIn('SketchArcs.addByCenterStartEnd', names)  # the arc path
+        self.assertIn('Path.create', names)                     # arc -> Path
+        ci = [c for c in adsk_stub.CALLS
+              if c[0] == 'SweepFeatures.createInput']
+        self.assertEqual(len(ci), 1)
+        fusion = adsk_stub.sys.modules["adsk.fusion"]
+        self.assertEqual(ci[0][1][0],
+                         fusion.FeatureOperations.NewBodyFeatureOperation)
+        self.assertIn('SweepFeatures.add', names)
+        self.assertNotIn('RevolveFeatures.add', names)         # sweep, not revolve
+
+    def test_build_bend_arcs_prefers_sweep(self):
+        # The dispatcher tries the sweep first; a healthy corner builds via
+        # SweepFeatures and never falls through to the revolve builder.
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        arcs, trims = entry._build_bend_arcs(self.root, lines,
+                                             ['bend', 'bend'],
+                                             [150.0, 150.0], self.geom,
+                                             ref=None)
+        self.assertEqual(len(arcs), 1)
+        names = _names()
+        self.assertIn('SweepFeatures.add', names)
+        self.assertNotIn('RevolveFeatures.add', names)
+
+    def test_build_bend_arcs_falls_back_to_revolve(self):
+        # When the sweep cannot be built (returns None), the corner is still
+        # rounded by revolving the section about the bend axis.
+        lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
+                 adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
+        orig = entry._build_bend_arc_sweep
+        entry._build_bend_arc_sweep = lambda *a, **k: None
+        try:
+            arcs, trims = entry._build_bend_arcs(self.root, lines,
+                                                 ['bend', 'bend'],
+                                                 [150.0, 150.0], self.geom,
+                                                 ref=None)
+        finally:
+            entry._build_bend_arc_sweep = orig
+        self.assertEqual(len(arcs), 1)
+        names = _names()
+        self.assertIn('RevolveFeatures.add', names)
+        self.assertNotIn('SweepFeatures.add', names)
+
     def test_bend_radii_from_die(self):
         # A bend leg resolves to the family's default (tightest) CLR; a non-bend
         # leg to 0.  Matching is by family alone, so any SHS designation works.

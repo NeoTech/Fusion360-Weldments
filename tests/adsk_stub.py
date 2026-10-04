@@ -64,6 +64,10 @@ class Vector3D:
     def normalize(self):
         _record("Vector3D.normalize")
 
+    def transformBy(self, matrix):
+        _record("Vector3D.transformBy")
+        return True
+
     def dotProduct(self, other):
         return self.x * other.x + self.y * other.y + self.z * other.z
 
@@ -224,6 +228,11 @@ def _make_enums():
     fusion.PointContainment = _Enum(
         PointInsidePointContainment=0, PointOutsidePointContainment=1,
         PointOnPointContainment=2)
+    fusion.SweepOrientationTypes = _Enum(
+        ParallelOrientationType=0, PerpendicularOrientationType=1)
+    fusion.SweepProfileScalingOptions = _Enum(
+        SweepProfileScaleOption=0, SweepProfileStretchOption=1,
+        SweepProfileNoScalingOption=2)
 
 
 # --- the objects the command touches ---------------------------------------- #
@@ -285,10 +294,36 @@ class FakeSketchLines:
         return self._lines[i]
 
 
+class FakeSketchArcs:
+    """Records added arcs and supports count/item (needed for a sweep path)."""
+
+    def __init__(self):
+        self._arcs = []
+
+    def addByCenterStartEnd(self, center, start, end, normal=None):
+        _record("SketchArcs.addByCenterStartEnd", center, start, end, normal)
+        node = _Node("sketchArc")
+        self._arcs.append(node)
+        return node
+
+    def addFillet(self, *args):
+        # Corner-rounding fillet: records and returns a node (no new arc is
+        # tracked -- the section builder only needs the call to succeed).
+        _record("SketchArcs.addFillet", *args)
+        return _Node("sketchArc")
+
+    @property
+    def count(self):
+        return len(self._arcs)
+
+    def item(self, i):
+        return self._arcs[i]
+
+
 class FakeSketchCurves:
     def __init__(self):
         self.sketchLines = FakeSketchLines()
-        self.sketchArcs = _Node("sketch.sketchCurves.sketchArcs")
+        self.sketchArcs = FakeSketchArcs()
         self.sketchCircles = _Node("sketch.sketchCurves.sketchCircles")
 
 
@@ -415,6 +450,29 @@ class FakeRevolveFeatures:
     def add(self, ri):
         _record("RevolveFeatures.add")
         feat = FakeFeature("adsk::fusion::RevolveFeature", self._root,
+                           [FakeBody()])
+        if self._root is not None:
+            self._root.features._items.append(feat)
+        return feat
+
+
+class FakeSweepInput:
+    def __init__(self):
+        self.orientation = None
+        self.profileScaling = None
+
+
+class FakeSweepFeatures:
+    def __init__(self, root=None):
+        self._root = root
+
+    def createInput(self, profile, path, operation):
+        _record("SweepFeatures.createInput", operation)
+        return FakeSweepInput()
+
+    def add(self, si):
+        _record("SweepFeatures.add")
+        feat = FakeFeature("adsk::fusion::SweepFeature", self._root,
                            [FakeBody()])
         if self._root is not None:
             self._root.features._items.append(feat)
@@ -604,6 +662,7 @@ class FakeFeatures(_FakeCollection):
         super().__init__()
         self.extrudeFeatures = FakeExtrudeFeatures(root)
         self.revolveFeatures = FakeRevolveFeatures(root)
+        self.sweepFeatures = FakeSweepFeatures(root)
         self.splitBodyFeatures = FakeSplitBodyFeatures(root)
         self.combineFeatures = FakeCombineFeatures(root)
         self.removeFeatures = FakeRemoveFeatures(root)
