@@ -749,14 +749,97 @@ def _bend_bases(lines, joints, ref, clr_by_line=None,
     for plan in plans:
         a = prof._norm(plan['axis'])
         for idx, _role, _tangent in plan['tangent']:
-            if idx >= n:
-                continue                  # existing member, not built here
+            if not 0 <= idx < n:
+                continue                  # existing (context) leg, not built here
             d = _line_direction(lines[idx])
             u = prof._norm(prof._cross(a, d))
             if u == (0.0, 0.0, 0.0):
                 continue                  # leg parallel to the bend axis: no plane
             bases[idx] = (u, a)
     return bases
+
+
+def _trim_bend_context_end(root, plan, context):
+    """Split an EXISTING member's end so a new bend arc can blend into it.
+
+    When a selected ``bend`` leg rounds into a member that already exists (built
+    in a previous weldment run), :func:`lib.joints.bend_plan` plans the corner
+    and the arc is revolved from the new leg -- but the existing member's square
+    end still pokes through the arc, because ``corner_offsets`` can only trim
+    lines built this run (its ``bump`` skips context members).  So the builder
+    side does what the geometry layer cannot: split the existing body by a plane
+    through that corner's context tangent point, normal to the existing member's
+    axis.
+
+    The split is SPLIT-ONLY: both halves stay in the design and the stray
+    sliver past the tangent plane is left for the user to delete.  Auto-Removing
+    the waste proved unreliable on members that are part of a bent chain --
+    pointContainment can report the wrong half (it matched a pattern/arc body
+    instead of the original run), deleting solid material.  A leftover sliver is
+    a far cheaper mistake than a wrongly-removed member, so we never Remove
+    here.
+
+    ``plan`` is a :func:`lib.joints.bend_plan` entry; only its second tangent
+    leg (the partner) can be a context member (index ``< 0``).  Returns the
+    created objects (Split, sketch, plane) in teardown order, or ``[]`` when
+    there is no context leg, the member is already trimmed, or anything fails.
+    """
+    tangent = plan.get('tangent') or []
+    if len(tangent) < 2:
+        return []
+    t_idx, t_role, t_pt = tangent[1]
+    if t_idx >= 0:
+        return []                       # both legs built this run: nothing to do
+    k = ~t_idx
+    if k >= len(context or []):
+        return []
+    member = context[k]
+    body = member.get('body')
+    if body is None:
+        return []
+    try:
+        s, e = jt.line_endpoints(member['line'])
+        d = prof._norm(jt._add(e, jt._scale(s, -1.0)))
+        # Idempotence guard: if the member no longer reaches past the tangent
+        # plane along its own axis, it is already trimmed -- re-splitting would
+        # fail with SPLIT_TARGET_TOOL_NOT_INTERSECT (e.g. a committed member
+        # whose bend was trimmed in an earlier run of this same command).
+        # Project the body's bbox extremes onto the axis and compare with the
+        # tangent point's.
+        try:
+            bb = body.boundingBox
+            hi = None
+            for kx in (0, 1):
+                for ky in (0, 1):
+                    for kz in (0, 1):
+                        p = ((bb.minPoint.x if not kx else bb.maxPoint.x),
+                             (bb.minPoint.y if not ky else bb.maxPoint.y),
+                             (bb.minPoint.z if not kz else bb.maxPoint.z))
+                        t = sum(p[q] * d[q] for q in range(3))
+                        hi = t if hi is None else max(hi, t)
+            tp = sum(t_pt[q] * d[q] for q in range(3))
+            if hi is not None and hi <= tp + 1e-4:
+                return []               # nothing left to trim
+        except Exception:
+            pass                        # no usable bbox: attempt the split
+        # Split only: a construction plane through the tangent point, normal to
+        # the member axis.  Both halves stay; the user deletes the stray.
+        plane, sk = _miter_plane(root, t_pt, d)
+        sbf = root.features.splitBodyFeatures.add(
+            root.features.splitBodyFeatures.createInput(body, plane, True))
+        created = []
+        if sbf is not None:
+            created.append(sbf)
+        for helper in (sk, plane):
+            try:
+                helper.isLightBulbOn = False
+            except Exception:
+                pass
+        created.extend([sk, plane])
+        return created
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} bend context trim')
+        return []
 
 
 def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
@@ -772,31 +855,42 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
     :func:`lib.joints.bend_plan`) for corners whose legs were picked in reverse
     order.  ``context`` (existing members, see
     :func:`_recover_existing_members`) lets a bend leg round into an already
-    placed member's END.  ``bases`` (optional, from
+    placed member's END: the arc is revolved from the new leg and the existing
+    member's poking end is trimmed to the tangent plane (see
+    :func:`_trim_bend_context_end`).  ``bases`` (optional, from
     :func:`_bend_bases`) gives each leg its flat-in-the-bend-plane section basis so
     the arc sweeps from a face the die can bear on (a square tube bends about a
     flat face, never a rolled corner).  ``anchor`` (optional) is the global
     Position-grid section anchor; an off-centre leg's whole arc is shifted by it
     so the bend follows the displaced member.
+
+    Returns ``(arcs, trims)``: the arc ``(feature, sketch, plane)`` tuples (the
+    caller's existing tracking list) and the flat context-trim objects, which
+    must be torn down like corner cuts -- BEFORE the member features they cut.
     """
-    objs = []
+    arcs, trims = [], []
     try:
         plans = jt.bend_plan(lines, joints, clr_by_line,
                              inverse_by_line=inverse_by_line, context=context)
     except Exception:
         futil.handle_error(f'{CMD_NAME} bend plan')
-        return objs
+        return arcs, trims
     for plan in plans:
         idx, _role, tangent = plan['tangent'][0]
-        if idx >= len(lines):
+        if not 0 <= idx < len(lines):
             continue  # a context leg is never the one we revolve from
         arc = _build_bend_arc(root, lines[idx], tangent, plan, geom, ref,
                               preview=preview,
                               basis=(bases[idx] if bases else None),
                               anchor=anchor)
         if arc:
-            objs.append(arc)
-    return objs
+            arcs.append(arc)
+        # If the other leg of this corner is an EXISTING member, its square end
+        # pokes through the arc -- trim it to the tangent plane (see
+        # _trim_bend_context_end).  Done whether or not the arc built, so a
+        # failed arc still leaves the member trimmed consistently.
+        trims.extend(_trim_bend_context_end(root, plan, context or []))
+    return arcs, trims
 
 
 def _clear_preview():
@@ -1180,11 +1274,14 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
         feat_idx.append(idx if built else None)
         if built:
             _preview_objs.append(built)
-    _preview_objs.extend(
-        _build_bend_arcs(root, saved, _row_joints(inputs, saved),
-                         clr_by_line, geom, ref, inverse_by_line=inverses,
-                         preview=True, context=context, bases=tbases,
-                         anchor=anchor))
+    bend_arcs, bend_trims = _build_bend_arcs(
+        root, saved, _row_joints(inputs, saved), clr_by_line, geom, ref,
+        inverse_by_line=inverses, preview=True, context=context,
+        bases=tbases, anchor=anchor)
+    _preview_objs.extend(bend_arcs)
+    # Context-end trims (a bend rounding into an existing member) are cut
+    # features: tear them down with the other cuts, before the members.
+    _preview_cuts.extend(bend_trims)
     _preview_cuts.extend(
         _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                            feat_idx, f_start,
@@ -1240,10 +1337,10 @@ def command_execute(args: adsk.core.CommandEventArgs):
             created += 1
         objs.append(built)
         feat_idx.append(idx if built else None)
-    created += len(_build_bend_arcs(root, saved, _row_joints(inputs, saved),
-                                    clr_by_line, geom, ref,
-                                    inverse_by_line=inverses, context=context,
-                                    bases=tbases, anchor=anchor))
+    bend_arcs, bend_trims = _build_bend_arcs(
+        root, saved, _row_joints(inputs, saved), clr_by_line, geom, ref,
+        inverse_by_line=inverses, context=context, bases=tbases, anchor=anchor)
+    created += len(bend_arcs)
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),
@@ -1301,19 +1398,6 @@ def _line_midpoint(line):
     return ((s[0] + e[0]) / 2.0, (s[1] + e[1]) / 2.0, (s[2] + e[2]) / 2.0)
 
 
-def _line_far_end(line, near_point):
-    """The endpoint of ``line`` farthest from ``near_point`` (cm 3-tuple).
-
-    Used to locate a member's own body: the far end is always deep inside the
-    member's material, whereas its midpoint can be nearer a neighbour's body for
-    a short member (e.g. a T-junction stub).
-    """
-    s, e = jt.line_endpoints(line)
-    ds = sum((s[k] - near_point[k]) ** 2 for k in range(3))
-    de = sum((e[k] - near_point[k]) ** 2 for k in range(3))
-    return e if de >= ds else s
-
-
 def _miter_plane(root, point, normal):
     """Construction plane through ``point`` with the given ``normal``.
 
@@ -1360,27 +1444,6 @@ def _all_bodies(root):
         except Exception:
             continue
     return out
-
-
-def _find_body_near(root, point, max_dist):
-    """The body whose bbox-centre is nearest ``point`` (within ``max_dist``).
-
-    Used to locate a member's (possibly re-homed) body without a feature index:
-    the point is the member's line midpoint, deep inside its kept material and
-    far from any neighbour, so the nearest body is unambiguous.
-    """
-    best, best_d = None, None
-    for b in _all_bodies(root):
-        try:
-            ctr = _body_centroid(b)
-        except Exception:
-            continue
-        d = sum((ctr[k] - point[k]) ** 2 for k in range(3)) ** 0.5
-        if best_d is None or d < best_d:
-            best, best_d = b, d
-    if best is not None and best_d <= max_dist:
-        return best
-    return None
 
 
 class _CtxPoint:
@@ -1627,7 +1690,104 @@ def _recover_existing_members(root, exclude_feats=None):
                                 'geom': geom, 'basis': basis, 'body': body})
     except Exception:
         futil.handle_error(f'{CMD_NAME} recover members')
+    _reunite_bend_context(members)
     return members
+
+
+# How far (cm) a recovered context leg may be extended to a bend's virtual
+# corner vertex.  A swept bend trims its legs to the die tangent points, so the
+# recovered centreline ends stop short of the vertex the user actually drew;
+# the setback is clr*tan(theta/2) -- a few cm for real dies.  Anything larger
+# is not a bend stub but two unrelated members, and must not be joined.
+_BEND_REUNITE_MAX_CM = 20.0
+
+
+def _reunite_bend_context(members):
+    """Extend bend-stubbed context legs to their shared (virtual) corner.
+
+    A member built by an earlier swept-bend run ends at its TANGENT point, not
+    at the drawn vertex -- the arc fills the gap.  Corner detection matches
+    coincident ENDPOINTS, so a new member butting/copes into that corner finds
+    nothing: the stub ends sit centimetres short of the vertex along both legs.
+
+    For every pair of context legs, solve the closest points of their centre
+    lines; when both legs must extend FORWARD from an endpoint (small positive
+    parameters) to meet at a point that is genuinely on both lines, rewrite both
+    context lines to end at that virtual vertex.  Collinear pairs (a straight
+    run split into segments) and unrelated members (skew lines, or an endpoint
+    already at the meeting point) are left untouched.  Mutates ``members`` in
+    place.
+    """
+    def _ends(m):
+        s, e = jt.line_endpoints(m['line'])
+        return s, e
+
+    n = len(members)
+    for i in range(n):
+        for j in range(i + 1, n):
+            try:
+                si, ei = _ends(members[i])
+                sj, ej = _ends(members[j])
+                di = prof._norm(jt._add(ei, jt._scale(si, -1.0)))
+                dj = prof._norm(jt._add(ej, jt._scale(sj, -1.0)))
+                # Cross product ~ 0: collinear legs -- no vertex to reconstruct.
+                cx = prof._cross(di, dj)
+                if sum(c * c for c in cx) < 0.03:   # sin < ~10 deg
+                    continue
+                # A stub can only reach the vertex by a plausible bend setback.
+                li = members[i]['line'].length
+                lj = members[j]['line'].length
+                cap_i = min(_BEND_REUNITE_MAX_CM, 0.5 * li)
+                cap_j = min(_BEND_REUNITE_MAX_CM, 0.5 * lj)
+                # The two centre LINES must cross at a point just PAST one
+                # endpoint of each leg (the tangent stub stopped short of the
+                # vertex).  Solve the closest approach of the infinite lines;
+                # each leg's parameter t runs from its start along its unit
+                # direction, so t just over the length means the vertex sits
+                # past the END, t just negative means it sits before the START.
+                w = jt._add(si, jt._scale(sj, -1.0))
+                aa = sum(di[q] * di[q] for q in range(3))
+                bb = sum(di[q] * dj[q] for q in range(3))
+                cc = sum(dj[q] * dj[q] for q in range(3))
+                dd = sum(di[q] * w[q] for q in range(3))
+                ee = sum(dj[q] * w[q] for q in range(3))
+                dn = aa * cc - bb * bb
+                if abs(dn) < 1e-9:
+                    continue
+                t_i = (bb * ee - cc * dd) / dn
+                t_j = (aa * ee - bb * dd) / dn
+                pa = jt._add(si, jt._scale(di, t_i))
+                pb = jt._add(sj, jt._scale(dj, t_j))
+                gap = sum((pa[q] - pb[q]) ** 2 for q in range(3)) ** 0.5
+                if gap > 0.05:
+                    continue            # lines do not actually meet
+                v = jt._scale(jt._add(pa, pb), 0.5)
+
+                def _stub(t, tlen, cap):
+                    """('start'|'end', overshoot) when v sits just outside."""
+                    if t > tlen + 1e-6 and t - tlen <= cap:
+                        return 'end', t - tlen
+                    if t < -1e-6 and -t <= cap:
+                        return 'start', -t
+                    return None, 0.0
+
+                ri, ai = _stub(t_i, li, cap_i)
+                rj, aj = _stub(t_j, lj, cap_j)
+                if ri is None or rj is None:
+                    continue            # not a bend-stub pair (T-joint, skew...)
+                members[i]['line'] = _stub_line(members[i]['line'], ri, v)
+                members[j]['line'] = _stub_line(members[j]['line'], rj, v)
+            except Exception:
+                futil.handle_error(f'{CMD_NAME} reunite bend context')
+
+
+def _stub_line(line, role, vertex):
+    """A copy of ``line`` whose ``role`` endpoint is moved to ``vertex``."""
+    s, e = jt.line_endpoints(line)
+    body = getattr(line, 'body', None)
+    if role == 'start':
+        return _ContextLine(vertex, e, body)
+    return _ContextLine(s, vertex, body)
 
 
 def _remove_combine_orphans(root, comb, tool_body):
@@ -1691,8 +1851,11 @@ def _split_miter(root, body, V, normal, test_pt):
     lands exactly on the shared bisector plane -- coincident with the
     neighbour's face for any rotation or Position offset.
 
-    Returns the objects to track for preview teardown, in delete order
-    (Remove, then Split, then the plane and its helper sketch).
+    Returns ``(created, kept)``: the objects to track for preview teardown in
+    delete order (Remove, then Split, then the plane and its helper sketch), and
+    the member's surviving body -- the half that still contains ``test_pt``.
+    The caller writes ``kept`` back into its body map so a later cut on the same
+    member (its other end) targets the re-homed body instead of the stale one.
     """
     plane, sk = _miter_plane(root, V, normal)
     sbf = root.features.splitBodyFeatures.add(
@@ -1702,15 +1865,18 @@ def _split_miter(root, body, V, normal, test_pt):
     halves = sbf.bodies if sbf is not None else _all_bodies(root)
     inside = adsk.fusion.PointContainment.PointInsidePointContainment
     probe = adsk.core.Point3D.create(*test_pt)
-    waste = None
+    waste = kept = None
     for i in range(halves.count):
         b = halves.item(i)
         try:
             if b.pointContainment(probe) != inside:
                 waste = b
-                break
+            else:
+                kept = b
         except Exception:
             continue
+    if kept is None:
+        kept = body          # no Inside half reported: assume the original
     created = []
     if waste is not None:
         rm = root.features.removeFeatures.add(waste)
@@ -1727,7 +1893,7 @@ def _split_miter(root, body, V, normal, test_pt):
         except Exception:
             pass
     created.extend([sk, plane])
-    return created
+    return created, kept
 
 
 def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
@@ -1769,6 +1935,17 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
     except Exception:
         futil.handle_error(f'{CMD_NAME} corner cut plan')
         return created
+    # Track each member's CURRENT body by reference instead of re-finding it by
+    # proximity: a cut re-homes body identity, so the map is written back after
+    # every split/combine.  This is the state the geometric probe kept guessing
+    # wrong when members touch (the miter NOT_INTERSECT and cope regressions).
+    body_of = {}
+    for i, o in enumerate(objs):
+        if o is not None:
+            try:
+                body_of[i] = o[0].bodies.item(0)
+            except Exception:
+                body_of[i] = None
     for cut in cuts:
         m, t = cut['member'], cut['tool']
         if m >= len(objs) or objs[m] is None:
@@ -1780,36 +1957,27 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
         elif t >= len(objs) or objs[t] is None:
             continue
         try:
-            reach = max(lines[m].length, 1.0)
-            if cut['kind'] == 'plane':
-                # Miter: locate the member's body by its own MIDPOINT.  The far
-                # end is a vertex SHARED with the next member in a connected
-                # chain, so the nearest body to it can be the neighbour's -- and
-                # that neighbour does not cross this corner's bisector plane
-                # (SPLIT_TARGET_TOOL_NOT_INTERSECT).  The midpoint is always
-                # inside the member's own run.  Probe with it for the kept half
-                # too (deep in the member's material, so the plane normal's sign
-                # never matters).
-                probe = _line_midpoint(lines[m])
-                body = _find_body_near(root, probe, reach)
-                if body is None:
-                    continue
-                created.extend(
-                    _split_miter(root, body, cut['point'], cut['normal'], probe))
-                continue
-            # Body cut (cope / saddled butt): locate the member by its FAR end,
-            # deep inside its own material -- the midpoint is unreliable for a
-            # short T-junction stub, whose midpoint can sit nearer the tool.
-            body = _find_body_near(root, _line_far_end(lines[m], cut['point']),
-                                   reach)
+            body = body_of.get(m)
             if body is None:
                 continue
-            if t < 0:
-                tool_body = ctx[~t]['body']
-            else:
-                tool_reach = max(lines[t].length, 1.0)
-                tool_body = _find_body_near(root, _line_midpoint(lines[t]),
-                                            tool_reach)
+            if cut['kind'] == 'plane':
+                # Miter: split the member's OWN (tracked) body by the bisector
+                # plane and Remove the waste sliver.  Probe the kept half with
+                # the member's midpoint -- deep in its own material, so the plane
+                # normal's sign never matters.  Write the surviving half back so a
+                # later cut on this member's other end targets the re-homed body.
+                new_objs, kept = _split_miter(
+                    root, body, cut['point'], cut['normal'],
+                    _line_midpoint(lines[m]))
+                created.extend(new_objs)
+                body_of[m] = kept
+                continue
+            # Body cut (cope / saddled butt): combine the member's OWN (tracked)
+            # body against the neighbour's -- both by reference, never re-found by
+            # proximity, which mis-picks a touching neighbour.  Then drop the plug
+            # the overshooting tip leaves in the tool's void and write the member's
+            # surviving main run back into the map.
+            tool_body = ctx[~t]['body'] if t < 0 else body_of.get(t)
             if tool_body is None:
                 continue
             tools = adsk.core.ObjectCollection.create()
@@ -1826,10 +1994,36 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
             # combine so teardown deletes the Remove first, then the combine.
             removes = _remove_combine_orphans(root, comb, tool_body)
             created = removes + created
+            body_of[m] = _combine_survivor(comb, tool_body) or body
         except Exception:
             futil.handle_error(f'{CMD_NAME} corner cut')
     # Cut features and helpers FIRST (delete order), then the rest.
     return created
+
+
+def _combine_survivor(comb, tool_body):
+    """The member's main-run body in a combine's output (largest non-tool piece).
+
+    After a cope/saddle cut the combine holds the kept tool plus the member's
+    fragments; the plug(s) have already been Removed, so the largest body that is
+    not the tool is the member's surviving run.  Returns None when it cannot be
+    determined, so the caller keeps its previous reference.
+    """
+    best, best_v = None, None
+    try:
+        for k in range(comb.bodies.count):
+            b = comb.bodies.item(k)
+            if tool_body is not None and b == tool_body:
+                continue
+            try:
+                v = b.volume
+            except Exception:
+                v = 0.0
+            if best_v is None or v > best_v:
+                best, best_v = b, v
+    except Exception:
+        return None
+    return best
 
 
 def _draw_model_line(sketch, p_from, p_to):

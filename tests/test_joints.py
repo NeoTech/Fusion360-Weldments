@@ -159,20 +159,21 @@ class TestButtJoint(unittest.TestCase):
         self.assertAlmostEqual(offs[0][0], -4.0)   # line 0 runs through
         self.assertAlmostEqual(offs[1][1], -5.0)   # line 1 backs off
 
-    def test_cope_at_corner_is_a_butt_trim(self):
-        # Cope is only a saddle at a T-junction (an end landing mid-run).  Where
-        # a cope's end coincides with another member's END (a shared-vertex
-        # corner), it degrades to a plain butt axial trim -- one member runs
-        # through, the other backs off -- so it never overlaps/pokes through.
+    def test_cope_at_corner_saddles_into_tool(self):
+        # A cope at a shared-vertex corner is a SADDLE, not a plain butt: the
+        # backing-off member reaches PAST the vertex into the tool so the boolean
+        # (see corner_cuts) has overlap to carve.  A butt stops at the near face
+        # (-half); a cope reaches the far face (+half) of a solid tool.
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
                  FakeLine((0, -10, 0), (0, 0, 0))]
         geoms = [_rect(100), _circle(80)]
         butt = jt.corner_offsets(lines, geoms, ['none', 'butt'])
         cope = jt.corner_offsets(lines, geoms, ['none', 'cope'])
-        # At a corner, cope and butt trim identically.
-        self.assertEqual(butt, cope)
-        # And neither is a no-op: the incoming member backs off to the face.
-        self.assertNotEqual(cope, [(0.0, 0.0), (0.0, 0.0)])
+        # The butt backs off to the near face; the cope overshoots into the tool.
+        self.assertAlmostEqual(butt[1][1], -5.0)
+        self.assertAlmostEqual(cope[1][1], 5.0)
+        # The through member grows to the incoming member's face in both cases.
+        self.assertAlmostEqual(cope[0][0], butt[0][0])
 
     def test_saddled_butt_runs_to_far_face(self):
         # A SADDLED butt against a SOLID tool runs the backing-off member to the
@@ -318,13 +319,18 @@ class TestCornerCuts(unittest.TestCase):
                  FakeLine((0, -10, 0), (0, 0, 0))]
         self.assertEqual(jt.corner_cuts(lines, ['none', 'butt']), [])
 
-    def test_cope_at_corner_is_not_cut(self):
-        # A cope whose end coincides with a corner (shared vertex) is NOT a
-        # saddle -- cope only saddles at a T-junction.  At a corner it degrades
-        # to a butt trim, so corner_cuts emits nothing.
+    def test_cope_at_corner_is_body_saddle(self):
+        # A cope whose end coincides with a corner (shared vertex) saddles into
+        # the neighbour's END face -- coping a tube over the open end of another
+        # ("cope to the end of the pipe").  The backing-off (cope) member is cut
+        # against the through member's body; the through member keeps its end.
         lines = [FakeLine((0, 0, 0), (10, 0, 0)),
                  FakeLine((0, -10, 0), (0, 0, 0))]
-        self.assertEqual(jt.corner_cuts(lines, ['none', 'cope']), [])
+        cuts = jt.corner_cuts(lines, ['none', 'cope'])
+        self.assertEqual(len(cuts), 1)
+        self.assertEqual(cuts[0]['member'], 1)
+        self.assertEqual(cuts[0]['kind'], 'body')
+        self.assertEqual(cuts[0]['tool'], 0)
 
     def test_cope_at_t_junction_is_body_saddle(self):
         # A cope member whose END lands on the interior of another member's run
@@ -437,6 +443,21 @@ class TestSweptBend(unittest.TestCase):
                  FakeLine((0, 0, 0), (0, 10, 0))]
         # Only one leg asks for a bend -> no swept corner.
         self.assertEqual(jt.bend_plan(lines, ['bend', 'none'], [100.0, 100.0]), [])
+
+    def test_bend_plan_radius_from_either_leg(self):
+        # A bend corner must plan whenever EITHER selected leg carries a die
+        # radius.  Reading only the first leg's radius dropped the arc when the
+        # first leg had no die but its partner did -- the legs got trimmed by
+        # corner_offsets (which uses the pair max) but no arc was built, leaving
+        # a gap (the reported "bend won't form" on a chain's first corner).
+        lines = [FakeLine((0, 0, 0), (30, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 30, 0))]
+        plans = jt.bend_plan(lines, ['bend', 'bend'], [0.0, 100.0])
+        self.assertEqual(len(plans), 1)
+        # The radius used is the pair max (100 mm), matching the trim.
+        self.assertAlmostEqual(plans[0]['radius_cm'], 10.0)
+        self.assertAlmostEqual(plans[0]['center'][0], 10.0)
+        self.assertAlmostEqual(plans[0]['center'][1], 10.0)
 
     def test_bend_plan_inverse_flips_direction(self):
         # The arc centre is symmetric in the two legs, but the sweep is the sign
@@ -659,6 +680,67 @@ class TestPositionAnchor(unittest.TestCase):
                                      anchor_by_line=[(0.0, -50.0), None])
         self.assertAlmostEqual(plain[1][1], -5.0)
         self.assertAlmostEqual(anchored[1][1], -10.0)
+
+
+class TestBystanderLegAtCorner(unittest.TestCase):
+    """A third member's END merely landing on a corner must not disable it.
+
+    The old corner logic required EXACTLY two members at a vertex, so when a
+    bystander tube's endpoint coincided with a clean two-member corner the whole
+    corner was skipped -- bends stopped detecting and cope/miter trims vanished
+    (the reported "mix bends and copes" / "adjacent tube" failures).  Joints are
+    now resolved per END against a single partner, so the bystander is simply not
+    the partner and the real joint still forms.
+    """
+
+    def test_bend_detected_with_bystander(self):
+        # Lines 0 (+X) and 1 (+Y) bend at the origin; line 2 (+Z) is a bystander
+        # whose start also lands there.  The bend must still be planned.
+        lines = [FakeLine((0, 0, 0), (30, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 30, 0)),
+                 FakeLine((0, 0, 0), (0, 0, 30))]
+        plans = jt.bend_plan(lines, ['bend', 'bend', 'none'],
+                             [100.0, 100.0, 0.0])
+        self.assertEqual(len(plans), 1)
+        self.assertAlmostEqual(plans[0]['theta'], math.pi / 2)
+        # The arc blends the two bend legs (0 and 1), never the bystander.
+        legs = {i for i, _r, _t in plans[0]['tangent']}
+        self.assertEqual(legs, {0, 1})
+
+    def test_bend_offsets_trim_with_bystander(self):
+        lines = [FakeLine((0, 0, 0), (30, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 30, 0)),
+                 FakeLine((0, 0, 0), (0, 0, 30))]
+        geoms = [_rect(40)] * 3
+        offs = jt.corner_offsets(lines, geoms, ['bend', 'bend', 'none'],
+                                 clr_by_line=[100.0, 100.0, 0.0])
+        # Both bend legs trim back to the tangent point (SB = R*tan45 = 10 cm);
+        # the bystander leg is untouched.
+        self.assertAlmostEqual(offs[0][0], 10.0)
+        self.assertAlmostEqual(offs[1][0], 10.0)
+        self.assertEqual(offs[2], (0.0, 0.0))
+
+    def test_miter_cut_with_bystander(self):
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 10, 0)),
+                 FakeLine((0, 0, 0), (0, 0, 10))]
+        cuts = jt.corner_cuts(lines, ['miter', 'miter', 'none'])
+        # One bisector plane per mitred member; the bystander emits nothing.
+        self.assertEqual(len(cuts), 2)
+        self.assertEqual({c['member'] for c in cuts}, {0, 1})
+        self.assertTrue(all(c['kind'] == 'plane' for c in cuts))
+
+    def test_butt_trim_with_bystander(self):
+        # Line 0 (+X, none) runs through; line 1 butts into it at the origin;
+        # line 2 is a bystander landing on the same vertex.  The butt still trims.
+        lines = [FakeLine((0, 0, 0), (10, 0, 0)),
+                 FakeLine((0, -10, 0), (0, 0, 0)),
+                 FakeLine((0, 0, 0), (0, 0, 10))]
+        geoms = [_rect(100), _rect(80), _rect(100)]
+        offs = jt.corner_offsets(lines, geoms, ['none', 'butt', 'none'])
+        self.assertAlmostEqual(offs[1][1], -5.0)   # backs off to line 0's face
+        self.assertAlmostEqual(offs[0][0], -4.0)   # grows to line 1's face
+        self.assertEqual(offs[2], (0.0, 0.0))      # bystander untouched
 
 
 if __name__ == '__main__':

@@ -644,9 +644,47 @@ class TestBendBuild(unittest.TestCase):
         des['_abbreviation'] = 'SHS'
         lines = [adsk_stub.FakeLine((0, 0, 0), (30, 0, 0)),
                  adsk_stub.FakeLine((0, 0, 0), (0, 30, 0))]
-        objs = entry._build_bend_arcs(self.root, lines, ['bend', 'bend'],
-                                      [150.0, 150.0], self.geom, ref=None)
-        self.assertEqual(len(objs), 1)   # one rounded corner
+        arcs, trims = entry._build_bend_arcs(self.root, lines,
+                                            ['bend', 'bend'],
+                                            [150.0, 150.0], self.geom, ref=None)
+        self.assertEqual(len(arcs), 1)   # one rounded corner
+        self.assertEqual(trims, [])      # both legs built here: nothing to trim
+
+    def test_bend_onto_existing_splits_context_end(self):
+        # A selected bend leg whose END meets an EXISTING member's END at a
+        # corner: the arc is revolved from the new leg, and the existing body's
+        # poking end is SPLIT at the tangent plane.  Split-only: both halves
+        # stay (auto-Removing the waste mis-picks the kept half on members that
+        # are part of a bent chain), so the user deletes the stray sliver.
+        existing_body = adsk_stub.FakeBody(name="EXISTING", center=(15, 0, 0))
+        # A realistic extent (0..30 along X) so the already-trimmed guard in
+        # _trim_bend_context_end sees material past the tangent plane.
+        existing_body.boundingBox = adsk_stub.FakeBoundingBox((15, 0, 0),
+                                                              half=15)
+        ctx = [{'line': entry._ContextLine((0, 0, 0), (30, 0, 0), existing_body),
+                'geom': {'kind': 'circles', 'radii': [10.0, 9.0]},
+                'basis': None, 'body': existing_body}]
+        lines = [adsk_stub.FakeLine((30, 0, 0), (30, 0, 30))]
+        # Sanity: bend_plan must see the context leg as the partner.
+        plans = jt.bend_plan(lines, [('bend', 'none')], [150.0], context=ctx)
+        self.assertEqual(len(plans), 1)
+        self.assertLess(plans[0]['tangent'][1][0], 0)   # partner is a context leg
+        arcs, trims = entry._build_bend_arcs(
+            self.root, lines, [('bend', 'none')], [150.0], self.geom,
+            ref=None, context=ctx)
+        self.assertEqual(len(arcs), 1)
+        names = [c[0] for c in adsk_stub.CALLS]
+        # The existing body was split -- and NOTHING is Removed or deleted:
+        # both halves stay for the user to clean up.
+        self.assertIn('SplitBodyFeatures.add', names)
+        self.assertNotIn('RemoveFeatures.add', names)
+        self.assertNotIn('Body.deleteMe', names)
+        # The split targeted the EXISTING member's body.
+        ci = [c for c in adsk_stub.CALLS
+              if c[0] == 'SplitBodyFeatures.createInput'][0]
+        self.assertIs(ci[1][0], existing_body)
+        # Trims come back as flat teardown objects (split, sketch, plane).
+        self.assertEqual(len(trims), 3)
 
     def test_bend_bases_put_a_flat_face_in_the_bend_plane(self):
         # Point 3: a square tube can only be bent about a FLAT face, never a
@@ -938,6 +976,87 @@ class TestCornerJointPropagation(unittest.TestCase):
         entry._propagate_corner_joint(inputs, [], 0, 'joint_s', 'miter')
 
 
+class TestReuniteBendContext(unittest.TestCase):
+    """Context recovery of a swept-bend member's stubbed legs.
+
+    A member built by an earlier bend run has its centreline legs trimmed to the
+    die tangent points, so the two legs no longer share the drawn vertex.  A new
+    member butting/copes into that corner finds no corner unless the stubs are
+    extended back to their (virtual) meeting point.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+
+    def _ctx(self, start, end):
+        return {'line': entry._ContextLine(start, end, adsk_stub.FakeBody()),
+                'geom': {'kind': 'circles', 'radii': [1.0]},
+                'basis': None, 'body': None}
+
+    def _ends(self, m):
+        s, e = jt.line_endpoints(m['line'])
+        return (tuple(round(x, 3) for x in s),
+                tuple(round(x, 3) for x in e))
+
+    def test_bend_stubs_reunite_at_the_vertex(self):
+        # A 90-deg bend's legs, each trimmed back 0.3 cm to its tangent point.
+        a = self._ctx((0, 0, 0), (59.7, 0, 0))
+        b = self._ctx((60, 0, 0.3), (60, 0, 60))
+        entry._reunite_bend_context([a, b])
+        self.assertEqual(self._ends(a), ((0.0, 0.0, 0.0), (60.0, 0.0, 0.0)))
+        self.assertEqual(self._ends(b), ((60.0, 0.0, 0.0), (60.0, 0.0, 60.0)))
+
+    def test_corner_now_detected_by_a_new_member(self):
+        a = self._ctx((0, 0, 0), (59.7, 0, 0))
+        b = self._ctx((60, 0, 0.3), (60, 0, 60))
+        entry._reunite_bend_context([a, b])
+        new = adsk_stub.FakeLine((60, 30, 0), (60, 0, 0))
+        corners = jt.detect_corners([new],
+                                    context=[m['line'] for m in (a, b)])
+        # The new member's END coincides with the reunited vertex, shared by
+        # both context legs.
+        self.assertEqual(len(corners), 1)
+        self.assertEqual(corners[0]['members'],
+                         [(0, 'end'), (-1, 'end'), (-2, 'start')])
+
+    def test_collinear_run_is_left_alone(self):
+        # Two straight segments of one run (no bend): collinear, so there is no
+        # vertex to reconstruct and the legs must not be moved.
+        a = self._ctx((0, 0, 0), (30, 0, 0))
+        b = self._ctx((30, 0, 0), (60, 0, 0))
+        entry._reunite_bend_context([a, b])
+        self.assertEqual(self._ends(a), ((0.0, 0.0, 0.0), (30.0, 0.0, 0.0)))
+        self.assertEqual(self._ends(b), ((30.0, 0.0, 0.0), (60.0, 0.0, 0.0)))
+
+    def test_t_junction_is_not_reunited(self):
+        # A leg whose END lands mid-run on another (a T): the meeting point is
+        # not past both stubs, so nothing is a bend -- leave both alone.
+        run = self._ctx((0, 0, 0), (60, 0, 0))
+        incoming = self._ctx((30, 0, 20), (30, 0, 0))
+        entry._reunite_bend_context([run, incoming])
+        self.assertEqual(self._ends(run), ((0.0, 0.0, 0.0), (60.0, 0.0, 0.0)))
+        self.assertEqual(self._ends(incoming), ((30.0, 0.0, 20.0),
+                                                (30.0, 0.0, 0.0)))
+
+    def test_far_apart_legs_are_not_joined(self):
+        # Two unrelated members whose lines cross far from any endpoint (well
+        # beyond a plausible bend setback) must not be stitched together.
+        a = self._ctx((0, 0, 0), (10, 0, 0))
+        b = self._ctx((5, -50, 0), (5, 50, 0))
+        entry._reunite_bend_context([a, b])
+        self.assertEqual(self._ends(a), ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0)))
+        self.assertEqual(self._ends(b), ((5.0, -50.0, 0.0), (5.0, 50.0, 0.0)))
+
+    def test_non_bend_corner_endpoints_untouched(self):
+        # Legs that already share the vertex exactly (a plain miter/butt corner
+        # from an earlier run) have zero overshoot -- the guard leaves them.
+        a = self._ctx((0, 0, 0), (60, 0, 0))
+        b = self._ctx((60, 0, 0), (60, 0, 60))
+        entry._reunite_bend_context([a, b])
+        self.assertEqual(self._ends(a), ((0.0, 0.0, 0.0), (60.0, 0.0, 0.0)))
+        self.assertEqual(self._ends(b), ((60.0, 0.0, 0.0), (60.0, 0.0, 60.0)))
+
+
 class TestCornerCutBuild(unittest.TestCase):
     """Real corner geometry: miter waste-prism cuts and butt/cope combine-cuts."""
 
@@ -1013,15 +1132,16 @@ class TestCornerCutBuild(unittest.TestCase):
         self.assertTrue(ci[1][1])
         self.assertEqual(len(cuts), 1)
 
-    def test_cope_at_corner_builds_no_cut(self):
-        # A cope whose end coincides with a shared-vertex corner is a butt trim,
-        # not a saddle -- the cut stage must not boolean anything.
+    def test_cope_at_corner_builds_saddle_cut(self):
+        # A cope whose end coincides with a shared-vertex corner saddles into the
+        # neighbour's END face (coping a tube over the open end of another), so
+        # the cut stage combines the cope member against the through member.
         objs, idx = self._build()   # default self.lines is an L-corner
         cuts = entry._apply_corner_cuts(self.root, self.lines,
                                         ['none', 'cope'], objs, idx, 0)
         names = [c[0] for c in adsk_stub.CALLS]
-        self.assertNotIn('CombineFeatures.add', names)
-        self.assertEqual(cuts, [])
+        self.assertIn('CombineFeatures.add', names)
+        self.assertEqual(len(cuts), 1)
 
     def test_none_joints_build_no_cuts(self):
         objs, idx = self._build()
