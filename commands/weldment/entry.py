@@ -24,7 +24,11 @@ ui = app.userInterface
 # --------------------------------------------------------------------------- #
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment'
 CMD_NAME = 'Weldment'
-CMD_Description = 'Create a weldment profile along 3D sketch lines'
+# Ribbon label for the all-in-one builder. Now that the explicit per-joint
+# tools (Cope / Miter / Butt) live alongside it on the Weldments tab, this
+# whole-frame auto-detect command reads better as "Auto" than "Weldment".
+CMD_LABEL = 'Auto'
+CMD_Description = 'Auto-detect the frame and build all weldment members and joints'
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
 # Unique tab + panel ids (must not collide with any other add-in's elements).
@@ -343,7 +347,7 @@ def start():
         futil.handle_error(f'{CMD_NAME} load bending dies')
 
     cmd_def = ui.commandDefinitions.addButtonDefinition(
-        CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
+        CMD_ID, CMD_LABEL, CMD_Description, ICON_FOLDER)
     futil.add_handler(cmd_def.commandCreated, command_created)
 
     panel = ensure_weldments_panel()
