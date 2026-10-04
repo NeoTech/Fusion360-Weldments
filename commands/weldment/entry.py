@@ -8,6 +8,7 @@ from ...lib import fusionAddInUtils as futil
 from ...lib import profiles as prof
 from ...lib import joints as jt
 from ...lib import bending_dies as bd
+from ...lib import registry as reg
 from ... import config
 
 app = adsk.core.Application.get()
@@ -1407,6 +1408,14 @@ def command_execute(args: adsk.core.CommandEventArgs):
 
     if created == 0:
         ui.messageBox('No weldments were created. Select 3D sketch line(s) first.')
+        return
+
+    # Persist the built members so the next run edits records instead of
+    # re-detecting the frame (Phase 4a re-run pickup).
+    try:
+        persist_members(_design(), saved, geom, designation, tbases, feat_idx)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} registry persist')
 
 
 def command_destroy(args: adsk.core.CommandEventArgs):
@@ -1706,6 +1715,100 @@ def _member_centerline(body):
     except Exception:
         futil.handle_error(f'{CMD_NAME} member centerline')
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Registry persistence (Phase 4a) -- the toolbox data backbone.
+#
+# The whole frame's member/joint records are parked as one JSON string on a
+# design attribute, so re-running a tool edits records instead of re-detecting
+# topology from bodies. Pure record logic lives in lib/registry.py; the two
+# functions below are the only adsk glue (attribute read/write + turning a
+# member record into the context dict joint_spec consumes).
+# --------------------------------------------------------------------------- #
+REGISTRY_ATTR = 'WeldmentsRegistry'
+
+
+def _design():
+    return adsk.fusion.Design.cast(app.activeProduct)
+
+
+def _find_attribute(design, name):
+    """The design attribute ``name``, or None."""
+    attrs = design.attributes
+    for i in range(attrs.count):
+        a = attrs.item(i)
+        if a.name == name:
+            return a
+    return None
+
+
+def load_registry(design):
+    """The design's :class:`lib.registry.Registry` (empty if none stored)."""
+    a = _find_attribute(design, REGISTRY_ATTR)
+    if a is None:
+        return reg.Registry()
+    try:
+        return reg.Registry.from_json(a.value)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} registry load')
+        return reg.Registry()
+
+
+def save_registry(design, registry):
+    """Write ``registry`` back to the design attribute (create if absent)."""
+    a = _find_attribute(design, REGISTRY_ATTR)
+    if a is None:
+        a = design.attributes.add('UserParameters', REGISTRY_ATTR, 'String')
+    a.value = registry.to_json()
+
+
+def registry_context(root, registry):
+    """Member records as ``joint_spec`` context dicts, bodies re-resolved live.
+
+    Mirrors :func:`_recover_existing_members`' output shape
+    ``{'line','geom','basis','body'}`` but sourced from stored records: the
+    centreline comes from the record (so a bend member keeps its full virtual
+    corner, no stub-reunion needed) and only the ``body`` is looked up fresh by
+    feature index. A record whose body is gone (deleted feature) is skipped.
+    """
+    members = []
+    for m in registry.members:
+        body = None
+        if m.feature is not None:
+            try:
+                f = root.features.item(m.feature)
+                body = f.bodies.item(m.body_index or 0)
+            except Exception:
+                body = None
+        if body is None:
+            continue
+        members.append({'line': _ContextLine(m.start, m.end, body),
+                        'geom': m.geom, 'basis': m.basis, 'body': body})
+    return members
+
+
+def persist_members(design, lines, geom, designation, bases, feat_idx):
+    """Upsert each built line into the design's registry (re-run pickup).
+
+    Matches an existing member by centreline so rebuilding the same tube edits
+    its record instead of duplicating. Returns the (mutated) registry. Joint
+    records are written by the toolbox tools (Phase 4c); the auto command only
+    persists members here.
+    """
+    registry = load_registry(design)
+    for i, line in enumerate(lines):
+        if feat_idx[i] is None:
+            continue
+        s, e = jt.line_endpoints(line)
+        registry.upsert_member(
+            s, e, geom=geom,
+            basis=list(bases[i]) if bases and bases[i] else None,
+            designation=designation.get('designation', '') if designation else '',
+            family=designation.get('_family', '') if designation else '',
+            feature=feat_idx[i], body_index=0)
+    save_registry(design, registry)
+    return registry
 
 
 def _recover_existing_members(root, exclude_feats=None):
