@@ -399,5 +399,56 @@ class TestJointSpecOffsetsParity(unittest.TestCase):
             self.assertEqual(spec['offsets'], base, f"joints={joints} kw={kw}")
 
 
+class TestCopeCutterExplicitPair(unittest.TestCase):
+    """cope_cutter (Phase-4 toolbox) == joint_spec's box for the same pair.
+
+    The Cope tool hands us the two members + landing point directly instead of
+    letting joint_spec *discover* the T-junction. The cutter it computes must be
+    identical to the auto path's, or the toolbox would regress the cuts.
+    """
+
+    def setUp(self):
+        self.geom = _tube(20.0, 20.0, 2.0)
+
+    def _same_box(self, a, b):
+        self.assertAlmostEqual(a['center'][0], b['center'][0], 6)
+        self.assertAlmostEqual(a['center'][1], b['center'][1], 6)
+        self.assertAlmostEqual(a['center'][2], b['center'][2], 6)
+        for i in range(3):
+            self.assertAlmostEqual(a['half'][i], b['half'][i], 6)
+        # Axes may differ by a sign on the perpendiculars; compare the axial dir.
+        for k in range(3):
+            self.assertAlmostEqual(abs(a['axes'][0][k]), abs(b['axes'][0][k]), 6)
+
+    def test_perpendicular_t_matches(self):
+        subj = ((25, 0, 20), (25, 0, 0))
+        tool = ((0, 0, 0), (50, 0, 0))
+        spec = jt.joint_spec([FakeLine(*subj), FakeLine(*tool)],
+                             [self.geom, self.geom], ['cope', 'none'])
+        auto = [o for o in spec['occs'] if o['kind'] == 'cope_t'][0]['cutter']
+        cut = jt.cope_cutter(subj, tool, (25, 0, 0),
+                             subject_geom=self.geom, tool_geom=self.geom)
+        self.assertEqual(cut['type'], 'body')
+        self._same_box(auto['region'], cut['region'])
+
+    def test_angled_t_matches(self):
+        import math as _m
+        end = (25 + 20 * _m.cos(_m.pi / 4), 0.0, 20 * _m.sin(_m.pi / 4))
+        subj = (end, (25, 0, 0))
+        tool = ((0, 0, 0), (50, 0, 0))
+        spec = jt.joint_spec([FakeLine(*subj), FakeLine(*tool)],
+                             [self.geom, self.geom], ['cope', 'none'])
+        auto = [o for o in spec['occs']
+                if o['kind'] in ('cope_t', 'cope_angle')][0]['cutter']
+        cut = jt.cope_cutter(subj, tool, (25, 0, 0),
+                             subject_geom=self.geom, tool_geom=self.geom)
+        self._same_box(auto['region'], cut['region'])
+
+    def test_degenerate_returns_none(self):
+        # A zero-length subject has no direction -> no cutter.
+        self.assertIsNone(jt.cope_cutter(((5, 0, 0), (5, 0, 0)),
+                                         ((0, 0, 0), (50, 0, 0)), (5, 0, 0)))
+
+
 if __name__ == '__main__':
     unittest.main()

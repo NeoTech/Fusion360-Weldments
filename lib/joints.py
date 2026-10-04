@@ -71,6 +71,18 @@ def _norm(a):
     return (a[0] / m, a[1] / m, a[2] / m) if m else (0.0, 0.0, 0.0)
 
 
+def _dist(a, b):
+    """Distance between two cm points."""
+    return math.sqrt(_dot(_sub(a, b), _sub(a, b)))
+
+
+def line_direction_from(s, e):
+    """Unit direction of the segment ``s``->``e`` (cm), or None if degenerate."""
+    d = _sub(e, s)
+    m = math.sqrt(_dot(d, d))
+    return (d[0] / m, d[1] / m, d[2] / m) if m > 1e-12 else None
+
+
 def _pt(p):
     return (p.x, p.y, p.z)
 
@@ -1251,6 +1263,85 @@ def _leg_room(L, members, V, n):
     return room if room != float('inf') else 0.0
 
 
+def _perp_extent_cm(geom, basis, anchor, d):
+    """Max section half-extent (cm) perpendicular to run direction ``d``.
+
+    Measured in the member's own placed ``basis`` (so an I-beam contributes its
+    flange width / web height, not a bounding guess).  ``anchor`` is the local
+    ``(u, v)`` mm point on the reference line (Position grid); None / ``(0, 0)``
+    is the centred case.  ``basis`` None falls back to the isotropic
+    ``member_depth``/2.  Lifted out of :func:`joint_spec` so the Phase-4 toolbox
+    tools (which take an explicit member pair, no frame detection) reuse the
+    exact same extent the auto path computes.
+    """
+    if basis is None:
+        return member_depth(geom) * 0.5 * MM_TO_CM
+    u, v = basis
+    cu, cv = _dot(u, d), _dot(v, d)
+    au, av = anchor if anchor else (0.0, 0.0)
+    if geom and geom.get('kind') == 'circles':
+        r = max(geom.get('radii') or [0.0])
+        return (r * math.sqrt(max(0.0, 1.0 - cu * cu - cv * cv) + 0.0)
+                + abs(au * cu + av * cv)) * MM_TO_CM or r * MM_TO_CM
+    best = 0.0
+    for loop in (geom or {}).get('loops') or [[(0, 0)]]:
+        for p0, p1 in loop:
+            pu, pv = p0 - au, p1 - av
+            par = pu * cu + pv * cv
+            best = max(best, math.sqrt(max(0.0, pu * pu + pv * pv - par * par)))
+    return best * MM_TO_CM
+
+
+def cope_cutter(subject, tool, landing, subject_geom=None, tool_geom=None,
+                subject_basis=None, tool_basis=None, subject_anchor=None,
+                tool_anchor=None, depth_mm=0.0):
+    """The cutter for ONE cope, from an explicitly-picked pair (no detection).
+
+    This is the Phase-4 toolbox entry point: instead of feeding the whole frame
+    to :func:`joint_spec` and letting it *discover* that ``subject``'s end lands
+    on ``tool``, the Cope tool hands us the two members and the landing point
+    directly.  We compute exactly the ``{'type':'body','tool','region'}`` cutter
+    the auto path would have produced for that pair, reusing the same box math
+    (:func:`_region_box`, :func:`_plug_reach`, :func:`_perp_extent_cm`) so the
+    result is identical -- but with no corner/T detection to get wrong.
+
+    ``subject``/``tool`` are ``(start, end)`` centrelines in cm (the coping
+    member and the member it sits on).  ``landing`` is the point (cm) on the
+    tool where the subject's tip meets it -- the vertex the user picked.
+    ``*_geom`` are mm section descriptors, ``*_basis`` the placed ``(u, v)``
+    axes (None -> isotropic), ``*_anchor`` the Position-grid local ``(u, v)`` mm.
+    ``depth_mm`` deepens the bite into the tool.  Returns the cutter dict (with
+    ``tool`` set to the caller's own tool handle) or None if the geometry is
+    degenerate (zero-length members).
+    """
+    ss, se = subject
+    ts, te = tool
+    sd = line_direction_from(ss, se)
+    td = line_direction_from(ts, te)
+    if sd is None or td is None:
+        return None
+    # The subject's tip is the endpoint nearest the landing; ``own`` points from
+    # the vertex INTO the member (toward its far end) -- the same as joint_spec's
+    # outward(idx, role) whichever end carries the coping tip.
+    far = ss if _dist(landing, se) <= _dist(landing, ss) else se
+    own = line_direction_from(landing, far)
+    if own is None:
+        return None
+    sub_perp = _perp_extent_cm(subject_geom, subject_basis, subject_anchor, sd)
+    tool_perp = _perp_extent_cm(tool_geom, tool_basis, tool_anchor, td)
+    perp = max(sub_perp, tool_perp)
+    trim = _half_extent_cm(tool_geom, tool_basis, sd, tool_anchor)
+    reach = _plug_reach(trim + abs(depth_mm * MM_TO_CM),
+                        sub_perp + tool_perp, _angle_between(sd, td))
+    # Box clamp: half the distance from the vertex to the FARTHER endpoint of
+    # either member (mirrors _leg_room, so a mid-run landing on the tool does not
+    # let the box reach the tool's whole length).
+    room = min(0.5 * max(_dist(landing, ss), _dist(landing, se)),
+               0.5 * max(_dist(landing, ts), _dist(landing, te)))
+    box = _region_box(landing, own, reach, perp, room)
+    return {'type': 'body', 'tool': tool, 'region': box}
+
+
 def ci_index(idx, n):
     """Detection index -> combined-array index (selected 0..n-1, then context).
 
@@ -1369,32 +1460,8 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
         return A[ci_index(i, n)] if A else None
 
     def perp_extent(i, role, V):
-        """Max section half-extent (cm) of member ``i`` perpendicular to its run.
-
-        Measured in the member's own placed basis (so an I-beam contributes its
-        flange width / web height, not a bounding guess).
-        """
-        g, b, a = geomv(i), basisv(i), anchorv(i)
-        if b is None:
-            return member_depth(g) * 0.5 * MM_TO_CM
-        d = dirv(i)
-        u, v = b
-        # Extents along both perpendicular axes, from the anchor.
-        cu, cv = _dot(u, d), _dot(v, d)
-        au, av = a if a else (0.0, 0.0)
-        if g and g.get('kind') == 'circles':
-            r = max(g.get('radii') or [0.0])
-            return (r * math.sqrt(max(0.0, 1.0 - cu * cu - cv * cv) + 0.0)
-                    + abs(au * cu + av * cv)) * MM_TO_CM or r * MM_TO_CM
-        best = 0.0
-        for loop in (g or {}).get('loops') or [[(0, 0)]]:
-            for p0, p1 in loop:
-                pu, pv = p0 - au, p1 - av
-                # Component of the local point perpendicular to d, in the basis.
-                par = pu * cu + pv * cv
-                best = max(best, math.sqrt(max(
-                    0.0, pu * pu + pv * pv - par * par)))
-        return best * MM_TO_CM
+        """Max section half-extent (cm) of member ``i`` perpendicular to its run."""
+        return _perp_extent_cm(geomv(i), basisv(i), anchorv(i), dirv(i))
 
     occs = []
 
