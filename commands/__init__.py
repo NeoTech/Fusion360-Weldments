@@ -9,6 +9,8 @@ from .paletteSend import entry as paletteSend
 from .weldment import entry as weldment
 from .weldmentBom import entry as weldmentBom
 from .weldmentCope import entry as weldmentCope
+from .weldmentMiter import entry as weldmentMiter
+from .weldmentButt import entry as weldmentButt
 
 # TODO add your imported modules to this list.
 # Fusion will automatically call the start() and stop() functions.
@@ -20,7 +22,9 @@ commands = [
     paletteSend,
     weldment,
     weldmentBom,
-    weldmentCope
+    weldmentCope,
+    weldmentMiter,
+    weldmentButt
 ]
 
 

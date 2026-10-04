@@ -1342,6 +1342,122 @@ def cope_cutter(subject, tool, landing, subject_geom=None, tool_geom=None,
     return {'type': 'body', 'tool': tool, 'region': box}
 
 
+def _tip_and_own(subject, vertex):
+    """``(own, tip)`` for a member whose coping/mitering end is at ``vertex``.
+
+    ``own`` points from the vertex INTO the member (toward its far end) -- the
+    same as joint_spec's ``outward(idx, role)`` whichever end carries the tip;
+    ``tip`` is that far endpoint. Returns ``(None, None)`` if degenerate.
+    """
+    ss, se = subject
+    far = ss if _dist(vertex, se) <= _dist(vertex, ss) else se
+    return line_direction_from(vertex, far), far
+
+
+def miter_cutter(member_a, member_b, vertex, a_geom=None, b_geom=None,
+                 a_basis=None, b_basis=None, a_anchor=None, b_anchor=None):
+    """The cutter for ONE miter, from an explicitly-picked pair (no detection).
+
+    The Miter tool's Phase-4 entry point, mirroring :func:`cope_cutter`: the two
+    members meeting at ``vertex`` are handed in directly, and we build exactly
+    the ``{'type':'plane', ...}`` cutter :func:`joint_spec` produces for a corner
+    miter -- the bisector plane through the vertex plus a joint box -- reusing the
+    same setback/extent/box math so the result is identical, with no corner
+    detection to get wrong.
+
+    ``member_a``/``member_b`` are ``(start, end)`` centrelines in cm; ``vertex``
+    is the shared corner (cm). ``*_geom`` are mm section descriptors, ``*_basis``
+    the placed ``(u, v)`` axes, ``*_anchor`` the Position-grid local ``(u, v)`` mm.
+    Returns the cutter dict (with ``setback`` for the caller's information) or
+    None if the geometry is degenerate (collinear or folded-back members).
+    """
+    as_, ae = member_a
+    bs, be = member_b
+    ad = line_direction_from(as_, ae)
+    bd = line_direction_from(bs, be)
+    if ad is None or bd is None:
+        return None
+    own, _ta = _tip_and_own(member_a, vertex)
+    neigh, _tb = _tip_and_own(member_b, vertex)
+    if own is None or neigh is None:
+        return None
+    phi = _angle_between(own, neigh)
+    if phi <= 1e-6 or phi >= math.pi - 1e-6:
+        return None                       # folded-back or straight: no miter
+    nrm = _norm(_sub(own, neigh))
+    if _dot(nrm, nrm) < 1e-9:
+        return None
+    sb = _miter_setback_cm(a_geom, a_basis, own, neigh, a_anchor, phi)
+    perp = max(_perp_extent_cm(a_geom, a_basis, a_anchor, ad),
+               _perp_extent_cm(b_geom, b_basis, b_anchor, bd))
+    # Box clamp: half the distance from the vertex to the FARTHER endpoint of
+    # either member (mirrors _leg_room for the two legs at the corner).
+    room = min(0.5 * max(_dist(vertex, as_), _dist(vertex, ae)),
+               0.5 * max(_dist(vertex, bs), _dist(vertex, be)))
+    box = _region_box(vertex, own, sb, perp, room)
+    return {'type': 'plane', 'point': vertex, 'normal': nrm,
+            'region': box, 'setback': sb}
+
+
+def butt_trim(subject, tool, landing, subject_geom=None, tool_geom=None,
+              subject_basis=None, tool_basis=None, subject_anchor=None,
+              tool_anchor=None, saddle=False, depth_mm=0.0):
+    """The axial trim for ONE butt, from an explicitly-picked pair (no detection).
+
+    The Butt tool's Phase-4 entry point. ``subject`` backs off onto ``tool``
+    (which runs through). Returns how far along the subject's own axis its tip
+    must sit from ``landing`` (negative = short of the vertex, i.e. a flat end at
+    the tool's near face; positive = into the tool, for a saddle), plus the
+    cutter the execution layer applies. Unlike the auto path -- where a plain
+    butt is a pure build-time axial trim -- the toolbox cuts EXISTING bodies, so
+    every mode returns a ``{'type':'body', ...}`` cutter (the tool body bounded
+    to a joint box):
+
+    * butt        -> a NEAR-face box (reach = the tool's half-extent): the
+      subject's tip is trimmed flush to the tool's surface, a flat square end.
+    * saddle      -> the full plug box (see :func:`cope_cutter`): the tool's
+      cross-section is carved out so the subject sits INTO it, run to the FAR
+      face (solid) or just past the near wall (hollow), matching
+      :func:`corner_offsets`' saddled-butt rule.
+
+    ``depth_mm`` deepens a saddle's bite. Returns None if the members are
+    collinear (no meaningful butt face).
+    """
+    ss, se = subject
+    ts, te = tool
+    sd = line_direction_from(ss, se)
+    td = line_direction_from(ts, te)
+    if sd is None or td is None:
+        return None
+    sinp = _sin_between(sd, td)
+    if sinp <= 1e-6:
+        return None                       # collinear: nothing to trim against
+    own, _far = _tip_and_own(subject, landing)
+    if own is None:
+        return None
+    trim = _half_extent_cm(tool_geom, tool_basis, sd, tool_anchor) / sinp
+    sub_perp = _perp_extent_cm(subject_geom, subject_basis, subject_anchor, sd)
+    tool_perp = _perp_extent_cm(tool_geom, tool_basis, tool_anchor, td)
+    perp = max(sub_perp, tool_perp)
+    room = min(0.5 * max(_dist(landing, ss), _dist(landing, se)),
+               0.5 * max(_dist(landing, ts), _dist(landing, te)))
+    if not saddle:
+        # Flush butt: a shallow box at the tool's near face, no plug reach.
+        box = _region_box(landing, own, trim, perp, room)
+        return {'reach': -trim, 'cutter': {'type': 'body', 'tool': tool,
+                                           'region': box}}
+    depth = abs(depth_mm) * MM_TO_CM
+    if _is_hollow(tool_geom):
+        reach = -trim + (_wall_cm(tool_geom) or 0.0) + depth
+    else:
+        reach = trim + depth
+    reach_box = _plug_reach(trim + depth, sub_perp + tool_perp,
+                            _angle_between(sd, td))
+    box = _region_box(landing, own, reach_box, perp, room)
+    return {'reach': reach, 'cutter': {'type': 'body', 'tool': tool,
+                                       'region': box}}
+
+
 def ci_index(idx, n):
     """Detection index -> combined-array index (selected 0..n-1, then context).
 

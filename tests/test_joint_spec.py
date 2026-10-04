@@ -450,5 +450,93 @@ class TestCopeCutterExplicitPair(unittest.TestCase):
                                          ((0, 0, 0), (50, 0, 0)), (5, 0, 0)))
 
 
+class TestMiterCutterExplicitPair(unittest.TestCase):
+    """miter_cutter (Phase-4 toolbox) == joint_spec's miter for the same pair."""
+
+    def setUp(self):
+        self.geom = _tube(20.0, 20.0, 2.0)
+
+    def _same_box(self, a, b):
+        for i in range(3):
+            self.assertAlmostEqual(a['center'][i], b['center'][i], 6)
+            self.assertAlmostEqual(a['half'][i], b['half'][i], 6)
+        for k in range(3):
+            self.assertAlmostEqual(abs(a['axes'][0][k]), abs(b['axes'][0][k]), 6)
+
+    def test_corner_miter_matches(self):
+        a = ((0, 0, 0), (10, 0, 0))
+        b = ((10, 0, 0), (10, 10, 0))
+        spec = jt.joint_spec([FakeLine(*a), FakeLine(*b)],
+                             [self.geom, self.geom], ['miter', 'miter'])
+        auto = [o for o in spec['occs'] if o['kind'] == 'miter'][0]['cutter']
+        cut = jt.miter_cutter(a, b, (10, 0, 0),
+                              a_geom=self.geom, b_geom=self.geom)
+        self.assertEqual(cut['type'], 'plane')
+        for i in range(3):
+            self.assertAlmostEqual(auto['point'][i], cut['point'][i], 6)
+            self.assertAlmostEqual(auto['normal'][i], cut['normal'][i], 6)
+        self._same_box(auto['region'], cut['region'])
+
+    def test_angled_miter_matches(self):
+        import math as _m
+        # A 60-degree corner: member b leaves the vertex at 60 deg from a.
+        a = ((0, 0, 0), (10, 0, 0))
+        b = ((10, 0, 0), (10 + 10 * _m.cos(_m.pi / 3), 10 * _m.sin(_m.pi / 3), 0))
+        spec = jt.joint_spec([FakeLine(*a), FakeLine(*b)],
+                             [self.geom, self.geom], ['miter', 'miter'])
+        auto = [o for o in spec['occs'] if o['kind'] == 'miter'][0]['cutter']
+        cut = jt.miter_cutter(a, b, (10, 0, 0),
+                              a_geom=self.geom, b_geom=self.geom)
+        self._same_box(auto['region'], cut['region'])
+
+    def test_collinear_returns_none(self):
+        # A straight run has no miter plane.
+        self.assertIsNone(jt.miter_cutter(((0, 0, 0), (10, 0, 0)),
+                                          ((10, 0, 0), (20, 0, 0)), (10, 0, 0)))
+
+
+class TestButtTrimExplicitPair(unittest.TestCase):
+    """butt_trim (Phase-4 toolbox): plain butt is a pure trim; saddle == cope box."""
+
+    def setUp(self):
+        self.geom = _tube(20.0, 20.0, 2.0)
+
+    def test_plain_butt_is_near_face_trim(self):
+        subj = ((25, 0, 20), (25, 0, 0))
+        tool = ((0, 0, 0), (50, 0, 0))
+        r = jt.butt_trim(subj, tool, (25, 0, 0),
+                         subject_geom=self.geom, tool_geom=self.geom)
+        # The toolbox cuts existing bodies, so a butt carries a near-face box.
+        self.assertEqual(r['cutter']['type'], 'body')
+        sd = jt.line_direction_from(*subj)
+        expected = -jt._half_extent_cm(self.geom, None, sd) / jt._sin_between(
+            sd, jt.line_direction_from(*tool))
+        self.assertAlmostEqual(r['reach'], expected, 6)
+        self.assertLess(r['reach'], 0.0)      # backs off from the vertex
+        # The box's axial half-extent is the tool's half-extent (no plug reach).
+        self.assertLess(r['cutter']['region']['half'][0],
+                        jt.cope_cutter(subj, tool, (25, 0, 0),
+                                       subject_geom=self.geom,
+                                       tool_geom=self.geom)['region']['half'][0])
+
+    def test_saddle_butt_matches_cope_box(self):
+        subj = ((25, 0, 20), (25, 0, 0))
+        tool = ((0, 0, 0), (50, 0, 0))
+        r = jt.butt_trim(subj, tool, (25, 0, 0), subject_geom=self.geom,
+                         tool_geom=self.geom, saddle=True)
+        cope = jt.cope_cutter(subj, tool, (25, 0, 0),
+                              subject_geom=self.geom, tool_geom=self.geom)
+        self.assertEqual(r['cutter']['type'], 'body')
+        for i in range(3):
+            self.assertAlmostEqual(r['cutter']['region']['center'][i],
+                                   cope['region']['center'][i], 6)
+            self.assertAlmostEqual(r['cutter']['region']['half'][i],
+                                   cope['region']['half'][i], 6)
+
+    def test_collinear_returns_none(self):
+        self.assertIsNone(jt.butt_trim(((0, 0, 0), (10, 0, 0)),
+                                       ((10, 0, 0), (20, 0, 0)), (10, 0, 0)))
+
+
 if __name__ == '__main__':
     unittest.main()
