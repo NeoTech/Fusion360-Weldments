@@ -163,6 +163,51 @@ class TestRemoveMember(unittest.TestCase):
         self.assertEqual(r.joints, [])   # joint had only that ref -> dropped
 
 
+class TestEditInPlace(unittest.TestCase):
+    """The BOM panel's write path (Phase 4b): edit a record without re-detect."""
+
+    def test_set_member_field(self):
+        r = reg.Registry()
+        m = r.add_member((0, 0, 0), (10, 0, 0), designation='20x1')
+        self.assertTrue(r.set_member(m.mid, designation='25x2', name='Tube-A'))
+        self.assertEqual(r.member(m.mid).designation, '25x2')
+        self.assertEqual(r.member(m.mid).name, 'Tube-A')
+
+    def test_set_member_ignores_geometry(self):
+        # The edit path must not let a panel edit corrupt the centreline.
+        r = reg.Registry()
+        m = r.add_member((0, 0, 0), (10, 0, 0))
+        r.set_member(m.mid, start=(99, 99, 99), feature=7)
+        self.assertEqual(r.member(m.mid).start, (0, 0, 0))
+        self.assertIsNone(r.member(m.mid).feature)
+
+    def test_set_member_unknown_mid(self):
+        r = reg.Registry()
+        self.assertFalse(r.set_member(999, name='x'))
+
+    def test_set_joint_kind(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        j = r.add_joint('cope', [{'mid': a.mid, 'role': 'end'}])
+        self.assertTrue(r.set_joint_kind(j.jid, 'butt'))
+        self.assertEqual(r.joint(j.jid).kind, 'butt')
+
+    def test_set_joint_param(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        j = r.add_joint('cope', [{'mid': a.mid, 'role': 'end'}],
+                        params={'depth_mm': 0.0})
+        self.assertTrue(r.set_joint_param(j.jid, 'depth_mm', 5.0))
+        self.assertEqual(r.joint(j.jid).params['depth_mm'], 5.0)
+
+    def test_edits_survive_round_trip(self):
+        r = reg.Registry()
+        m = r.add_member((0, 0, 0), (10, 0, 0), designation='20x1')
+        r.set_member(m.mid, designation='25x2')
+        r2 = reg.Registry.from_json(r.to_json())
+        self.assertEqual(r2.member(m.mid).designation, '25x2')
+
+
 class TestSerialisation(unittest.TestCase):
     def test_round_trip(self):
         r = reg.Registry()

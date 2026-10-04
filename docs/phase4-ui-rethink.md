@@ -92,10 +92,10 @@ want a full tab, a workspace) instead of borrowing Create:
 - `stop()` must delete the panel we added (and any workspace), not just the
   command control, so reloading the add-in leaves no orphan panel.
 
-Decision open: **panel inside the Solid tab** (lighter, discoverable next to
-Create) vs **its own ribbon tab** (matches Sheet Metal exactly, more setup).
-Recommend starting with a dedicated `Weldments` panel; promote to a tab later if
-the tool count grows.
+Decision: **dedicated `Weldments` panel** on the Solid workspace's Tools tab
+(landed in Phase 4-UI, commit 636be15). Promote to a full ribbon tab later only
+if the tool count grows. `start()`/`stop()` in `commands/weldment/entry.py`
+create/reuse the panel and clean up the legacy Create-panel button.
 
 ## Phasing this into the roadmap
 

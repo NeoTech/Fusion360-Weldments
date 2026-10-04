@@ -1,0 +1,11 @@
+body { font-family: 'Segoe UI', sans-serif; font-size: 12px; margin: 8px; }
+h3 { margin: 12px 0 4px; font-size: 13px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #ddd; }
+th { background: #f0f0f0; font-weight: 600; }
+td.num, td.params { font-variant-numeric: tabular-nums; color: #444; }
+input, select { width: 100%; box-sizing: border-box; font-size: 12px; }
+#toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+#toolbar button { padding: 3px 10px; }
+#status { color: #0a7d00; font-size: 11px; }
+.muted { color: #888; }

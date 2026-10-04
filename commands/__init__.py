@@ -7,14 +7,18 @@ from .commandDialog import entry as commandDialog
 from .paletteShow import entry as paletteShow
 from .paletteSend import entry as paletteSend
 from .weldment import entry as weldment
+from .weldmentBom import entry as weldmentBom
 
 # TODO add your imported modules to this list.
 # Fusion will automatically call the start() and stop() functions.
+# weldmentBom is listed after weldment so the shared Weldments panel it hangs
+# its button on already exists when its start() runs.
 commands = [
     commandDialog,
     paletteShow,
     paletteSend,
-    weldment
+    weldment,
+    weldmentBom
 ]
 
 

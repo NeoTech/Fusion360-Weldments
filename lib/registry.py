@@ -308,6 +308,35 @@ class Registry:
     def joints_for_member(self, mid):
         return [j for j in self.joints if j.touches(mid)]
 
+    # -- edit-in-place (the BOM panel's write path) ---------------------- #
+    def set_member(self, mid, **fields):
+        """Update scalar fields on member ``mid`` (designation, name, ...).
+
+        Unknown fields or an unknown ``mid`` are ignored (returns False) so a
+        stale panel edit cannot corrupt the registry.
+        """
+        m = self.member(mid)
+        if m is None:
+            return False
+        for k, v in fields.items():
+            if hasattr(m, k) and k in ('designation', 'family', 'name'):
+                setattr(m, k, v)
+        return True
+
+    def set_joint_kind(self, jid, kind):
+        j = self.joint(jid)
+        if j is None:
+            return False
+        j.kind = kind
+        return True
+
+    def set_joint_param(self, jid, key, value):
+        j = self.joint(jid)
+        if j is None:
+            return False
+        j.params[key] = value
+        return True
+
     def remove_member(self, mid):
         self.members = [m for m in self.members if m.mid != mid]
         for j in self.joints:
@@ -315,6 +344,27 @@ class Registry:
         self.joints = [j for j in self.joints if j.refs]
 
     # -- serialisation ------------------------------------------------- #
+    def summary(self):
+        """A JSON-friendly BOM view model for the palette panel.
+
+        Members carry a computed ``length_mm`` (cut length) and joints a
+        human-readable ``label``; ids are included so the panel can send an
+        edit back keyed by ``mid``/``jid``.
+        """
+        members = []
+        for m in self.members:
+            length_mm = distance(m.start, m.end) / MM_TO_CM
+            members.append({'mid': m.mid, 'name': m.name,
+                            'designation': m.designation, 'family': m.family,
+                            'length_mm': round(length_mm, 2),
+                            'start': list(m.start), 'end': list(m.end)})
+        joints = []
+        for j in self.joints:
+            joints.append({'jid': j.jid, 'kind': j.kind,
+                           'refs': [r['mid'] for r in j.refs],
+                           'params': dict(j.params)})
+        return {'members': members, 'joints': joints}
+
     def to_dict(self):
         return {'version': SCHEMA_VERSION,
                 'members': [m.to_dict() for m in self.members],

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Weldment BOM</title>
+    <link rel="stylesheet" href="static/bom.css">
+    <script src="static/bom.js"></script>
+</head>
+<body>
+    <div id="toolbar">
+        <button type="button" onclick="refresh()">Refresh</button>
+        <span id="status"></span>
+    </div>
+
+    <h3>Members</h3>
+    <table id="members">
+        <thead>
+            <tr><th>#</th><th>Name</th><th>Designation</th><th>Length (mm)</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <h3>Joints</h3>
+    <table id="joints">
+        <thead>
+            <tr><th>#</th><th>Kind</th><th>Members</th><th>Params</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <p id="empty" class="muted" style="display:none">
+        No weldments yet. Run the Weldment tool, then Refresh.</p>
+</body>
+</html>
