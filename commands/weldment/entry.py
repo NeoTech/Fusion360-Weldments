@@ -15,16 +15,24 @@ app = adsk.core.Application.get()
 ui = app.userInterface
 
 # --------------------------------------------------------------------------- #
-# Command identity + placement (Create panel, right after the Pipe tool).
+# Command identity + placement.
+#
+# Phase 4-UI: weldments live in their OWN toolbar panel (like Sheet Metal's tab),
+# not promoted into the shared Create panel. The panel is created on the active
+# workspace's Tools tab; every toolbox tool (weldment now, bend/cope/miter in
+# 4c/4d) adds its command into PANEL_ID.
 # --------------------------------------------------------------------------- #
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment'
 CMD_NAME = 'Weldment'
 CMD_Description = 'Create a weldment profile along 3D sketch lines'
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
-# The Create panel id depends on the active design type; try them in order.
-PANEL_IDS = ['SolidCreatePanel', 'PlasticPartsCreatePanel']
-COMMAND_BESIDE_ID = 'PrimitivePipe'
+# Unique panel id (must not collide with any other add-in's panel).
+PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
+PANEL_NAME = 'Weldments'
+# Legacy: the Create panel the command used to be promoted into, cleaned up on
+# stop() so an upgrade from the old layout leaves no orphan button behind.
+LEGACY_PANEL_IDS = ['SolidCreatePanel', 'PlasticPartsCreatePanel']
 
 ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
 
@@ -126,29 +134,39 @@ def start():
     futil.add_handler(cmd_def.commandCreated, command_created)
 
     workspace = ui.workspaces.itemById(WORKSPACE_ID)
-    # The "Create" panel id differs by design type; use the first that exists.
-    panel = None
-    for pid in PANEL_IDS:
-        panel = workspace.toolbarPanels.itemById(pid)
-        if panel:
-            break
+    # Own panel (Phase 4-UI). Reuse it if a previous load created it (add-in
+    # reload keeps the panel), else create at the end of the Tools tab.
+    panel = workspace.toolbarPanels.itemById(PANEL_ID)
+    if panel is None:
+        panel = workspace.toolbarPanels.add(PANEL_ID, PANEL_NAME)
     if panel:
-        control = panel.controls.addCommand(cmd_def, COMMAND_BESIDE_ID, False)
-        control.isPromoted = True
+        if panel.controls.itemById(CMD_ID) is None:
+            panel.controls.addCommand(cmd_def)
     else:
-        futil.log(f'{CMD_NAME} Create panel not found; command not promoted.')
+        futil.log(f'{CMD_NAME} could not create the {PANEL_NAME} panel.')
 
 
 def stop():
     workspace = ui.workspaces.itemById(WORKSPACE_ID)
     command_definition = ui.commandDefinitions.itemById(CMD_ID)
 
-    for pid in PANEL_IDS:
-        panel = workspace.toolbarPanels.itemById(pid)
-        if panel:
-            command_control = panel.controls.itemById(CMD_ID)
-            if command_control:
-                command_control.deleteMe()
+    # Remove our command from the panel, then the panel itself if it is now
+    # empty (so a reload does not stack duplicate panels).
+    panel = workspace.toolbarPanels.itemById(PANEL_ID)
+    if panel:
+        command_control = panel.controls.itemById(CMD_ID)
+        if command_control:
+            command_control.deleteMe()
+        if panel.controls.count == 0:
+            panel.deleteMe()
+
+    # Clean up the legacy Create-panel button from before the own-panel move.
+    for pid in LEGACY_PANEL_IDS:
+        legacy = workspace.toolbarPanels.itemById(pid)
+        if legacy:
+            cc = legacy.controls.itemById(CMD_ID)
+            if cc:
+                cc.deleteMe()
 
     if command_definition:
         command_definition.deleteMe()
