@@ -97,8 +97,12 @@ def _ensure_palette():
             id=PALETTE_ID, name=PALETTE_NAME, htmlFileURL=PALETTE_URL,
             isVisible=False, showCloseButton=True, isResizable=True,
             width=420, height=520, useNewWebBrowser=True)
-        futil.add_handler(palette.incomingFromHTML, palette_incoming,
-                          local_handlers=local_handlers)
+        # Register the HTML->Python handler on the *global* handler list, not
+        # this command's local_handlers: the button command has no inputs, so
+        # it is destroyed (and would clear local_handlers, GC'ing the handler)
+        # the instant it runs. The palette outlives the command, so its handler
+        # must too -- otherwise Refresh and every edit silently do nothing.
+        futil.add_handler(palette.incomingFromHTML, palette_incoming)
     if palette.dockingState == adsk.core.PaletteDockingStates.PaletteDockStateFloating:
         palette.dockingState = PALETTE_DOCKING
     return palette
