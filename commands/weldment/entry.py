@@ -2461,13 +2461,21 @@ def rebuild_from_registry(design):
             continue
         m.feature = feat_idx[i]
         m.body_index = 0
+        # The member's own feature may hold no body after a cut consumed it (a
+        # coping member's extrude ends with bodies.count == 0; the body is
+        # re-homed onto the survivor).  Resolve the native body defensively --
+        # objs[i] can also be None if the build failed -- so a rebuild never
+        # dies on a bad body index.
+        native = None
         try:
-            stamp_body(objs[i][0].bodies.item(0), m.mid)
+            if objs[i]:
+                native = objs[i][0].bodies.item(0)
         except Exception:
-            pass
+            native = None
+        if native is not None:
+            stamp_body(native, m.mid)
         surv = cut_bodies.get(i)
-        if surv is not None and surv is not objs[i][0].bodies.item(0) \
-                and body_mid(surv) is None:
+        if surv is not None and surv is not native and body_mid(surv) is None:
             stamp_body(surv, m.mid)
     save_registry(design, registry)
     return len(members)
