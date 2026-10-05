@@ -11,6 +11,15 @@ and Combine(Cut) each member's waste prism -- exactly the ``cutter.type ==
 Both members are trimmed on the shared bisector plane, so their diagonal faces
 coincide for any rotation or Position offset. The joint is recorded in the
 registry so the BOM lists it and a re-run edits the record.
+
+Two styles, chosen in the dialog:
+  * Open          -- cut the members in place (the default). The tips stop at
+    the vertex, so for sections that do not tile the corner square (an I-beam,
+    say) the outer corner is left open.
+  * Edge to edge  -- grow each tip by its setback past the vertex, then cut, so
+    the two poked ends meet at the outer corner and fill it -- the same result
+    the auto builder produces (which grows members by the setback at build time
+    before trimming). A cut alone can never ADD the missing corner material.
 """
 
 import os
@@ -36,6 +45,9 @@ WORKSPACE_ID = 'FusionSolidEnvironment'
 # Shared Weldments panel on the dedicated Weldments tab (see
 # weldment.ensure_weldments_panel).
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
+
+# Style dropdown labels -> the key the execute path understands.
+_STYLES = [('Edge to edge', 'edge'), ('Open', 'open')]
 
 local_handlers = []
 
@@ -81,6 +93,11 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     b.addSelectionFilter('SolidBodies')
     b.setSelectionLimits(1, 1)
 
+    style = inputs.addDropDownCommandInput(
+        'style', 'Style', adsk.core.DropDownStyles.TextListDropDownStyle)
+    for label, _key in _STYLES:
+        style.listItems.add(label, label == 'Edge to edge')
+
     futil.add_handler(args.command.execute, command_execute,
                       local_handlers=local_handlers)
 
@@ -92,6 +109,69 @@ def _selected_body(sel):
         if isinstance(ent, adsk.fusion.BRepBody):
             return ent
     return None
+
+
+def _style_key(dd):
+    try:
+        for i in range(dd.listItems.count):
+            it = dd.listItems.item(i)
+            if it.isSelected:
+                for label, key in _STYLES:
+                    if label == it.name:
+                        return key
+    except Exception:
+        pass
+    return 'edge'
+
+
+def _grow_tip(root, body, vertex, own, setback_cm):
+    """Grow a member's end cap ``setback_cm`` past the vertex, into that member.
+
+    The auto builder grows each member by the setback at build time so the two
+    poked tips tile the corner's outer square; the toolbox must do the same to
+    get an edge-to-edge miter (a cut alone can never ADD the missing material).
+    ``own`` points from the vertex INTO the member, so the tip grows along
+    ``-own``. We extrude the cap face as a SEPARATE prism and Join it into
+    ``body`` only -- a direct Join-feature extrude merges every overlapping body
+    and would swallow the neighbour. Returns the combine feature, or None.
+    """
+    if setback_cm <= 1e-6:
+        return None
+    best, best_d = None, None
+    for k in range(body.faces.count):
+        f = body.faces.item(k)
+        g = f.geometry
+        if not isinstance(g, adsk.core.Plane):
+            continue
+        nrm = (g.normal.x, g.normal.y, g.normal.z)
+        if abs(abs(jt._dot(nrm, own)) - 1.0) > 1e-3:
+            continue                       # not perpendicular to the run
+        p = f.pointOnFace
+        d = jt._dist((p.x, p.y, p.z), vertex)
+        if best_d is None or d < best_d:
+            best, best_d = f, d
+    if best is None:
+        return None
+    grow = jt._scale(own, -1.0)            # past the vertex, away from the body
+    nrm = (best.geometry.normal.x, best.geometry.normal.y,
+           best.geometry.normal.z)
+    direction = (adsk.fusion.ExtentDirections.PositiveExtentDirection
+                 if jt._dot(nrm, grow) >= 0.0
+                 else adsk.fusion.ExtentDirections.NegativeExtentDirection)
+    ex = root.features.extrudeFeatures
+    try:
+        ei = ex.createInput(
+            best, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+        ei.setOneSideExtent(
+            adsk.fusion.DistanceExtentDefinition.create(
+                adsk.core.ValueInput.createByReal(setback_cm)), direction)
+        prism = ex.add(ei)
+        tool = prism.bodies.item(0)
+        return _weldment()._combine(
+            root, body, [tool],
+            adsk.fusion.FeatureOperations.JoinFeatureOperation, False)
+    except Exception:
+        return None
 
 
 def _corner_vertex(a_cl, b_cl):
@@ -139,25 +219,44 @@ def command_execute(args: adsk.core.CommandEventArgs):
         ui.messageBox('The two members do not meet at a corner.')
         return
 
+    style = _style_key(inputs.itemById('style'))
+
     # One cutter per member, each oriented along that member's into-vertex
-    # direction -- exactly the auto path's per-occurrence miter.
-    for body, own_cl, neigh_cl, own_geom, neigh_geom, own_basis, neigh_basis in (
-            (body_a, (a_s, a_e), (b_s, b_e), a_geom, b_geom, a_basis, b_basis),
-            (body_b, (b_s, b_e), (a_s, a_e), b_geom, a_geom, b_basis, a_basis)):
+    # direction -- exactly the auto path's per-occurrence miter.  Edge-to-edge
+    # grows each tip by its setback first (so the poked ends fill the outer
+    # corner), then trims on the shared bisector plane.
+    pairs = ((body_a, (a_s, a_e), (b_s, b_e), a_geom, b_geom, a_basis, b_basis),
+             (body_b, (b_s, b_e), (a_s, a_e), b_geom, a_geom, b_basis, a_basis))
+    cuts = []
+    for body, own_cl, neigh_cl, own_geom, neigh_geom, own_basis, neigh_basis in pairs:
         cut = jt.miter_cutter(own_cl, neigh_cl, vertex,
                               a_geom=own_geom, b_geom=neigh_geom,
                               a_basis=own_basis, b_basis=neigh_basis)
+        cuts.append((body, own_cl, cut))
+        if style == 'edge' and cut is not None:
+            own, _tip = jt._tip_and_own(own_cl, vertex)
+            _grow_tip(root, body, vertex, own, cut['setback'])
+
+    for body, own_cl, cut in cuts:
         if cut is None:
             continue
         region = cut['region']
         perp = max(region['half'][1], region['half'][2])
         depth = 2.0 * region['half'][0] + perp
         try:
-            prism, _track = w._miter_cutter(root, vertex, cut['normal'],
-                                            perp, depth)
+            prism, track = w._miter_cutter(root, vertex, cut['normal'],
+                                           perp, depth)
             if prism is None:
                 continue
             w._combine_cut(root, body, [prism], keep_tool=False)
+            # The cutter's extrude/sketch/plane form a reference chain the
+            # combine depends on, so they cannot be deleted without breaking
+            # feature health -- hide them instead to keep the viewport clean.
+            for obj in track:
+                try:
+                    obj.isLightBulbOn = False
+                except Exception:
+                    pass
         except Exception:
             futil.handle_error(f'{CMD_NAME} cut')
 
