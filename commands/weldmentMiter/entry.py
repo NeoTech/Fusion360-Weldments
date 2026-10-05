@@ -153,25 +153,34 @@ def _grow_tip(root, body, vertex, own, setback_cm):
     if best is None:
         return None
     grow = jt._scale(own, -1.0)            # past the vertex, away from the body
-    nrm = (best.geometry.normal.x, best.geometry.normal.y,
-           best.geometry.normal.z)
-    direction = (adsk.fusion.ExtentDirections.PositiveExtentDirection
-                 if jt._dot(nrm, grow) >= 0.0
-                 else adsk.fusion.ExtentDirections.NegativeExtentDirection)
     ex = root.features.extrudeFeatures
+    # Plane.normal has an ARBITRARY orientation (it is not the face's outward
+    # normal), so the extrude direction cannot be derived from it -- guessing
+    # wrong extrudes the prism INTO the member and the Join adds nothing.
+    # Build the prism, check which side of the vertex its bbox centre landed
+    # on, and flip if it grew the wrong way.
     try:
-        ei = ex.createInput(
-            best, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-        ei.setOneSideExtent(
-            adsk.fusion.DistanceExtentDefinition.create(
-                adsk.core.ValueInput.createByReal(setback_cm)), direction)
-        prism = ex.add(ei)
-        tool = prism.bodies.item(0)
-        return _weldment()._combine(
-            root, body, [tool],
-            adsk.fusion.FeatureOperations.JoinFeatureOperation, False)
+        for direction in (adsk.fusion.ExtentDirections.PositiveExtentDirection,
+                          adsk.fusion.ExtentDirections.NegativeExtentDirection):
+            ei = ex.createInput(
+                best, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+            ei.setOneSideExtent(
+                adsk.fusion.DistanceExtentDefinition.create(
+                    adsk.core.ValueInput.createByReal(setback_cm)), direction)
+            prism = ex.add(ei)
+            tool = prism.bodies.item(0)
+            bb = tool.boundingBox
+            ctr = ((bb.minPoint.x + bb.maxPoint.x) / 2.0,
+                   (bb.minPoint.y + bb.maxPoint.y) / 2.0,
+                   (bb.minPoint.z + bb.maxPoint.z) / 2.0)
+            if jt._dot(jt._sub(ctr, vertex), grow) >= 0.0:
+                return _weldment()._combine(
+                    root, body, [tool],
+                    adsk.fusion.FeatureOperations.JoinFeatureOperation, False)
+            prism.deleteMe()               # grew into the member; try the other way
     except Exception:
         return None
+    return None
 
 
 def _corner_vertex(a_cl, b_cl):
