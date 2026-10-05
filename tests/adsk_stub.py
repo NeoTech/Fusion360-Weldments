@@ -488,6 +488,29 @@ class FakeBoundingBox:
                                 center[2] + half)
 
 
+class FakeAttribute:
+    def __init__(self, group, name, value):
+        self.groupName = group
+        self.name = name
+        self.value = value
+
+
+class FakeAttributes:
+    """Minimal entity-attribute store (mirrors adsk.core.Attributes)."""
+
+    def __init__(self):
+        self._items = {}
+
+    def add(self, group, name, value):
+        _record("Attributes.add", group, name, value)
+        a = FakeAttribute(group, name, str(value))
+        self._items[(group, name)] = a
+        return a
+
+    def itemByName(self, group, name):
+        return self._items.get((group, name))
+
+
 class FakeBody:
     """A body with a real centroid (``center``) and a scripted pointContainment.
 
@@ -505,6 +528,7 @@ class FakeBody:
         self._center = center
         self.boundingBox = FakeBoundingBox(center)
         self.faces = FakeFaces(faces)
+        self.attributes = FakeAttributes()
         self._owner = None
 
     def pointContainment(self, pt):

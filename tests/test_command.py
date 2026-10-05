@@ -784,6 +784,146 @@ class TestBendBuild(unittest.TestCase):
                     self.assertAlmostEqual(a[k], b[k], places=6)
 
 
+class TestPlacedBasis(unittest.TestCase):
+    """A1: the registry must store the basis _build_weldment ACTUALLY drew with.
+
+    The old persist stored _bend_bases[i] raw -- None for every non-bend leg --
+    so members read back isotropic (the basis: null bug). placed_basis mirrors
+    the builder: bend basis or compute_basis, then the row's Rotation on top.
+    """
+
+    def test_non_bend_leg_gets_compute_basis_not_none(self):
+        line = adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))
+        u, v = entry.placed_basis(line, ref=(0, 0, 1), angle_rad=0.0,
+                                 bend_basis=None)
+        eu, ev = prof.compute_basis((1.0, 0.0, 0.0), (0, 0, 1))
+        for a, b in ((u, eu), (v, ev)):
+            for k in range(3):
+                self.assertAlmostEqual(a[k], b[k], places=9)
+
+    def test_rotation_is_applied_on_top(self):
+        import math as _m
+        line = adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))
+        u0, v0 = entry.placed_basis(line, ref=(0, 0, 1), angle_rad=0.0)
+        u1, v1 = entry.placed_basis(line, ref=(0, 0, 1), angle_rad=_m.pi / 2)
+        # 90 deg spin maps v0 into +-u0 (see test_rotate_basis_90_swaps_u_into_v).
+        dot = sum(a * b for a, b in zip(u1, v0))
+        self.assertAlmostEqual(abs(dot), 1.0, places=9)
+        dot2 = sum(a * b for a, b in zip(u1, u0))
+        self.assertAlmostEqual(dot2, 0.0, places=9)
+
+    def test_bend_basis_overrides_ref(self):
+        line = adsk_stub.FakeLine((0, 0, 0), (10, 0, 0))
+        bb = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        u, v = entry.placed_basis(line, ref=(1, 0, 0), angle_rad=0.0,
+                                 bend_basis=bb)
+        self.assertEqual(u, (0.0, 1.0, 0.0))
+        self.assertEqual(v, (0.0, 0.0, 1.0))
+
+
+class TestBodyAttributeSpine(unittest.TestCase):
+    """A2: body -> member identity rides on a stamped attribute, not indices."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.registry = entry.reg.Registry()
+
+    def test_stamp_and_read_back(self):
+        body = adsk_stub.FakeBody(name='Body7')
+        m = self.registry.add_member((0, 0, 0), (10, 0, 0))
+        self.assertTrue(entry.stamp_body(body, m.mid))
+        self.assertEqual(entry.body_mid(body), m.mid)
+        self.assertIs(entry.resolve_member(self.registry, body), m)
+
+    def test_unstamped_body_resolves_by_proximity(self):
+        body = adsk_stub.FakeBody(name='Legacy')
+        m = self.registry.add_member((0, 0, 0), (10, 0, 0))
+        self.assertIsNone(entry.body_mid(body))
+        got = entry.resolve_member(self.registry, body,
+                                   context_line=((0.1, 0, 0), (9.9, 0, 0)))
+        self.assertIs(got, m)
+
+    def test_waste_fragment_resolves_to_nothing(self):
+        # A boolean's leftover body carries no stamp and sits off any member.
+        body = adsk_stub.FakeBody(name='Plug')
+        self.registry.add_member((0, 0, 0), (10, 0, 0))
+        self.assertIsNone(entry.resolve_member(
+            self.registry, body, context_line=((5, 30, 0), (5, 40, 0))))
+
+    def test_stamp_survives_restamp_and_mid_gone(self):
+        body = adsk_stub.FakeBody()
+        entry.stamp_body(body, 3)
+        entry.stamp_body(body, 5)                 # update in place
+        self.assertEqual(entry.body_mid(body), 5)
+        self.assertIsNone(entry.resolve_member(self.registry, body))
+
+    def test_non_numeric_value_is_none(self):
+        body = adsk_stub.FakeBody()
+        body.attributes.add(entry.BODY_ATTR_GROUP, entry.BODY_ATTR_NAME, 'x')
+        self.assertIsNone(entry.body_mid(body))
+
+
+class TestRecordJoints(unittest.TestCase):
+    """A3: the auto command stores the joints it built as registry records."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.registry = entry.reg.Registry()
+        # An L-corner: member 0 along +X, member 1 along +Y, meeting at (10,0,0).
+        self.lines = [adsk_stub.FakeLine((0, 0, 0), (10, 0, 0)),
+                      adsk_stub.FakeLine((10, 0, 0), (10, 10, 0))]
+        self.m0 = self.registry.add_member((0, 0, 0), (10, 0, 0))
+        self.m1 = self.registry.add_member((10, 0, 0), (10, 10, 0))
+
+    def _miter_occs(self):
+        V = (10.0, 0.0, 0.0)
+        return [{'kind': 'miter', 'member': 0, 'role': 'end', 'vertex': V,
+                 'partner': (1, 'start'), 'setback': 1.0,
+                 'cutter': {'type': 'plane', 'point': V, 'normal': (1, 1, 0),
+                            'region': {}}},
+                {'kind': 'miter', 'member': 1, 'role': 'start', 'vertex': V,
+                 'partner': (0, 'end'), 'setback': 1.0,
+                 'cutter': {'type': 'plane', 'point': V, 'normal': (-1, -1, 0),
+                            'region': {}}}]
+
+    def test_miter_merges_two_legs_into_one_record(self):
+        made = entry.record_joints(self.registry, self._miter_occs(),
+                                   self.lines)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(made[0].kind, 'miter')
+        self.assertEqual(set(made[0].member_ids()), {self.m0.mid, self.m1.mid})
+
+    def test_rerun_does_not_duplicate(self):
+        entry.record_joints(self.registry, self._miter_occs(), self.lines)
+        before = len(self.registry.joints)
+        entry.record_joints(self.registry, self._miter_occs(), self.lines)
+        self.assertEqual(len(self.registry.joints), before)
+
+    def test_plain_butt_is_not_recorded(self):
+        occs = [{'kind': 'butt', 'member': 0, 'role': 'end',
+                 'vertex': (10, 0, 0), 'partner': (1, 'start'),
+                 'setback': 0.0, 'cutter': None}]
+        self.assertEqual(entry.record_joints(self.registry, occs, self.lines),
+                         [])
+
+    def test_cope_records_with_depth(self):
+        occs = [{'kind': 'cope_end', 'member': 1, 'role': 'start',
+                 'vertex': (10, 0, 0), 'partner': (0, 'end'), 'setback': 0.0,
+                 'cutter': {'type': 'body', 'tool': 0, 'region': {}}}]
+        made = entry.record_joints(self.registry, occs, self.lines)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(made[0].kind, 'cope_end')
+
+    def test_bend_records_clr(self):
+        occs = [{'kind': 'bend', 'member': 0, 'role': 'end',
+                 'vertex': (10, 0, 0), 'partner': (1, 'start'), 'setback': 0.0,
+                 'cutter': None, 'clr_mm': 3.0,
+                 'legs': [(0, 'end'), (1, 'start')]}]
+        made = entry.record_joints(self.registry, occs, self.lines)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(made[0].params.get('clr_mm'), 3.0)
+
+
 class TestBendCopeColumns(unittest.TestCase):
     """Per-line Inverse / Bend Die / Cope Depth columns: enablement and reads."""
 

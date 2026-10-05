@@ -125,16 +125,24 @@ class Member:
     ``start``/``end`` are the centreline endpoints in cm (the *drawn* line, so a
     bend member keeps its full virtual corner even though the built body stops at
     the tangent points).  ``geom`` is the mm section descriptor; ``basis`` is the
-    placed ``(u, v)`` axes or None for a round tube.  ``feature``/``body_index``
-    locate the built body for the command layer to re-resolve.
+    PLACED ``(u, v)`` axes (after the reference and Rotation, exactly as
+    :func:`commands.weldment.entry._build_weldment` draws the profile) or None
+    for a round tube.  ``feature``/``body_index`` locate the built body for the
+    command layer to re-resolve.
+
+    ``angle_rad``/``ref``/``anchor``/``offset_start``/``offset_end`` record the
+    per-row placement the builder used, so a member can be REBUILT from the
+    record alone (the BOM-as-history goal) without re-reading the command dialog.
     """
 
     __slots__ = ('mid', 'start', 'end', 'geom', 'basis',
-                 'designation', 'family', 'feature', 'body_index', 'name')
+                 'designation', 'family', 'feature', 'body_index', 'name',
+                 'angle_rad', 'ref', 'anchor', 'offset_start', 'offset_end')
 
     def __init__(self, mid, start, end, geom=None, basis=None,
                  designation='', family='', feature=None, body_index=None,
-                 name=''):
+                 name='', angle_rad=0.0, ref=None, anchor=None,
+                 offset_start=0.0, offset_end=0.0):
         self.mid = mid
         self.start = tuple(start)
         self.end = tuple(end)
@@ -145,6 +153,11 @@ class Member:
         self.feature = feature
         self.body_index = body_index
         self.name = name
+        self.angle_rad = angle_rad
+        self.ref = list(ref) if ref else None
+        self.anchor = list(anchor) if anchor else None
+        self.offset_start = offset_start
+        self.offset_end = offset_end
 
     @property
     def direction(self):
@@ -158,14 +171,21 @@ class Member:
                 'geom': self.geom, 'basis': self.basis,
                 'designation': self.designation, 'family': self.family,
                 'feature': self.feature, 'body_index': self.body_index,
-                'name': self.name}
+                'name': self.name, 'angle_rad': self.angle_rad,
+                'ref': self.ref, 'anchor': self.anchor,
+                'offset_start': self.offset_start,
+                'offset_end': self.offset_end}
 
     @staticmethod
     def from_dict(d):
         return Member(d['mid'], d['start'], d['end'], geom=d.get('geom'),
                       basis=d.get('basis'), designation=d.get('designation', ''),
                       family=d.get('family', ''), feature=d.get('feature'),
-                      body_index=d.get('body_index'), name=d.get('name', ''))
+                      body_index=d.get('body_index'), name=d.get('name', ''),
+                      angle_rad=d.get('angle_rad', 0.0), ref=d.get('ref'),
+                      anchor=d.get('anchor'),
+                      offset_start=d.get('offset_start', 0.0),
+                      offset_end=d.get('offset_end', 0.0))
 
 
 class Joint:
@@ -238,10 +258,14 @@ class Registry:
 
     # -- members ------------------------------------------------------- #
     def add_member(self, start, end, geom=None, basis=None, designation='',
-                   family='', feature=None, body_index=None, name=''):
+                   family='', feature=None, body_index=None, name='',
+                   angle_rad=0.0, ref=None, anchor=None,
+                   offset_start=0.0, offset_end=0.0):
         m = Member(self._next_mid(), start, end, geom=geom, basis=basis,
                    designation=designation, family=family, feature=feature,
-                   body_index=body_index, name=name)
+                   body_index=body_index, name=name, angle_rad=angle_rad,
+                   ref=ref, anchor=anchor, offset_start=offset_start,
+                   offset_end=offset_end)
         self.members.append(m)
         return m
 

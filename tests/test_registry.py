@@ -208,6 +208,53 @@ class TestEditInPlace(unittest.TestCase):
         self.assertEqual(r2.member(m.mid).designation, '25x2')
 
 
+class TestPlacementFields(unittest.TestCase):
+    """A1 (registry truth): members carry everything a rebuild-from-record needs."""
+
+    def test_defaults(self):
+        m = reg.Member(1, (0, 0, 0), (10, 0, 0))
+        self.assertEqual(m.angle_rad, 0.0)
+        self.assertIsNone(m.ref)
+        self.assertIsNone(m.anchor)
+        self.assertEqual(m.offset_start, 0.0)
+        self.assertEqual(m.offset_end, 0.0)
+
+    def test_round_trip(self):
+        r = reg.Registry()
+        r.add_member((0, 0, 0), (10, 0, 0), geom=GEOM,
+                     basis=[[0, 1, 0], [0, 0, 1]], designation='20x1',
+                     family='CHS', angle_rad=0.5, ref=(0, 0, 1),
+                     anchor=(5.0, -2.0), offset_start=-1.0, offset_end=2.0)
+        r2 = reg.Registry.from_json(r.to_json())
+        m = r2.member(1)
+        self.assertAlmostEqual(m.angle_rad, 0.5)
+        self.assertEqual(m.ref, [0, 0, 1])
+        self.assertEqual(m.anchor, [5.0, -2.0])
+        self.assertEqual(m.offset_start, -1.0)
+        self.assertEqual(m.offset_end, 2.0)
+        self.assertEqual(m.basis, [[0, 1, 0], [0, 0, 1]])
+        self.assertEqual(m.family, 'CHS')
+
+    def test_legacy_dict_loads_with_defaults(self):
+        # Schema-version-1 records (no placement keys) must still parse.
+        legacy = ('{"version": 1, "members": [{"mid": 1, "start": [0,0,0],'
+                  ' "end": [10,0,0], "geom": null, "basis": null,'
+                  ' "designation": "20x1", "family": "", "feature": 3,'
+                  ' "body_index": 0, "name": ""}], "joints": []}')
+        r = reg.Registry.from_json(legacy)
+        m = r.member(1)
+        self.assertEqual(m.angle_rad, 0.0)
+        self.assertIsNone(m.ref)
+        self.assertEqual(m.offset_end, 0.0)
+
+    def test_upsert_updates_placement(self):
+        r = reg.Registry()
+        m = r.add_member((0, 0, 0), (10, 0, 0), angle_rad=0.0)
+        again = r.upsert_member((0, 0, 0), (10, 0, 0), angle_rad=1.25)
+        self.assertIs(again, m)
+        self.assertAlmostEqual(m.angle_rad, 1.25)
+
+
 class TestSerialisation(unittest.TestCase):
     def test_round_trip(self):
         r = reg.Registry()

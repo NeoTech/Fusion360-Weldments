@@ -280,6 +280,9 @@ def _record(design, body_a, body_b, cl_a, cl_b, vertex):
                                basis=list(cl_a[3]) if cl_a[3] else None)
     mb = registry.upsert_member(cl_b[0], cl_b[1], geom=cl_b[2],
                                basis=list(cl_b[3]) if cl_b[3] else None)
+    for body, mem in ((body_a, ma), (body_b, mb)):
+        if w.body_mid(body) is None:         # keep an existing stamp's owner
+            w.stamp_body(body, mem.mid)
     for j in registry.joints:
         if j.kind == 'miter' and set(j.member_ids()) == {ma.mid, mb.mid} and \
                 j.vertex and reg.distance(j.vertex, vertex) < 0.05:

@@ -191,6 +191,9 @@ def _record(design, subj_body, tgt_body, subj_cl, tgt_cl, landing, mode):
                                 basis=list(subj_cl[3]) if subj_cl[3] else None)
     tm = registry.upsert_member(tgt_cl[0], tgt_cl[1], geom=tgt_cl[2],
                                basis=list(tgt_cl[3]) if tgt_cl[3] else None)
+    for body, mem in ((subj_body, sm), (tgt_body, tm)):
+        if w.body_mid(body) is None:         # keep an existing stamp's owner
+            w.stamp_body(body, mem.mid)
     for j in registry.joints:
         if j.kind == mode and set(j.member_ids()) == {sm.mid, tm.mid} and \
                 j.vertex and reg.distance(j.vertex, landing) < 0.05:

@@ -1593,6 +1593,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
 
     created = 0
     objs, feat_idx = [], []
+    placements = {}
     f_start = root.features.count
     for i, line in enumerate(saved):
         angle, off_s, off_e = _row_params(inputs, i)
@@ -1603,6 +1604,9 @@ def command_execute(args: adsk.core.CommandEventArgs):
                                 anchor=anchor)
         if built:
             created += 1
+            placements[i] = {'angle_rad': angle,
+                             'offset_start': off_s + js,
+                             'offset_end': off_e + je}
         objs.append(built)
         feat_idx.append(idx if built else None)
     bend_arcs, bend_trims = _build_bend_arcs(
@@ -1612,6 +1616,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
     _bases, _anchor = _joint_frame(inputs, saved, geom, ref)
     global _arc_downgrades
     _arc_downgrades = 0
+    occs, cut_bodies = [], {}
     _apply_corner_cuts(root, saved, _row_joints(inputs, saved), objs,
                        feat_idx, f_start,
                        saddle=_row_saddle(inputs, saved),
@@ -1620,7 +1625,8 @@ def command_execute(args: adsk.core.CommandEventArgs):
                        geoms=[geom for _ in saved],
                        cope_depth_by_line=cope_depths,
                        clr_by_line=clr_by_line,
-                       bases=_bases, anchor_by_line=_anchor)
+                       bases=_bases, anchor_by_line=_anchor,
+                       spec_out=occs, bodies_out=cut_bodies)
 
     if _arc_downgrades:
         ui.messageBox(
@@ -1638,7 +1644,14 @@ def command_execute(args: adsk.core.CommandEventArgs):
     # Persist the built members so the next run edits records instead of
     # re-detecting the frame (Phase 4a re-run pickup).
     try:
-        persist_members(_design(), saved, geom, designation, tbases, feat_idx)
+        registry = persist_members(_design(), saved, geom, designation,
+                                   tbases, feat_idx, placements=placements,
+                                   ref=ref, anchor=anchor, objs=objs,
+                                   bodies=cut_bodies)
+        # Record the joints that were just built (A3): the BOM becomes the
+        # frame's history -- every miter/cope/bend is a re-runnable record.
+        record_joints(registry, occs, saved, context=context)
+        save_registry(_design(), registry)
     except Exception:
         futil.handle_error(f'{CMD_NAME} registry persist')
 
@@ -1988,19 +2001,96 @@ def save_registry(design, registry):
     a.value = registry.to_json()
 
 
+# --------------------------------------------------------------------------- #
+# Body <-> member identity (A2: the attribute spine).
+#
+# Feature indices drift and body names are unstable, so the reliable link from a
+# live BRepBody back to its registry Member record is an ATTRIBUTE STAMPED ON THE
+# BODY ITSELF: (group 'Weldments', name 'Member', value str(mid)).  Attributes
+# survive rename/recolour and -- unlike a Combine's output -- a body keeps them
+# wherever it moves in the timeline.  Waste fragments produced by a boolean are
+# NEW bodies and therefore have NO stamp, which doubles as the classifier for
+# "remove the leftovers" (A4/C2).  Everything resolves through here instead of
+# re-guessing sections from faces.
+# --------------------------------------------------------------------------- #
+BODY_ATTR_GROUP = 'Weldments'
+BODY_ATTR_NAME = 'Member'
+
+
+def stamp_body(body, mid):
+    """Attach (or update) the member-id stamp on ``body``. Best-effort."""
+    try:
+        body.attributes.add(BODY_ATTR_GROUP, BODY_ATTR_NAME, str(mid))
+        return True
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} stamp body')
+        return False
+
+
+def body_mid(body):
+    """The member id stamped on ``body``, or None when it carries no stamp."""
+    try:
+        a = body.attributes.itemByName(BODY_ATTR_GROUP, BODY_ATTR_NAME)
+    except Exception:
+        return None
+    if a is None:
+        return None
+    try:
+        return int(a.value)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_member(registry, body, context_line=None):
+    """The Member record a live ``body`` belongs to, or None.
+
+    Primary key is the body's attribute stamp (see above).  When a body carries
+    no stamp -- built before the spine existed, or by a plain extrude -- fall
+    back to centreline proximity: pass ``context_line`` = ``(start, end)`` cm
+    (e.g. from :func:`_member_centerline`) and the nearest member within 0.5 cm
+    wins.  Returns None when neither identifies a member.
+    """
+    mid = body_mid(body)
+    if mid is not None:
+        m = registry.member(mid)
+        if m is not None:
+            return m
+    if context_line is not None:
+        return registry.member_near_point(
+            reg.midpoint(context_line[0], context_line[1]), tol=0.5)
+    return None
+
+
 def registry_context(root, registry):
     """Member records as ``joint_spec`` context dicts, bodies re-resolved live.
 
     Mirrors :func:`_recover_existing_members`' output shape
     ``{'line','geom','basis','body'}`` but sourced from stored records: the
     centreline comes from the record (so a bend member keeps its full virtual
-    corner, no stub-reunion needed) and only the ``body`` is looked up fresh by
-    feature index. A record whose body is gone (deleted feature) is skipped.
+    corner, no stub-reunion needed) and the ``body`` is found through the
+    attribute spine -- the body whose stamp names this member (see
+    :func:`stamp_body`) -- falling back to the stored feature index for bodies
+    built before the spine existed. A record whose body is gone is skipped.
     """
+    by_mid = {}
+    try:
+        feats = root.features
+        for i in range(feats.count):
+            try:
+                f = feats.item(i)
+                for j in range(f.bodies.count):
+                    b = f.bodies.item(j)
+                    mid = body_mid(b)
+                    if mid is not None:
+                        by_mid[mid] = b
+            except Exception:
+                continue
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} registry context')
     members = []
     for m in registry.members:
-        body = None
-        if m.feature is not None:
+        body = by_mid.get(m.mid)
+        if body is None and m.feature is not None:
             try:
                 f = root.features.item(m.feature)
                 body = f.bodies.item(m.body_index or 0)
@@ -2013,25 +2103,152 @@ def registry_context(root, registry):
     return members
 
 
-def persist_members(design, lines, geom, designation, bases, feat_idx):
+def record_joints(registry, occs, lines, context=None):
+    """Store ``joint_spec`` occurrences (A3) as Joint records, deduped.
+
+    ``occs`` is what :func:`_apply_corner_cuts` computed for the committed
+    build; ``lines``/``context`` are the same index spaces joint_spec used, so
+    an occurrence's ``member``/``partner`` indices map back to member records
+    (by stamp first, centreline proximity second).  A miter is ONE joint
+    between two members even though joint_spec emits an occurrence per leg, so
+    occurrences sharing (kind, vertex, member set) merge into a single record,
+    and a record the registry already carries (same kind, vertex within 0.05 cm,
+    same member set) is not duplicated -- the re-run pickup.  Plain butts
+    (cutter None, kind 'butt') are pure axial trims -- nothing geometric
+    happened, and they are not recorded.  Returns the records made.
+    """
+    ctx = context or []
+
+    def mid_of(i):
+        if 0 <= i < len(lines):
+            s, e = jt.line_endpoints(lines[i])
+            m = registry.member_near_point(reg.midpoint(s, e), tol=0.5)
+            return m.mid if m else None
+        if i < 0 and ~(i) < len(ctx):      # joint_spec encodes context as ~k
+            cl = ctx[~i].get('line') if isinstance(ctx[~i], dict) else ctx[~i]
+            s, e = jt.line_endpoints(cl)
+            m = registry.member_near_point(reg.midpoint(s, e), tol=0.5)
+            return m.mid if m else None
+        return None
+
+    made, seen = [], {}
+    for occ in occs:
+        kind = occ.get('kind')
+        if kind == 'bend' and occ.get('cutter') is None and not occ.get('legs'):
+            continue
+        if kind == 'butt' and occ.get('cutter') is None:
+            continue                      # pure axial trim: no joint geometry
+        subj = mid_of(occ['member'])
+        partner = occ.get('partner')
+        pmid = mid_of(partner[0]) if partner else None
+        if subj is None:
+            continue
+        refs = [{'mid': subj, 'role': occ.get('role')}]
+        if pmid is not None and pmid != subj:
+            refs.append({'mid': pmid, 'role': partner[1] if partner else None})
+        V = occ.get('vertex')
+        key = (kind if kind != 'miter' else 'miter',
+               tuple(round(c, 4) for c in V) if V else None,
+               frozenset(r['mid'] for r in refs))
+        if key in seen:
+            j = seen[key]
+            for r in refs:                # merge the other leg's subject
+                if r['mid'] not in j.member_ids():
+                    j.refs.append(r)
+            continue
+        params = {}
+        if occ.get('clr_mm'):
+            params['clr_mm'] = occ['clr_mm']
+        if occ.get('setback'):
+            params['setback_cm'] = occ['setback']
+        old = _find_joint(registry, kind, V, {r['mid'] for r in refs})
+        if old is not None:               # re-run pickup: edit, don't duplicate
+            old.params.update(params)
+            seen[key] = old
+            continue
+        j = registry.add_joint(kind, refs, vertex=V, params=params)
+        seen[key] = j
+        made.append(j)
+    return made
+
+
+def _find_joint(registry, kind, vertex, mids):
+    """An existing joint of ``kind`` at ``vertex`` (±0.05 cm) over ``mids``."""
+    for j in registry.joints:
+        if j.kind != kind or set(j.member_ids()) != set(mids):
+            continue
+        if vertex is None or j.vertex is None:
+            return j
+        if reg.distance(j.vertex, vertex) <= 0.05:
+            return j
+    return None
+
+
+def placed_basis(line, ref, angle_rad, bend_basis=None):
+    """The section basis :func:`_build_weldment` actually draws with.
+
+    ``_build_weldment`` starts from ``bend_basis`` when it is a bend leg (flat in
+    the bend plane) else :func:`profiles.compute_basis` against the global
+    reference, and then spins it by the row's Rotation.  The registry must store
+    THIS -- not the raw bend basis -- or a rebuilt/consulted member reads as
+    isotropic (the ``basis: null`` bug: ``_bend_bases`` returns None for every
+    non-bend leg even though the placement used a real basis).
+    """
+    d = _line_direction(line)
+    u, v = (tuple(bend_basis[0]), tuple(bend_basis[1])) if bend_basis is not None \
+        else prof.compute_basis(d, ref)
+    return prof.rotate_basis(u, v, angle_rad)
+
+
+def persist_members(design, lines, geom, designation, bases, feat_idx,
+                    placements=None, ref=None, anchor=None, objs=None,
+                    bodies=None):
     """Upsert each built line into the design's registry (re-run pickup).
 
     Matches an existing member by centreline so rebuilding the same tube edits
-    its record instead of duplicating. Returns the (mutated) registry. Joint
-    records are written by the toolbox tools (Phase 4c); the auto command only
-    persists members here.
+    its record instead of duplicating.  Stores the PLACED basis (see
+    :func:`placed_basis`), the family abbreviation, and the per-row placement
+    (Rotation, joint+manual offsets) so the member is rebuildable from the
+    record alone, and stamps the built body with the member id (see
+    :func:`stamp_body`) so any tool can resolve body -> record without face
+    guessing. ``objs``/``bodies`` give the body to stamp: the post-cut survivor
+    when a cut re-homed it (A4), else the extruded body. Returns the (mutated)
+    registry. Joint records are written by the toolbox tools (Phase 4c) and by
+    :func:`record_joints`; the auto command persists members here.
     """
     registry = load_registry(design)
     for i, line in enumerate(lines):
         if feat_idx[i] is None:
             continue
         s, e = jt.line_endpoints(line)
-        registry.upsert_member(
+        pl = (placements or {}).get(i, {})
+        m = registry.upsert_member(
             s, e, geom=geom,
-            basis=list(bases[i]) if bases and bases[i] else None,
+            basis=[list(a) for a in placed_basis(
+                line, ref, pl.get('angle_rad', 0.0),
+                bases[i] if bases and i < len(bases) else None)],
             designation=designation.get('designation', '') if designation else '',
-            family=designation.get('_family', '') if designation else '',
-            feature=feat_idx[i], body_index=0)
+            family=designation.get('_abbreviation', '') if designation else '',
+            feature=feat_idx[i], body_index=0,
+            angle_rad=pl.get('angle_rad', 0.0),
+            ref=list(ref) if ref else None,
+            anchor=list(anchor) if anchor else None,
+            offset_start=pl.get('offset_start', 0.0),
+            offset_end=pl.get('offset_end', 0.0))
+        if objs and i < len(objs) and objs[i]:
+            try:
+                built = objs[i][0].bodies.item(0)
+            except Exception:
+                built = None
+            if built is not None:
+                stamp_body(built, m.mid)
+            # A cut may re-home the member to a new survivor body; stamp that too
+            # ONLY when it carries no stamp yet -- never overwrite another
+            # member's owner (a cope's kept-tool survivor can be mis-picked, and
+            # clobbering its stamp would corrupt the spine).
+            surv = (bodies or {}).get(i)
+            if surv is not None and surv is not built and body_mid(surv) is None:
+                stamp_body(surv, m.mid)
     save_registry(design, registry)
     return registry
 
@@ -2579,7 +2796,8 @@ def _survivor_after_cut(comb, keep_body, region):
 def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                        saddle=None, through=None, context=None,
                        geoms=None, bases=None, anchor_by_line=None,
-                       cope_depth_by_line=None, clr_by_line=None):
+                       cope_depth_by_line=None, clr_by_line=None,
+                       spec_out=None, bodies_out=None):
     """Shape member ends with real geometry using bounded cutter solids.
 
     Every joint is realised by a FINITE cutter confined to a joint box, so
@@ -2607,7 +2825,14 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
     Returns the objects to track for preview cleanup, in delete order: each
     Remove/Combine/cutter feature first (removing it restores the member body),
     then the helper sketches/planes they consumed.  The caller deletes all of
-    these BEFORE the member features.
+    these BEFORE the member features.  ``spec_out`` (optional list) receives the
+    computed ``occs`` so the committed build can record them as joint records
+    (see :func:`record_joints`); the preview path leaves it unset.
+    ``bodies_out`` (optional dict) receives each line index's FINAL body after
+    all cuts (see :func:`stamp_body`): a Combine re-homes a member's body to the
+    cut feature, so the pre-cut ``objs[i][0].bodies`` reference is stale once a
+    member has been coped/mitered -- stamping the survivor keeps the attribute
+    spine intact across the cut (A4).
     """
     created = []
     ctx = context or []
@@ -2619,6 +2844,8 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                              bases=bases, context=ctx,
                              anchor_by_line=anchor_by_line)
         occs = spec['occs']
+        if spec_out is not None:
+            spec_out.extend(occs)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint spec')
         return created
@@ -2679,18 +2906,38 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                 tool_body = body_of.get(t)
             if tool_body is None:
                 continue
-            comb = _combine_cut(root, body, [tool_body], keep_tool=True)
-            # Remove cutoffs wholly inside the joint box (the cope plug), never
-            # the tool.  Track the Removes BEFORE the combine so teardown
-            # deletes them first, then the combine (restoring the whole body).
-            removes = _remove_inside_region(root, comb, tool_body, region)
-            created = removes + [comb] + created
-            body_of[m] = (_survivor_after_cut(comb, tool_body, region)
-                          or body)
+            removes, run = cope_body_cut(root, body, tool_body, region)
+            created = removes + created
+            body_of[m] = run or body
         except Exception:
             futil.handle_error(f'{CMD_NAME} corner cut')
+    if bodies_out is not None:
+        bodies_out.update(body_of)
     # Cut features and helpers FIRST (delete order), then the rest.
     return created
+
+
+def cope_body_cut(root, body, tool_body, region):
+    """The single cope/saddle cut the auto path performs -- the reusable core.
+
+    Combine(Cut) ``body`` against ``tool_body`` (keep-tool, so the neighbour it
+    saddles onto survives) and Remove the cutoff fragments wholly inside the
+    joint box (the plug pushed into the tube's void).  This is exactly what
+    :func:`_apply_corner_cuts` does for a ``cutter.type == 'body'`` occurrence;
+    factored out so the standalone Cope toolbar command runs the SAME code the
+    auto path does (rather than reimplementing the tip logic and drifting from
+    it).  ``body`` is already at auto's build-time length (trimmed to
+    ``-trim + wall + depth``), so no extra axial trim is needed -- applying one
+    double-trims the tip and pulls it off the wall.
+
+    Returns ``(removes, run)``: the Remove/Combine features created (in delete
+    order -- Removes before the Combine so teardown restores the whole body)
+    and the member's surviving run body.
+    """
+    comb = _combine_cut(root, body, [tool_body], keep_tool=True)
+    removes = _remove_inside_region(root, comb, tool_body, region)
+    run = _survivor_after_cut(comb, tool_body, region)
+    return removes + [comb], run
 
 
 def _combine_survivor(comb, tool_body):
