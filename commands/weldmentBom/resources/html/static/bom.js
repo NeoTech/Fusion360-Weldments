@@ -44,6 +44,12 @@ function refresh() {
     adsk.fusionSendData('refresh', JSON.stringify({}));
 }
 
+function rebuild() {
+    setStatus('Rebuilding...');
+    adsk.fusionSendData('rebuild', JSON.stringify({}))
+        .then((r) => setStatus(r));
+}
+
 function kindOptions(kind) {
     // Ensure the joint's current kind is selectable even if it is not in the
     // canonical list (a future kind, or a hand-edited value).

@@ -373,6 +373,79 @@ class Registry:
     def joints_for_member(self, mid):
         return [j for j in self.joints if j.touches(mid)]
 
+    # -- rebuild planning (the BOM panel's read path for geometry) ------ #
+    def plan_rebuild(self):
+        """Map the records onto the joint inputs the builder consumes.
+
+        The auto command drives :func:`lib.joints.joint_spec` from the command
+        dialog (a per-end joint id, plus per-line Through/Saddle flags, cope
+        depth and bend radius).  A rebuild from the registry has no dialog, so
+        this reconstructs exactly those inputs from the stored member/joint
+        records -- the "BOM is the history" contract: edit a row, and the next
+        rebuild sees the change.  Returns a dict keyed by ``mid``::
+
+            {'joint_ids': (start_id, end_id),   # ids in joints.ALL_IDS
+             'through': bool, 'saddle': bool,    # per-line flags (both ends)
+             'cope_depth_mm': float, 'clr_mm': float}
+
+        A joint's specific recorded kind collapses to the builder's canonical id
+        (``cope_t``/``cope_end``/... -> ``cope``; ``saddle``/``butt_saddle`` ->
+        ``butt`` + the saddle flag; ``through`` -> ``butt`` + the through flag),
+        and lands on the END named by its subject ref's ``role``.  Where two
+        joints claim one end, the more specific wins (bend > miter > cope > butt).
+        """
+        order = {'none': 0, 'butt': 1, 'cope': 2, 'miter': 3, 'bend': 4}
+        plan = {m.mid: {'joint_ids': ['none', 'none'], 'through': False,
+                        'saddle': False, 'cope_depth_mm': 0.0, 'clr_mm': 0.0}
+                for m in self.members}
+        mids = set(plan)
+
+        def place(mid, role, cid):
+            """Set ``cid`` on ``mid``'s ``role`` end unless a jointier id owns it."""
+            slot = 0 if role == 'start' else 1
+            cur = plan[mid]['joint_ids'][slot]
+            if order.get(cid, 0) >= order.get(cur, 0):
+                plan[mid]['joint_ids'][slot] = cid
+
+        for j in self.joints:
+            refs = [r for r in j.refs if r['mid'] in mids]
+            if not refs:
+                continue
+            subj = refs[0]
+            kind = j.kind
+            partner = refs[1] if len(refs) > 1 else None
+            if kind in ('cope', 'cope_end', 'cope_t', 'cope_angle'):
+                cid = 'cope'
+            elif kind in ('saddle', 'butt_saddle'):
+                cid = 'butt'
+                plan[subj['mid']]['saddle'] = True
+            elif kind == 'through':
+                cid = 'butt'
+                plan[subj['mid']]['through'] = True
+            elif kind in ('butt', 'miter', 'bend'):
+                cid = kind
+            else:
+                cid = 'none'
+            place(subj['mid'], subj.get('role'), cid)
+            # A miter or a swept bend is a property of the JOINT, not one end:
+            # the geometry only resolves when BOTH members request it (a lone
+            # miter leaves the neighbour's square end poking through; a lone
+            # bend leg draws no arc).  Mirror it onto the partner's referenced
+            # end, exactly as the command's _propagate_corner_joint does.  A
+            # cope/butt is per-member and must NOT propagate (the neighbour runs
+            # through untouched).
+            if kind in ('miter', 'bend') and partner is not None:
+                place(partner['mid'], partner.get('role'), cid)
+            if j.params.get('depth_mm'):
+                plan[subj['mid']]['cope_depth_mm'] = j.params['depth_mm']
+            if j.params.get('clr_mm'):
+                plan[subj['mid']]['clr_mm'] = j.params['clr_mm']
+                if kind == 'bend' and partner is not None:
+                    plan[partner['mid']]['clr_mm'] = j.params['clr_mm']
+        for v in plan.values():
+            v['joint_ids'] = tuple(v['joint_ids'])
+        return plan
+
     # -- edit-in-place (the BOM panel's write path) ---------------------- #
     def set_member(self, mid, **fields):
         """Update scalar fields on member ``mid`` (designation, name, ...).

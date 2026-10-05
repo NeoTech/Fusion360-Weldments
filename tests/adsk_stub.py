@@ -268,9 +268,13 @@ class FakePlaneGeometry:
 class FakeConstructionPlane:
     def __init__(self, normal=(1, 0, 0)):
         self.geometry = FakePlaneGeometry(normal)
+        self.attributes = FakeAttributes()
+        self._root = None
 
     def deleteMe(self):
         _record("ConstructionPlane.deleteMe")
+        if self._root is not None and self in self._root._planes:
+            self._root._planes.remove(self)
         return True
 
 
@@ -333,9 +337,13 @@ class FakeSketch:
         self.transform = Matrix3D()
         self._profiles = _Collection([_Node("profile")])
         self.sketchCurves = FakeSketchCurves()
+        self.attributes = FakeAttributes()
+        self._root = None
 
     def deleteMe(self):
         _record("Sketch.deleteMe")
+        if self._root is not None and self in self._root._sketches:
+            self._root._sketches.remove(self)
         return True
 
     @property
@@ -396,11 +404,24 @@ class FakeConstructionPlanes:
 
 
 class FakeSketches:
+    def __init__(self, root=None):
+        self._root = root
+
     def add(self, plane):
         _record("Sketches.add")
         sk = FakeSketch()
         sk.attachedPlane = plane
+        if self._root is not None:
+            sk._root = self._root
+            self._root._sketches.append(sk)
         return sk
+
+    @property
+    def count(self):
+        return len(self._root._sketches) if self._root else 0
+
+    def item(self, i):
+        return self._root._sketches[i]
 
 
 class FakeExtrudeInput:
@@ -568,6 +589,7 @@ class FakeFeature:
         self.objectType = object_type
         self._root = root
         self.bodies = FakeBodies(bodies)
+        self.attributes = FakeAttributes()
 
     def deleteMe(self):
         _record("Feature.deleteMe", self.objectType)
@@ -717,8 +739,9 @@ class FakeRoot:
     def __init__(self):
         self.features = FakeFeatures(self)
         self._planes = []
+        self._sketches = []
         self.constructionPlanes = FakeConstructionPlanes(self)
-        self.sketches = FakeSketches()
+        self.sketches = FakeSketches(self)
         self.xYConstructionPlane = FakeConstructionPlane((0, 0, 1))
 
 

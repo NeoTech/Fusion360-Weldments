@@ -1083,6 +1083,7 @@ def _trim_bend_context_end(root, plan, context):
             root.features.splitBodyFeatures.createInput(body, plane, True))
         created = []
         if sbf is not None:
+            tag_entity(sbf)
             created.append(sbf)
         for helper in (sk, plane):
             try:
@@ -1741,6 +1742,8 @@ def _miter_plane(root, point, normal):
         sk.isLightBulbOn = False
     except Exception:
         pass
+    tag_entity(plane)
+    tag_entity(sk)
     return plane, sk
 
 
@@ -2018,6 +2021,71 @@ def save_registry(design, registry):
 # --------------------------------------------------------------------------- #
 BODY_ATTR_GROUP = 'Weldments'
 BODY_ATTR_NAME = 'Member'
+
+# The same group tags every FEATURE / SKETCH / CONSTRUCTION PLANE the weldment
+# tools create, with name 'Weldment' = '1'.  A rebuild deletes exactly the tagged
+# entities (see :func:`_delete_weldment_entities`) and nothing else, so it can
+# never touch the user's own sketches, origin planes, or unrelated bodies -- the
+# failure mode that made a naive "delete the stamped features" pass destructive.
+ENTITY_ATTR_NAME = 'Weldment'
+
+
+def tag_entity(obj):
+    """Mark ``obj`` (a feature, sketch, or construction plane) as weldment-made.
+
+    Best-effort: an entity that refuses attributes is simply not tagged, and a
+    rebuild then leaves it in place rather than guessing.
+    """
+    try:
+        obj.attributes.add(BODY_ATTR_GROUP, ENTITY_ATTR_NAME, '1')
+        return True
+    except Exception:
+        return False
+
+
+def is_weldment_entity(obj):
+    """True when ``obj`` carries the weldment tag (see :func:`tag_entity`)."""
+    try:
+        a = obj.attributes.itemByName(BODY_ATTR_GROUP, ENTITY_ATTR_NAME)
+        return a is not None and a.value == '1'
+    except Exception:
+        return False
+
+
+def _delete_weldment_entities(root):
+    """Delete every tagged feature, sketch, and construction plane.
+
+    Order matters: a cut feature (Combine/Remove) references the member body and
+    the cutter, so features go first (highest index down, since a cut sits after
+    the extrudes it consumes), then the helper sketches and planes they used.
+    Untagged entities -- the user's sketches, the origin planes -- are never
+    touched.  Returns the number of entities removed.
+    """
+    removed = 0
+    for i in range(root.features.count - 1, -1, -1):
+        try:
+            f = root.features.item(i)
+        except Exception:
+            continue
+        if is_weldment_entity(f):
+            try:
+                f.deleteMe()
+                removed += 1
+            except Exception:
+                futil.handle_error(f'{CMD_NAME} delete tagged feature')
+    for coll in (root.sketches, root.constructionPlanes):
+        for i in range(coll.count - 1, -1, -1):
+            try:
+                e = coll.item(i)
+            except Exception:
+                continue
+            if is_weldment_entity(e):
+                try:
+                    e.deleteMe()
+                    removed += 1
+                except Exception:
+                    futil.handle_error(f'{CMD_NAME} delete tagged helper')
+    return removed
 
 
 def stamp_body(body, mid):
@@ -2298,6 +2366,113 @@ def persist_members(design, lines, geom, designation, bases, feat_idx,
     return registry
 
 
+def _materialize_line(root, start, end):
+    """A real sketch line through two model-space points (cm), for a rebuild.
+
+    :func:`_build_weldment` needs a genuine curve (its offset plane is built with
+    ``Path.create``), and the only plane method that works reliably in a
+    parametric design is ``setByPath`` -- so a rebuild cannot use a
+    :class:`_ContextLine` shim.  A line drawn on the xY plane but given
+    off-plane endpoints keeps its true 3D ``worldGeometry`` (verified live), so
+    this materializes any record's centreline as a real, path-able curve.  The
+    sketch is tagged so the NEXT rebuild clears it; it is otherwise invisible
+    (light bulb off) and holds only the one construction line.
+    """
+    sk = root.sketches.add(root.xYConstructionPlane)
+    sk.name = 'WeldRebuild'
+    tag_entity(sk)
+    try:
+        sk.isLightBulbOn = False
+    except Exception:
+        pass
+    ln = sk.sketchCurves.sketchLines.addByTwoPoints(
+        adsk.core.Point3D.create(*start), adsk.core.Point3D.create(*end))
+    return ln, sk
+
+
+def rebuild_from_registry(design):
+    """Rebuild every member's geometry from its registry record alone.
+
+    This is the BOM-as-history payoff: the panel's records are the source of
+    truth, so editing a row (a designation, a joint kind, a cope depth) and
+    rebuilding reproduces the frame from those numbers -- no sketch selection,
+    no re-detection.  It clears the previously-built weldment geometry (see
+    :func:`_delete_weldment_entities`), materializes each member's centreline
+    from its stored endpoints, builds the body from the stored section/basis/
+    placement, and re-applies the joints the records describe (planned by
+    :meth:`lib.registry.Registry.plan_rebuild`).  Members are rebuilt in mid
+    order so a joint's subject precedes its partner where that matters.
+
+    Returns the number of members rebuilt (0 for an empty registry).  The
+    registry's ``feature``/``body_index`` are refreshed and bodies re-stamped,
+    but member/joint records are NOT otherwise changed -- a rebuild is a
+    geometry operation driven by the records, not an edit of them.
+    """
+    root = design.rootComponent
+    registry = load_registry(design)
+    _delete_weldment_entities(root)
+    members = sorted(registry.members, key=lambda m: m.mid)
+    if not members:
+        save_registry(design, registry)
+        return 0
+    plan = registry.plan_rebuild()
+
+    lines, helper_sketches = [], []
+    objs, feat_idx = [], []
+    bases, anchors = [], []
+    joints, through, saddle, cope_depth, clr = [], [], [], [], []
+    designation = {}
+    for m in members:
+        ln, sk = _materialize_line(root, m.start, m.end)
+        lines.append(ln)
+        helper_sketches.append(sk)
+        # The stored basis is the PLACED one (already rolled by angle_rad), so
+        # rebuild with basis=stored and angle_rad=0 -- passing both would
+        # double-rotate the section.
+        basis = ([tuple(a) for a in m.basis] if m.basis else None)
+        p = plan.get(m.mid, {})
+        idx = root.features.count
+        built = _build_weldment(root, ln, m.geom, m.designation, 0.0, None,
+                                m.offset_start or 0.0, m.offset_end or 0.0,
+                                basis=basis, anchor=m.anchor)
+        objs.append(built)
+        feat_idx.append(idx if built else None)
+        bases.append(basis)
+        anchors.append(m.anchor)
+        joints.append(tuple(p.get('joint_ids', ('none', 'none'))))
+        through.append(bool(p.get('through')))
+        saddle.append(bool(p.get('saddle')))
+        cope_depth.append(p.get('cope_depth_mm', 0.0))
+        clr.append(p.get('clr_mm', 0.0))
+        if m.designation:
+            designation = {'designation': m.designation}
+
+    cut_bodies = {}
+    _apply_corner_cuts(root, lines, joints, objs, feat_idx, 0,
+                       saddle=saddle, through=through, context=None,
+                       geoms=[m.geom for m in members], bases=bases,
+                       anchor_by_line=anchors, cope_depth_by_line=cope_depth,
+                       clr_by_line=clr, bodies_out=cut_bodies)
+
+    # Re-stamp and re-home each survivor so the spine and feature indices stay
+    # truthful for the next run / rebuild.
+    for i, m in enumerate(members):
+        if feat_idx[i] is None:
+            continue
+        m.feature = feat_idx[i]
+        m.body_index = 0
+        try:
+            stamp_body(objs[i][0].bodies.item(0), m.mid)
+        except Exception:
+            pass
+        surv = cut_bodies.get(i)
+        if surv is not None and surv is not objs[i][0].bodies.item(0) \
+                and body_mid(surv) is None:
+            stamp_body(surv, m.mid)
+    save_registry(design, registry)
+    return len(members)
+
+
 def _recover_existing_members(root, exclude_feats=None):
     """Enumerate existing weldment members as context lines for joint detection.
 
@@ -2560,6 +2735,7 @@ def _remove_inside_region(root, comb, keep_body, region):
         try:
             rm = root.features.removeFeatures.add(b)
             if rm is not None:
+                tag_entity(rm)
                 removed.append(rm)
         except Exception:
             futil.handle_error(f'{CMD_NAME} remove region cutoff')
@@ -2580,7 +2756,9 @@ def _combine(root, target, tools, operation, keep_tool, preview=False):
     ci = root.features.combineFeatures.createInput(target, coll)
     ci.operation = operation
     ci.isKeepToolBodies = keep_tool
-    return root.features.combineFeatures.add(ci)
+    comb = root.features.combineFeatures.add(ci)
+    tag_entity(comb)
+    return comb
 
 
 def _combine_cut(root, target, tools, keep_tool, preview=False):
@@ -2647,6 +2825,8 @@ def _box_cutter(root, region, preview=False):
             body.opacity = PREVIEW_OPACITY
         except Exception:
             pass
+    for e in (feat, sk, plane, psk):
+        tag_entity(e)
     return body, feat, sk, (plane, psk)
 
 
@@ -2803,6 +2983,8 @@ def _miter_cutter(root, V, nrm, perp, depth, preview=False):
             body.opacity = PREVIEW_OPACITY
         except Exception:
             pass
+    for e in (feat, sk, plane, psk):
+        tag_entity(e)
     # Track: the combine (drops the cutter body) then the extrude + helpers.
     return body, [feat, sk, plane, psk]
 
@@ -3148,6 +3330,9 @@ def _build_bend_arc_sweep(root, leg_line, tangent, plan, geom, ref,
                     feature.bodies.item(bi).opacity = PREVIEW_OPACITY
             except Exception:
                 pass
+        for e in (feature, path_sketch, path_helper, path_plane,
+                  prof_sketch, prof_plane):
+            tag_entity(e)
         return (feature, path_sketch, path_helper, path_plane,
                 prof_sketch, prof_plane)
     except Exception:
@@ -3239,6 +3424,8 @@ def _build_bend_arc(root, leg_line, tangent, plan, geom, ref, preview=False,
                     feature.bodies.item(bi).opacity = PREVIEW_OPACITY
             except Exception:
                 pass
+        for e in (feature, sketch, plane):
+            tag_entity(e)
         return (feature, sketch, plane)
     except Exception:
         futil.handle_error(f'{CMD_NAME} build bend arc')
@@ -3332,6 +3519,11 @@ def _build_weldment(root, line, geom, designation_label='', angle_rad=0.0,
                     feature.bodies.item(bi).opacity = PREVIEW_OPACITY
             except Exception:
                 pass
+        # Tag the whole trio so a rebuild can clear exactly this member's
+        # geometry (see :func:`_delete_weldment_entities`).
+        tag_entity(feature)
+        tag_entity(sketch)
+        tag_entity(plane)
         return (feature, sketch, plane)
     except Exception:
         futil.handle_error(f'{CMD_NAME} build weldment')

@@ -332,5 +332,76 @@ class TestSummary(unittest.TestCase):
         self.assertTrue(j['label'].startswith('Weird'))
 
 
+class TestPlanRebuild(unittest.TestCase):
+    """B3: the records mapped back onto the builder's joint inputs."""
+
+    def test_miter_lands_on_the_referenced_end(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        b = r.add_member((10, 0, 0), (10, 10, 0))
+        r.add_joint('miter', [{'mid': a.mid, 'role': 'end'},
+                              {'mid': b.mid, 'role': 'start'}],
+                    vertex=(10, 0, 0))
+        plan = r.plan_rebuild()
+        self.assertEqual(plan[a.mid]['joint_ids'], ('none', 'miter'))
+        self.assertEqual(plan[b.mid]['joint_ids'], ('miter', 'none'))
+
+    def test_cope_variants_collapse_to_cope_with_depth(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        b = r.add_member((5, 0, 20), (5, 0, 0))
+        r.add_joint('cope_t', [{'mid': b.mid, 'role': 'end'},
+                              {'mid': a.mid, 'role': None}],
+                    vertex=(5, 0, 0), params={'depth_mm': 5.0})
+        plan = r.plan_rebuild()
+        self.assertEqual(plan[b.mid]['joint_ids'], ('none', 'cope'))
+        self.assertEqual(plan[b.mid]['cope_depth_mm'], 5.0)
+
+    def test_saddle_and_through_become_butt_plus_flag(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        b = r.add_member((10, 0, 0), (10, 10, 0))
+        r.add_joint('saddle', [{'mid': a.mid, 'role': 'end'},
+                              {'mid': b.mid, 'role': 'start'}])
+        r.add_joint('through', [{'mid': b.mid, 'role': 'start'},
+                               {'mid': a.mid, 'role': 'end'}])
+        plan = r.plan_rebuild()
+        self.assertEqual(plan[a.mid]['joint_ids'], ('none', 'butt'))
+        self.assertTrue(plan[a.mid]['saddle'])
+        self.assertEqual(plan[b.mid]['joint_ids'], ('butt', 'none'))
+        self.assertTrue(plan[b.mid]['through'])
+
+    def test_bend_carries_clr_and_beats_miter_on_one_end(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        b = r.add_member((10, 0, 0), (10, 10, 0))
+        r.add_joint('miter', [{'mid': a.mid, 'role': 'end'}])
+        r.add_joint('bend', [{'mid': a.mid, 'role': 'end'},
+                             {'mid': b.mid, 'role': 'start'}],
+                    params={'clr_mm': 90.0})
+        plan = r.plan_rebuild()
+        self.assertEqual(plan[a.mid]['joint_ids'], ('none', 'bend'))
+        self.assertEqual(plan[a.mid]['clr_mm'], 90.0)
+
+    def test_member_without_joints_is_plain(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        plan = r.plan_rebuild()
+        self.assertEqual(plan[a.mid]['joint_ids'], ('none', 'none'))
+        self.assertFalse(plan[a.mid]['through'])
+        self.assertFalse(plan[a.mid]['saddle'])
+
+    def test_joint_referencing_a_deleted_member_is_dropped(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        b = r.add_member((10, 0, 0), (10, 10, 0))
+        r.add_joint('miter', [{'mid': a.mid, 'role': 'end'},
+                              {'mid': b.mid, 'role': 'start'}])
+        r.remove_member(b.mid)
+        plan = r.plan_rebuild()
+        self.assertEqual(plan[a.mid]['joint_ids'], ('none', 'miter'))
+        self.assertNotIn(b.mid, plan)
+
+
 if __name__ == '__main__':
     unittest.main()

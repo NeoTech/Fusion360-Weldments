@@ -146,6 +146,17 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
         _push_bom(html_args.firingEvent.sender)
         html_args.returnData = 'OK'
         return
+    elif action == 'rebuild':
+        from ..weldment import entry as weldment
+        try:
+            n = weldment.rebuild_from_registry(design)
+        except Exception:
+            futil.handle_error(f'{CMD_NAME} rebuild')
+            html_args.returnData = 'Rebuild failed (see log).'
+            return
+        _push_bom(html_args.firingEvent.sender)
+        html_args.returnData = f'Rebuilt {n} member(s).'
+        return
     elif action == 'editMember':
         changed = registry.set_member(data.get('mid'),
                                       designation=data.get('designation'),
