@@ -104,7 +104,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 def _selected_body(sel):
     """The single BRepBody picked in a selection input, or None."""
     try:
-        for i in range(sel.selectedCount):
+        for i in range(sel.selectionCount):
             ent = sel.selection(i).entity
             if isinstance(ent, adsk.fusion.BRepBody):
                 return ent
