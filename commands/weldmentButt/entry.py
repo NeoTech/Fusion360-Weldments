@@ -15,6 +15,8 @@ Modes (mirroring the auto path's three butt behaviours):
 The joint is recorded in the registry so the BOM lists it and a re-run edits it.
 """
 
+import os
+
 import adsk.core
 import adsk.fusion
 
@@ -29,6 +31,8 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_butt'
 CMD_NAME = 'Weld Butt'
 CMD_Description = 'Butt, saddle, or run through where two weldment members meet'
+ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'resources', '')
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
@@ -50,7 +54,7 @@ def _weldment():
 
 def start():
     cmd_def = ui.commandDefinitions.addButtonDefinition(
-        CMD_ID, CMD_NAME, CMD_Description)
+        CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
     futil.add_handler(cmd_def.commandCreated, command_created,
                       local_handlers=local_handlers)
     panel = _weldment().ensure_weldments_panel()

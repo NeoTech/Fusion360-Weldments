@@ -13,6 +13,8 @@ coincide for any rotation or Position offset. The joint is recorded in the
 registry so the BOM lists it and a re-run edits the record.
 """
 
+import os
+
 import adsk.core
 import adsk.fusion
 
@@ -27,6 +29,8 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_miter'
 CMD_NAME = 'Weld Miter'
 CMD_Description = 'Miter the corner where two weldment members meet'
+ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'resources', '')
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
 # Shared Weldments panel on the dedicated Weldments tab (see
@@ -47,7 +51,7 @@ def _weldment():
 
 def start():
     cmd_def = ui.commandDefinitions.addButtonDefinition(
-        CMD_ID, CMD_NAME, CMD_Description)
+        CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
     futil.add_handler(cmd_def.commandCreated, command_created,
                       local_handlers=local_handlers)
     panel = _weldment().ensure_weldments_panel()

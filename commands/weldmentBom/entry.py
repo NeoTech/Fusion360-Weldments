@@ -28,6 +28,8 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_bom'
 CMD_NAME = 'Weldment BOM'
 CMD_Description = 'List and edit the weldment members and joints'
+ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'resources', '')
 PALETTE_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_bom_palette'
 PALETTE_NAME = 'Weldment BOM'
 
@@ -49,7 +51,7 @@ def _design():
 
 def start():
     cmd_def = ui.commandDefinitions.addButtonDefinition(
-        CMD_ID, CMD_NAME, CMD_Description)
+        CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
     futil.add_handler(cmd_def.commandCreated, command_created)
 
     # The BOM lives on the Data panel of the Weldments tab; ensure_data_panel
