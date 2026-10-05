@@ -924,6 +924,63 @@ class TestRecordJoints(unittest.TestCase):
         self.assertEqual(made[0].params.get('clr_mm'), 3.0)
 
 
+class TestPruneGhosts(unittest.TestCase):
+    """A5: records whose body is gone are dropped, and dangling joints too."""
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.root = adsk_stub.FakeRoot()
+        self.registry = entry.reg.Registry()
+
+    def _add_feature_body(self, start, end, mid=None):
+        body = adsk_stub.make_round_tube(start, end, 2.0, 1.8)
+        if mid is not None:
+            entry.stamp_body(body, mid)
+        feat = adsk_stub.FakeFeature('adsk::fusion::ExtrudeFeature',
+                                     self.root, [body])
+        self.root.features._items.append(feat)
+        return body
+
+    def test_live_member_is_kept(self):
+        self._add_feature_body((0, 0, 0), (10, 0, 0), mid=1)
+        self.registry.add_member((0, 0, 0), (10, 0, 0))
+        self.assertEqual(entry.prune_ghosts(self.root, self.registry), 0)
+        self.assertEqual(len(self.registry.members), 1)
+
+    def test_ghost_member_is_removed(self):
+        # A record with no body anywhere (deleted feature) is a ghost.
+        self.registry.add_member((0, 0, 0), (10, 0, 0))
+        self.assertEqual(entry.prune_ghosts(self.root, self.registry), 1)
+        self.assertEqual(self.registry.members, [])
+
+    def test_moved_tube_prunes_old_record(self):
+        # Body now lives at y=40; the record still points at y=0 -> ghost.
+        self._add_feature_body((0, 40, 0), (10, 40, 0))
+        self.registry.add_member((0, 0, 0), (10, 0, 0))
+        self.assertEqual(entry.prune_ghosts(self.root, self.registry), 1)
+
+    def test_stamped_body_far_from_centreline_is_kept(self):
+        # A cope survivor may sit oddly; the stamp alone keeps the record alive.
+        body = adsk_stub.FakeBody(name='weird', center=(0, 0, 0))
+        m = self.registry.add_member((0, 0, 0), (10, 0, 0))
+        entry.stamp_body(body, m.mid)
+        feat = adsk_stub.FakeFeature('adsk::fusion::ExtrudeFeature',
+                                     self.root, [body])
+        self.root.features._items.append(feat)
+        self.assertEqual(entry.prune_ghosts(self.root, self.registry), 0)
+
+    def test_pruning_member_drops_dangling_joint(self):
+        ghost = self.registry.add_member((0, 0, 0), (10, 0, 0))
+        live = self.registry.add_member((0, 40, 0), (10, 40, 0))
+        self._add_feature_body((0, 40, 0), (10, 40, 0), mid=live.mid)
+        self.registry.add_joint('miter', [{'mid': ghost.mid, 'role': 'end'},
+                                          {'mid': live.mid, 'role': 'start'}])
+        entry.prune_ghosts(self.root, self.registry)
+        self.assertEqual([m.mid for m in self.registry.members], [live.mid])
+        # the joint survives but only references the live member
+        self.assertEqual(self.registry.joints[0].member_ids(), [live.mid])
+
+
 class TestBendCopeColumns(unittest.TestCase):
     """Per-line Inverse / Bend Die / Cope Depth columns: enablement and reads."""
 

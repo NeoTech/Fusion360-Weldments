@@ -1651,6 +1651,9 @@ def command_execute(args: adsk.core.CommandEventArgs):
         # Record the joints that were just built (A3): the BOM becomes the
         # frame's history -- every miter/cope/bend is a re-runnable record.
         record_joints(registry, occs, saved, context=context)
+        # Drop records whose body no longer exists (A5): a deleted feature or a
+        # moved tube leaves a ghost that would mislead a later cope/bend.
+        prune_ghosts(root, registry)
         save_registry(_design(), registry)
     except Exception:
         futil.handle_error(f'{CMD_NAME} registry persist')
@@ -2182,6 +2185,48 @@ def _find_joint(registry, kind, vertex, mids):
         if reg.distance(j.vertex, vertex) <= 0.05:
             return j
     return None
+
+
+def prune_ghosts(root, registry):
+    """Drop member records whose body is gone (and the joints that only held them).
+
+    A record is a ghost when NO live body resolves to it: neither carries its
+    stamp (see :func:`body_mid`) nor lies near its centreline.  This is the
+    cleanup half of the attribute spine -- after a user deletes a weldment
+    feature (or a rebuild moves a tube off its old line) the stale record would
+    otherwise linger in the BOM and mislead a later cope/bend that trusts the
+    registry for R/wall.  Returns the number of members removed.
+    """
+    stamped, lines = set(), []
+    try:
+        feats = root.features
+        for i in range(feats.count):
+            try:
+                f = feats.item(i)
+                for j in range(f.bodies.count):
+                    b = f.bodies.item(j)
+                    mid = body_mid(b)
+                    if mid is not None:
+                        stamped.add(mid)
+                    cl = _member_centerline(b)
+                    if cl is not None and cl[0] != cl[1]:
+                        lines.append((cl[0], cl[1]))
+            except Exception:
+                continue
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} prune scan')
+        return 0
+    removed = 0
+    for m in list(registry.members):
+        if m.mid in stamped:
+            continue
+        pm = reg.midpoint(m.start, m.end)
+        if any(reg.distance(reg.closest_point_on_segment(pm, s, e)[0], pm)
+               <= 0.5 for s, e in lines):
+            continue
+        registry.remove_member(m.mid)
+        removed += 1
+    return removed
 
 
 def placed_basis(line, ref, angle_rad, bend_basis=None):
