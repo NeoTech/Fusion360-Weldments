@@ -9,6 +9,7 @@ proximity, joint-by-member), and JSON round-trip -- the data backbone the Phase-
 toolbox tools and the registry-as-BOM panel build on.
 """
 
+import math
 import os
 import sys
 import unittest
@@ -291,6 +292,44 @@ class TestSerialisation(unittest.TestCase):
         r = reg.Registry()
         r.add_member((0, 0, 0), (10, 0, 0), geom=GEOM)
         self.assertEqual(r.to_json(), reg.Registry.from_json(r.to_json()).to_json())
+
+
+class TestSummary(unittest.TestCase):
+    """B1: the registry surfaced as the frame's history for the BOM panel."""
+
+    def test_member_rows_carry_cut_length_and_placement(self):
+        r = reg.Registry()
+        r.add_member((0, 0, 0), (10, 0, 0), geom=GEOM, designation='20x1',
+                     family='CHS', name='Tube-1', angle_rad=0.5,
+                     offset_start=1.0, offset_end=-2.0)
+        row = r.summary()['members'][0]
+        self.assertEqual(row['drawn_mm'], 100.0)          # 10 cm
+        self.assertEqual(row['length_mm'], 70.0)          # 10 + (-2) - 1 = 7 cm
+        self.assertEqual(row['offset_start_mm'], 10.0)
+        self.assertEqual(row['offset_end_mm'], -20.0)
+        self.assertAlmostEqual(row['angle_deg'], round(math.degrees(0.5), 2))
+        self.assertEqual(row['family'], 'CHS')
+
+    def test_joint_rows_carry_label_and_params(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0), name='Tube-1')
+        b = r.add_member((5, 0, 20), (5, 0, 0), name='Tube-2')
+        r.add_joint('cope_t', [{'mid': b.mid, 'role': None},
+                              {'mid': a.mid, 'role': None}],
+                    vertex=(5, 0, 0), params={'depth_mm': 5.0})
+        j = r.summary()['joints'][0]
+        self.assertEqual(j['kind'], 'cope_t')
+        self.assertEqual(j['ref_names'], ['Tube-2', 'Tube-1'])
+        self.assertIn('Cope (T)', j['label'])
+        self.assertIn('Tube-2 onto Tube-1', j['label'])
+        self.assertIn('depth 5 mm', j['label'])
+
+    def test_label_falls_back_for_unknown_kind(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        r.add_joint('weird', [{'mid': a.mid, 'role': 'end'}])
+        j = r.summary()['joints'][0]
+        self.assertTrue(j['label'].startswith('Weird'))
 
 
 if __name__ == '__main__':

@@ -61,6 +61,7 @@ leaves it empty and detection still works from ``vertex``/``refs``.
 """
 
 import json
+import math
 
 # Fusion internal length unit is centimetres; the section descriptor is mm.
 MM_TO_CM = 0.1
@@ -233,6 +234,46 @@ class Joint:
                      selections=d.get('selections'))
 
 
+# Human-readable names for every joint kind the engine or a toolbox tool emits.
+# The auto path records the specific cope/butt variants; the toolbox Butt tool
+# records its three modes; keep them all so no row renders as a bare code.
+JOINT_LABELS = {
+    'miter': 'Miter',
+    'bend': 'Bend',
+    'butt': 'Butt',
+    'saddle': 'Saddled butt',
+    'through': 'Through butt',
+    'butt_saddle': 'Saddled butt',
+    'cope_end': 'Cope (end)',
+    'cope_t': 'Cope (T)',
+    'cope_angle': 'Cope (angled)',
+    'cope': 'Cope',
+}
+
+
+def _joint_label(joint, names):
+    """A one-line description of ``joint`` for the BOM panel.
+
+    ``names`` maps member id -> display name. Reads as
+    ``"Cope (T) - Tube-1 onto Tube-2 (depth 5 mm)"``: the kind, the members it
+    touches (subject first), then any numeric parameters that matter.
+    """
+    label = JOINT_LABELS.get(joint.kind, joint.kind.capitalize())
+    who = [names.get(r['mid'], f"#{r['mid']}") for r in joint.refs]
+    if len(who) >= 2:
+        label += f' - {who[0]} onto {who[1]}'
+    elif who:
+        label += f' - {who[0]}'
+    bits = []
+    if joint.params.get('clr_mm'):
+        bits.append(f'clr {joint.params["clr_mm"]:g} mm')
+    if joint.params.get('depth_mm'):
+        bits.append(f'depth {joint.params["depth_mm"]:g} mm')
+    if bits:
+        label += ' (' + ', '.join(bits) + ')'
+    return label
+
+
 # --------------------------------------------------------------------------- #
 # The registry
 # --------------------------------------------------------------------------- #
@@ -371,21 +412,37 @@ class Registry:
     def summary(self):
         """A JSON-friendly BOM view model for the palette panel.
 
-        Members carry a computed ``length_mm`` (cut length) and joints a
-        human-readable ``label``; ids are included so the panel can send an
-        edit back keyed by ``mid``/``jid``.
+        This is the registry surfaced as the frame's *history*: every member
+        row carries the numbers the builder used (drawn length, the placement
+        offsets, the physical cut length, rotation, family) and every joint row
+        carries a human-readable ``label`` plus its parameters, so the panel can
+        both show and edit the record in place.  Ids (``mid``/``jid``) key the
+        edits the panel posts back.  Lengths are millimetres.
         """
+        names = {m.mid: (m.name or m.designation or f'#{m.mid}')
+                 for m in self.members}
         members = []
         for m in self.members:
-            length_mm = distance(m.start, m.end) / MM_TO_CM
+            drawn_cm = distance(m.start, m.end)
+            # The builder extrudes line.length + offset_end - offset_start, so
+            # that is the physical member length (offsets already fold in the
+            # joint setbacks the placement recorded).
+            built_cm = drawn_cm + (m.offset_end or 0.0) - (m.offset_start or 0.0)
             members.append({'mid': m.mid, 'name': m.name,
                             'designation': m.designation, 'family': m.family,
-                            'length_mm': round(length_mm, 2),
+                            'length_mm': round(built_cm / MM_TO_CM, 2),
+                            'drawn_mm': round(drawn_cm / MM_TO_CM, 2),
+                            'offset_start_mm': round((m.offset_start or 0.0) / MM_TO_CM, 2),
+                            'offset_end_mm': round((m.offset_end or 0.0) / MM_TO_CM, 2),
+                            'angle_deg': round(math.degrees(m.angle_rad or 0.0), 2),
                             'start': list(m.start), 'end': list(m.end)})
         joints = []
         for j in self.joints:
             joints.append({'jid': j.jid, 'kind': j.kind,
+                           'label': _joint_label(j, names),
                            'refs': [r['mid'] for r in j.refs],
+                           'ref_names': [names.get(r['mid'], f"#{r['mid']}")
+                                         for r in j.refs],
                            'params': dict(j.params)})
         return {'members': members, 'joints': joints}
 
