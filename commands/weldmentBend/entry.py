@@ -61,6 +61,13 @@ _preview_objs = []
 # them on teardown means a Cancel never leaves a member translucent (deleting a
 # combine restores the body's GEOMETRY but not the opacity we set on it).
 _preview_ghosts = []
+# The two member bodies captured during the LAST preview, while both were still
+# valid.  A preview's Combine consumes (re-homes) the picked bodies and Fusion
+# then DROPS the selection entries for them, so on OK the fields can read empty
+# even though the user picked two.  We keep the objects here (a combine delete
+# restores them whole) and fall back to them in command_execute. Overwritten on
+# every preview where both selections are valid; never cleared on a partial one.
+_preview_bodies = (None, None)
 
 
 def _design():
@@ -342,7 +349,7 @@ def _clear_preview():
 
 def command_execute_preview(args: adsk.core.CommandEventArgs):
     """Ghost the trimmed legs and swept arc so the bend reads as transient."""
-    global _preview_objs
+    global _preview_objs, _preview_bodies
     inputs = args.command.commandInputs
     w = _weldment()
     design = _design()
@@ -354,6 +361,10 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     body_b = _selected_body(inputs.itemById('member_b'))
     if body_a is None or body_b is None or body_a is body_b:
         return
+    # Cache the two bodies NOW: _do_bend's Combine consumes them and Fusion
+    # drops the selection entries, so this is the last moment they are both
+    # reachable through a live reference.  command_execute reuses this cache.
+    _preview_bodies = (body_a, body_b)
     family = _family_of(w, body_a) or _family_of(w, body_b)
     clr_mm = _clr_mm(w, inputs, family)
     if clr_mm <= 0.0:
@@ -392,6 +403,15 @@ def command_execute(args: adsk.core.CommandEventArgs):
 
     body_a = _selected_body(inputs.itemById('member_a'))
     body_b = _selected_body(inputs.itemById('member_b'))
+    # The preview's Combine consumed (re-homed) the picked bodies and Fusion
+    # dropped their selection entries, so a field can read empty here even
+    # though the user picked two.  Fall back to the bodies cached during the
+    # last preview -- _clear_preview above restored them whole, so the cached
+    # references are live again.
+    if body_a is None:
+        body_a = _preview_bodies[0]
+    if body_b is None:
+        body_b = _preview_bodies[1]
     if body_a is None or body_b is None:
         ui.messageBox('Select both members meeting at the corner.')
         return
