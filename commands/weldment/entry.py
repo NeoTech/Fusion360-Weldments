@@ -1556,7 +1556,8 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
                            geoms=[geom for _ in saved],
                            cope_depth_by_line=cope_depths,
                            clr_by_line=clr_by_line,
-                           bases=_bases, anchor_by_line=_anchor))
+                           bases=_bases, anchor_by_line=_anchor,
+                           preview=True))
     # Make sure the user's lines are still highlighted after the churn.
     _restore_selection(sel, saved)
 
@@ -3035,7 +3036,7 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                        saddle=None, through=None, context=None,
                        geoms=None, bases=None, anchor_by_line=None,
                        cope_depth_by_line=None, clr_by_line=None,
-                       spec_out=None, bodies_out=None):
+                       spec_out=None, bodies_out=None, preview=False):
     """Shape member ends with real geometry using bounded cutter solids.
 
     Every joint is realised by a FINITE cutter confined to a joint box, so
@@ -3120,12 +3121,18 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                 perp = max(region['half'][1], region['half'][2])
                 depth = 2.0 * region['half'][0] + perp
                 cutter, track = _miter_cutter(root, occ['vertex'],
-                                              cut['normal'], perp, depth)
+                                              cut['normal'], perp, depth,
+                                              preview=preview)
                 if cutter is None:
                     continue
                 comb = _combine_cut(root, body, [cutter], keep_tool=False)
                 created = [comb] + track + created
                 body_of[m] = _survivor_after_cut(comb, None, region) or body
+                if preview and body_of[m] is not None:
+                    try:
+                        body_of[m].opacity = PREVIEW_OPACITY
+                    except Exception:
+                        pass
                 continue
             # Body cut (cope / saddled butt): combine the member against the
             # neighbour's body (keep-tool), saddling it to the through member.
@@ -3147,6 +3154,11 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
             removes, run = cope_body_cut(root, body, tool_body, region)
             created = removes + created
             body_of[m] = run or body
+            if preview and body_of[m] is not None:
+                try:
+                    body_of[m].opacity = PREVIEW_OPACITY
+                except Exception:
+                    pass
         except Exception:
             futil.handle_error(f'{CMD_NAME} corner cut')
     if bodies_out is not None:
