@@ -809,6 +809,24 @@ def _angle_between(a, b):
     return math.acos(d)
 
 
+# Tolerance (rad) on the perpendicularity test in :func:`cope_kind`.  Matches
+# the auto path's classification in ``corner_cuts`` (0.02 rad ~ 1.15 deg).
+_COPES_TOL = 0.02
+
+
+def cope_kind(subject_dir, tool_dir):
+    """The specific cope kind for a member coping against a tool member.
+
+    A coped member meeting its tool at (very near) a right angle is a
+    ``cope_t``; anything else (an angled T or a continuous-frame corner) is a
+    ``cope_angle``.  This is the same rule the auto path applies when it
+    classifies detected T-junctions, shared here so the toolbox Cope tool
+    records the same vocabulary instead of a bare ``'cope'``.
+    """
+    angle = _angle_between(subject_dir, tool_dir)
+    return 'cope_t' if abs(angle - math.pi / 2.0) <= _COPES_TOL else 'cope_angle'
+
+
 def _sin_between(a, b):
     """|sin| of the angle between ``a`` and ``b`` (0 when collinear)."""
     na, nb = _norm(a), _norm(b)
@@ -1801,8 +1819,7 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
                             perp_extent(idx, role, P) + perp_extent(pidx, None, P),
                             angle)
         box = _region_box(P, own, reach, perp, room)
-        kind = ('cope_t' if abs(angle - math.pi / 2.0) <= 0.02
-                else 'cope_angle')
+        kind = cope_kind(dirv(idx), dirv(pidx))
         occs.append({'kind': kind, 'member': idx, 'role': role, 'vertex': P,
                      'partner': (pidx, None), 'setback': 0.0,
                      'cutter': {'type': 'body', 'tool': pidx, 'region': box},

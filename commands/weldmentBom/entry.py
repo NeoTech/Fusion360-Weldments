@@ -1,15 +1,19 @@
-"""Weldment BOM palette (Phase 4b) -- the registry surfaced as an editable list.
+"""Weldment BOM palette (Phase 4b) -- the registry surfaced as a read-only list.
 
-Shows every member (cut length, designation) and joint (kind, params) stored in
-the design's registry (see :mod:`lib.registry`), and lets the user edit a
-record's settings in place. This is the read/write face of the registry: it
-replaces "reopen the builder and re-detect the frame" with "edit the row".
+Shows every member (body name, cut length, designation) and joint (kind, members,
+parameters) stored in the design's registry (see :mod:`lib.registry`). The panel
+is the frame's *bill of materials*: a list to read and export from, not an
+editor -- the tools (builder, cope, butt, miter, bend) are the write path, and
+secondary data (bend charts, cut lists) is generated from these records.
 
 The palette is a docked HTML panel. Python pushes the BOM as JSON via
-``sendInfoToHTML('render', ...)``; the JS posts edits back via
-``adsk.fusionSendData(action, json)``, handled in :func:`palette_incoming`,
-which mutates the registry through the pure ``set_member``/``set_joint_*``
-methods and saves it to the design attribute.
+``sendInfoToHTML('render', ...)``; the JS posts Refresh/Rebuild back via
+``adsk.fusionSendData(action, json)``, handled in :func:`palette_incoming`.
+
+Member rows carry the *live body name* when resolvable: the command layer maps
+each registry member to its BRepBody through the attribute stamp (see
+``weldment.stamp_body``), so the BOM reads in the names the user sees in the
+browser tree instead of blank record names.
 """
 
 import json
@@ -19,7 +23,6 @@ import adsk.core
 import adsk.fusion
 
 from ...lib import fusionAddInUtils as futil
-from ...lib import registry as reg
 from ... import config
 
 app = adsk.core.Application.get()
@@ -27,7 +30,7 @@ ui = app.userInterface
 
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_bom'
 CMD_NAME = 'Weldment BOM'
-CMD_Description = 'List and edit the weldment members and joints'
+CMD_Description = 'List the weldment members and joints (read-only BOM)'
 ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            'resources', '')
 PALETTE_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_bom_palette'
@@ -114,11 +117,35 @@ def _push_bom(palette):
         palette.sendInfoToHTML('render', json.dumps({'error': 'No active design.'}))
         return
     try:
-        summary = load_registry(design).summary()
+        summary = load_registry(design).summary(body_names=_body_names(design))
     except Exception:
         futil.handle_error(f'{CMD_NAME} summary')
         summary = {'members': [], 'joints': []}
     palette.sendInfoToHTML('render', json.dumps(summary))
+
+
+def _body_names(design):
+    """Map member id -> live body name, via the attribute stamp on each body.
+
+    One body per member wins when a cut left several stamped bodies (the
+    timeline order is stable, so the name shown is reproducible). Bodies that
+    carry no stamp (waste fragments, plain extrudes) are skipped.
+    """
+    from ..weldment import entry as weldment
+    names = {}
+    try:
+        bodies = design.rootComponent.bRepBodies
+    except Exception:
+        return names
+    for k in range(bodies.count):
+        try:
+            body = bodies.item(k)
+            mid = weldment.body_mid(body)
+        except Exception:
+            continue
+        if mid is not None and mid not in names:
+            names[mid] = body.name
+    return names
 
 
 def load_registry(design):
@@ -127,25 +154,17 @@ def load_registry(design):
     return weldment.load_registry(design)
 
 
-def save_registry(design, registry):
-    from ..weldment import entry as weldment
-    weldment.save_registry(design, registry)
-
-
 def palette_incoming(html_args: adsk.core.HTMLEventArgs):
     action = html_args.action
-    data = json.loads(html_args.data) if html_args.data else {}
     design = _design()
     if design is None:
         html_args.returnData = 'No active design.'
         return
-    registry = load_registry(design)
-    changed = False
     if action == 'refresh':
         _push_bom(html_args.firingEvent.sender)
         html_args.returnData = 'OK'
         return
-    elif action == 'rebuild':
+    if action == 'rebuild':
         from ..weldment import entry as weldment
         try:
             n = weldment.rebuild_from_registry(design)
@@ -156,21 +175,10 @@ def palette_incoming(html_args: adsk.core.HTMLEventArgs):
         _push_bom(html_args.firingEvent.sender)
         html_args.returnData = f'Rebuilt {n} member(s).'
         return
-    elif action == 'editMember':
-        changed = registry.set_member(data.get('mid'),
-                                      designation=data.get('designation'),
-                                      name=data.get('name'))
-    elif action == 'editJointKind':
-        changed = registry.set_joint_kind(data.get('jid'), data.get('kind'))
-    elif action == 'editJointParam':
-        changed = registry.set_joint_param(data.get('jid'),
-                                           data.get('key'), data.get('value'))
-    if changed:
-        save_registry(design, registry)
-        _push_bom(html_args.firingEvent.sender)
-        html_args.returnData = 'OK'
-    else:
-        html_args.returnData = 'No change (unknown id or field).'
+    # The panel is read-only: it lists the records the tools wrote, and the
+    # tools are the only write path. An "edit" postback is a stale panel (or a
+    # hand-modified HTML); answer without touching the registry.
+    html_args.returnData = 'The BOM is read-only; edit with the weldment tools.'
 
 
 def command_destroy(args: adsk.core.CommandEventArgs):

@@ -331,6 +331,31 @@ class TestSummary(unittest.TestCase):
         j = r.summary()['joints'][0]
         self.assertTrue(j['label'].startswith('Weird'))
 
+    def test_body_names_win_the_display_name(self):
+        # The BOM panel reflects the browser-tree body names (the user's spine
+        # complaint): when the command layer resolves a live name for a member,
+        # display_name and the joint labels use it; the stored record does not.
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0), designation='20x1', name='Old')
+        b = r.add_member((5, 0, 20), (5, 0, 0))
+        r.add_joint('cope_t', [{'mid': b.mid, 'role': None},
+                              {'mid': a.mid, 'role': None}],
+                    vertex=(5, 0, 0), params={'depth_mm': 5.0})
+        s = r.summary(body_names={a.mid: 'Tube-A', b.mid: 'Tube-B'})
+        rows = {m['mid']: m for m in s['members']}
+        self.assertEqual(rows[a.mid]['display_name'], 'Tube-A')
+        self.assertEqual(rows[a.mid]['name'], 'Old')   # record untouched
+        self.assertEqual(rows[b.mid]['display_name'], 'Tube-B')
+        self.assertIn('Tube-B onto Tube-A', s['joints'][0]['label'])
+
+    def test_display_name_falls_back_without_body_names(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0), designation='20x1')
+        b = r.add_member((5, 0, 20), (5, 0, 0))
+        row_a, row_b = r.summary()['members']
+        self.assertEqual(row_a['display_name'], '20x1')   # designation next
+        self.assertEqual(row_b['display_name'], f"#{b.mid}")  # id last
+
 
 class TestPlanRebuild(unittest.TestCase):
     """B3: the records mapped back onto the builder's joint inputs."""

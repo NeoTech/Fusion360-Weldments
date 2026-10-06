@@ -482,17 +482,26 @@ class Registry:
         self.joints = [j for j in self.joints if j.refs]
 
     # -- serialisation ------------------------------------------------- #
-    def summary(self):
+    def summary(self, body_names=None):
         """A JSON-friendly BOM view model for the palette panel.
 
         This is the registry surfaced as the frame's *history*: every member
         row carries the numbers the builder used (drawn length, the placement
         offsets, the physical cut length, rotation, family) and every joint row
-        carries a human-readable ``label`` plus its parameters, so the panel can
-        both show and edit the record in place.  Ids (``mid``/``jid``) key the
-        edits the panel posts back.  Lengths are millimetres.
+        carries a human-readable ``label`` plus its parameters.  Lengths are
+        millimetres.
+
+        ``body_names`` maps ``mid`` -> the live body's name (the command layer
+        builds it by walking the design's bodies and reading their stamps).
+        When given, it wins the display-name slot -- the BOM then reads in the
+        names the user sees in the browser tree, which is what the panel is for
+        ("reflect the body names").  ``name`` stays the stored record (empty if
+        never set); ``display_name`` is what the panel renders and the joint
+        labels use.
         """
-        names = {m.mid: (m.name or m.designation or f'#{m.mid}')
+        body_names = body_names or {}
+        names = {m.mid: (body_names.get(m.mid) or m.name or m.designation
+                         or f'#{m.mid}')
                  for m in self.members}
         members = []
         for m in self.members:
@@ -502,6 +511,7 @@ class Registry:
             # joint setbacks the placement recorded).
             built_cm = drawn_cm + (m.offset_end or 0.0) - (m.offset_start or 0.0)
             members.append({'mid': m.mid, 'name': m.name,
+                            'display_name': names[m.mid],
                             'designation': m.designation, 'family': m.family,
                             'length_mm': round(built_cm / MM_TO_CM, 2),
                             'drawn_mm': round(drawn_cm / MM_TO_CM, 2),

@@ -389,3 +389,76 @@ def annotate_families(families):
         for d in designations(fam):
             d["_abbreviation"] = abbr
     return families
+
+
+# --------------------------------------------------------------------------- #
+# Reverse lookup: section geometry -> catalogue designation
+# --------------------------------------------------------------------------- #
+def _close(a, b, tol):
+    return abs(a - b) <= tol
+
+
+def _match_circle(geom, d, tol):
+    radii = geom.get("radii") or []
+    if not radii:
+        return False
+    od, t = d.get("od_mm"), d.get("t_mm")
+    if od is None or t is None:
+        return False
+    if not _close(radii[0], od / 2.0, tol):
+        return False
+    inner = radii[1] if len(radii) > 1 else None
+    return _close(inner, od / 2.0 - t, tol) if inner is not None else t <= tol
+
+
+def _match_rect(geom, d, tol):
+    loops = geom.get("loops") or []
+    if not loops or len(loops[0]) != 4:      # a rectangle, not an I-beam path
+        return False
+    h, b, t = d.get("h_mm"), d.get("b_mm"), d.get("t_mm")
+    if h is None or b is None or t is None:
+        return False
+    us = [u for u, _v in loops[0]]
+    vs = [v for _u, v in loops[0]]
+    ow, oh = max(us) - min(us), max(vs) - min(vs)
+    # The recovered section axes are unordered (a body's side-face normals are
+    # clustered by area, not by the profile's u/v frame), so an RHS may read
+    # back rotated 90 degrees -- accept either orientation.
+    sizes = ((b, h), (h, b))
+    if not any(_close(ow, w, tol) and _close(oh, ht, tol) for w, ht in sizes):
+        return False
+    if len(loops) > 1:                        # hollow: wall from the inner loop
+        ius = [u for u, _v in loops[1]]
+        ivs = [v for _u, v in loops[1]]
+        iw, ih = max(ius) - min(ius), max(ivs) - min(ivs)
+        return _close((ow - iw) / 2.0, t, tol) and _close((oh - ih) / 2.0, t, tol)
+    return t <= tol                           # recorded as a solid outline
+
+
+def profile_from_geom(geom, families=None, tol=0.01):
+    """Identify a section descriptor as ``(family, designation)``.
+
+    ``geom`` is a descriptor as recovered from a body (see
+    :func:`section_geometry`); ``families`` defaults to the shipped catalogue.
+    Returns the ``(abbreviation, designation)`` pair whose geometry matches
+    within ``tol`` mm, or ``(None, None)`` when nothing fits (a solid block, a
+    worn catalogue entry, a section drawn from a family whose outline shape
+    differs).  This is the reverse of :func:`section_geometry`: tools that
+    recover a member's section from its *body* (the toolbox cope, butt, miter
+    and bend) use it to fill in the BOM's designation/family columns, which the
+    builder records only when it draws the member from a sketch line.
+    """
+    if not geom or geom.get("kind") not in ("circles", "polygons"):
+        return None, None
+    families = annotate_families(families if families is not None
+                                 else load_profiles())
+    match = _match_circle if geom["kind"] == "circles" else _match_rect
+    for fam in families:
+        for d in designations(fam):
+            try:
+                other = section_geometry(d)
+            except (KeyError, ValueError):
+                continue
+            if other["kind"] == geom["kind"] and match(geom, d, tol):
+                return fam["abbreviation"], d["designation"]
+    return None, None

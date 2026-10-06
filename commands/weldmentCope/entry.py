@@ -389,10 +389,16 @@ def _record(design, subj_body, tool_body, subj_cl, tool_cl, landing, run,
     """Persist the cope as a registry joint and stamp the surviving bodies."""
     w = _weldment()
     registry = w.load_registry(design)
+    # The toolbox recovers sections from BODIES, so unlike the builder it must
+    # identify the catalogue designation itself -- otherwise the BOM shows a
+    # member row with blank name/designation (the "last tube has no
+    # designation" complaint).
     sm = registry.upsert_member(subj_cl[0], subj_cl[1], geom=subj_cl[2],
-                                basis=list(subj_cl[3]) if subj_cl[3] else None)
+                                basis=list(subj_cl[3]) if subj_cl[3] else None,
+                                **w.profile_fields(subj_cl[2]))
     tm = registry.upsert_member(tool_cl[0], tool_cl[1], geom=tool_cl[2],
-                                basis=list(tool_cl[3]) if tool_cl[3] else None)
+                                basis=list(tool_cl[3]) if tool_cl[3] else None,
+                                **w.profile_fields(tool_cl[2]))
     # The coping member's body was re-homed by the cut; stamp the survivor so
     # the spine points at the live body.  Never clobber an existing stamp.
     for body, mem in ((run, sm), (tool_body, tm)):
@@ -400,13 +406,19 @@ def _record(design, subj_body, tool_body, subj_cl, tool_cl, landing, run,
             w.stamp_body(body, mem.mid)
     params = {'depth_mm': depth_mm} if depth_mm else {}
     for j in registry.joints:
-        if j.kind == 'cope' and set(j.member_ids()) == {sm.mid, tm.mid} and \
+        if j.kind in ('cope', 'cope_t', 'cope_angle') and \
+                set(j.member_ids()) == {sm.mid, tm.mid} and \
                 j.vertex and reg.distance(j.vertex, landing) < 0.05:
             j.params.update(params)
             w.save_registry(design, registry)
             return
-    registry.add_joint('cope', [{'mid': sm.mid, 'role': None},
-                               {'mid': tm.mid, 'role': None}],
+    # Classify like the auto path (lib.joints.corner_cuts): a coped member
+    # meeting its tool at a right angle is a T cope, anything else an angled
+    # cope -- a bare 'cope' made the BOM's joint list unreadable.
+    kind = jt.cope_kind(jt.line_direction_from(*subj_cl[:2]),
+                        jt.line_direction_from(*tool_cl[:2]))
+    registry.add_joint(kind, [{'mid': sm.mid, 'role': None},
+                              {'mid': tm.mid, 'role': None}],
                        vertex=landing, params=params,
                        selections={'subject_body': subj_body.name,
                                    'tool_body': tool_body.name})

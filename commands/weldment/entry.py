@@ -2018,6 +2018,20 @@ def save_registry(design, registry):
     a.value = registry.to_json()
 
 
+def profile_fields(geom):
+    """``{'designation':..., 'family':...}`` identified from a section descriptor.
+
+    The toolbox tools (cope/butt/miter/bend) recover a member's section from its
+    *body*, not from the builder's dropdown, so they must identify the catalogue
+    entry themselves -- otherwise ``upsert_member`` records a member with blank
+    designation/family and the BOM shows an empty row.  Both values are None
+    when nothing matches, and ``upsert_member`` skips None fields, so a
+    designation the builder already recorded is never clobbered.
+    """
+    family, designation = prof.profile_from_geom(geom)
+    return {'designation': designation, 'family': family}
+
+
 # --------------------------------------------------------------------------- #
 # Body <-> member identity (A2: the attribute spine).
 #

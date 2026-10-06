@@ -187,9 +187,11 @@ def _record(design, subj_body, tgt_body, subj_cl, tgt_cl, landing, mode):
     w = _weldment()
     registry = w.load_registry(design)
     sm = registry.upsert_member(subj_cl[0], subj_cl[1], geom=subj_cl[2],
-                                basis=list(subj_cl[3]) if subj_cl[3] else None)
+                                basis=list(subj_cl[3]) if subj_cl[3] else None,
+                                **w.profile_fields(subj_cl[2]))
     tm = registry.upsert_member(tgt_cl[0], tgt_cl[1], geom=tgt_cl[2],
-                               basis=list(tgt_cl[3]) if tgt_cl[3] else None)
+                               basis=list(tgt_cl[3]) if tgt_cl[3] else None,
+                               **w.profile_fields(tgt_cl[2]))
     for body, mem in ((subj_body, sm), (tgt_body, tm)):
         if w.body_mid(body) is None:         # keep an existing stamp's owner
             w.stamp_body(body, mem.mid)

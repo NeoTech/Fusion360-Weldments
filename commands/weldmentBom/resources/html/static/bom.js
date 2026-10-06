@@ -1,40 +1,16 @@
-// Weldment BOM palette (Phase 4b / B2).
+// Weldment BOM palette (Phase 4b / B2) -- a read-only bill of materials.
 //
 // Python pushes the whole view model with sendInfoToHTML('render', json); we
-// rebuild both tables from it. Edits post back with adsk.fusionSendData(action,
-// json) keyed by mid/jid; Python mutates the registry and re-renders.
+// rebuild both tables from it. The panel lists what the tools recorded; the
+// tools (builder, Weld Cope/Butt/Miter/Bend) are the only write path, so there
+// are no input fields here -- every cell is text. Refresh re-reads the
+// registry, Rebuild re-creates the geometry from it.
 //
-// The panel is the frame's *history*: every member row shows the numbers the
-// builder used and every joint row shows its kind + editable parameters, so a
-// change here is a change to the record (which the tools then read back).
-
-// Every joint kind the engine or a toolbox tool can record, with a label. The
-// dropdown must contain a joint's current kind or the select would silently
-// render (and snap) to the first option -- so we cover all of them.
-const JOINT_KINDS = [
-    { value: 'none', label: 'none' },
-    { value: 'butt', label: 'Butt' },
-    { value: 'saddle', label: 'Saddled butt' },
-    { value: 'through', label: 'Through butt' },
-    { value: 'butt_saddle', label: 'Saddled butt' },
-    { value: 'miter', label: 'Miter' },
-    { value: 'cope', label: 'Cope' },
-    { value: 'cope_end', label: 'Cope (end)' },
-    { value: 'cope_t', label: 'Cope (T)' },
-    { value: 'cope_angle', label: 'Cope (angled)' },
-    { value: 'bend', label: 'Bend' },
-];
-
-// Which numeric parameters each kind exposes for editing. depth_mm is how deep
-// a cope/saddle saddles into the neighbour; clr_mm is a bend's centre-line
-// radius. Rendering a fixed set (not just the keys already present) lets the
-// user ADD a parameter a joint was built without.
-const KIND_PARAMS = {
-    cope: ['depth_mm'], cope_end: ['depth_mm'], cope_t: ['depth_mm'],
-    cope_angle: ['depth_mm'], saddle: ['depth_mm'], butt_saddle: ['depth_mm'],
-    through: [], butt: [], miter: [],
-    bend: ['clr_mm'],
-};
+// Member rows show the LIVE BODY NAME when Python could resolve one (the
+// browser-tree name the user actually sees), falling back to the record's
+// designation and finally the bare id. Joint rows use the ready-made `label`
+// ("Cope (T) - Tube-1 onto Tube-2 (depth 5 mm)") instead of a kind code, so the
+// list reads as sentences rather than internal vocabulary.
 
 function setStatus(msg) {
     document.getElementById('status').textContent = msg || '';
@@ -50,27 +26,15 @@ function rebuild() {
         .then((r) => setStatus(r));
 }
 
-function kindOptions(kind) {
-    // Ensure the joint's current kind is selectable even if it is not in the
-    // canonical list (a future kind, or a hand-edited value).
-    let opts = JOINT_KINDS.slice();
-    if (!opts.some((o) => o.value === kind)) {
-        opts = opts.concat([{ value: kind, label: kind }]);
-    }
-    return opts.map((o) =>
-        `<option value="${o.value}"${o.value === kind ? ' selected' : ''}>` +
-        `${esc(o.label)}</option>`).join('');
-}
-
-function paramCells(j) {
-    const keys = KIND_PARAMS[j.kind] || [];
-    if (keys.length === 0) return '<span class="muted">—</span>';
-    return keys.map((k) => {
-        const v = (j.params && j.params[k] != null) ? j.params[k] : '';
-        return `<label class="param">${k.replace(/_/g, ' ')} ` +
-            `<input type="number" step="0.1" value="${esc(v)}" ` +
-            `onchange="editJointParam(${j.jid}, '${k}', this.value)"></label>`;
-    }).join(' ');
+// The catalogue designation is terse ("20x1" means OD x wall for a round
+// tube), so prefix the family and mark a round section's diameter --
+// "CHS \u00d820x1" reads as a 20 mm OD, 1 mm wall tube; "SHS 10x10x1.0" as a
+// square one.
+function profileText(m) {
+    const fam = m.family || '';
+    const des = m.designation || '';
+    if (!des) return fam || '\u2014';
+    return fam === 'CHS' ? `${fam} \u00d8${des}` : `${fam} ${des}`.trim();
 }
 
 function render(dataJson) {
@@ -90,11 +54,8 @@ function render(dataJson) {
         const tr = document.createElement('tr');
         tr.innerHTML =
             `<td>${m.mid}</td>` +
-            `<td><input type="text" value="${esc(m.name || '')}" ` +
-            `onchange="editMember(${m.mid}, 'name', this.value)"></td>` +
-            `<td><input type="text" value="${esc(m.designation || '')}" ` +
-            `onchange="editMember(${m.mid}, 'designation', this.value)"></td>` +
-            `<td>${esc(m.family || '')}</td>` +
+            `<td>${esc(m.display_name || m.name || `#${m.mid}`)}</td>` +
+            `<td>${esc(profileText(m))}</td>` +
             `<td class="num" title="drawn ${m.drawn_mm} mm">${m.length_mm}</td>` +
             `<td class="num">${m.angle_deg || 0}</td>`;
         mt.appendChild(tr);
@@ -106,32 +67,11 @@ function render(dataJson) {
         const tr = document.createElement('tr');
         tr.innerHTML =
             `<td>${j.jid}</td>` +
-            `<td><select onchange="editJointKind(${j.jid}, this.value)">` +
-            `${kindOptions(j.kind)}</select></td>` +
-            `<td>${(j.ref_names || j.refs || []).map(esc).join(' &rarr; ')}</td>` +
-            `<td class="params">${paramCells(j)}</td>`;
+            `<td>${esc(j.label || j.kind)}</td>` +
+            `<td>${(j.ref_names || j.refs || []).map(esc).join(' &rarr; ')}</td>`;
         jt.appendChild(tr);
     });
     setStatus('');
-}
-
-function editMember(mid, field, value) {
-    const payload = { mid: mid };
-    payload[field] = value;
-    adsk.fusionSendData('editMember', JSON.stringify(payload))
-        .then((r) => setStatus(r));
-}
-
-function editJointKind(jid, kind) {
-    adsk.fusionSendData('editJointKind', JSON.stringify({ jid: jid, kind: kind }))
-        .then((r) => setStatus(r));
-}
-
-function editJointParam(jid, key, value) {
-    const v = (value === '' || value == null) ? 0 : parseFloat(value);
-    adsk.fusionSendData('editJointParam',
-        JSON.stringify({ jid: jid, key: key, value: v }))
-        .then((r) => setStatus(r));
 }
 
 function esc(s) {

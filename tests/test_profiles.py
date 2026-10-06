@@ -276,5 +276,86 @@ class TestGridPosition(unittest.TestCase):
         self.assertAlmostEqual(got[0], 0.0, places=9)
 
 
+class TestProfileFromGeom(unittest.TestCase):
+    """Reverse lookup: a body-recovered section -> catalogue designation.
+
+    The toolbox tools (cope/butt/miter/bend) recover a member's section from
+    its BRepBody, not the builder's dropdown, and use this to fill the BOM's
+    designation/family columns (see ``weldment.profile_fields``).
+    """
+
+    def setUp(self):
+        self.families = prof.annotate_families(prof.load_profiles())
+
+    def _find(self, abbr, designation):
+        for fam in self.families:
+            if fam["abbreviation"] != abbr:
+                continue
+            for d in prof.designations(fam):
+                if d["designation"] == designation:
+                    return d
+        raise AssertionError(f"{abbr} {designation} not in catalogue")
+
+    def test_round_tube_identifies_chs(self):
+        d = self._find("CHS", "20x1")
+        geom = prof.section_geometry(d)
+        self.assertEqual(prof.profile_from_geom(geom, self.families),
+                         ("CHS", "20x1"))
+
+    def test_square_tube_identifies_shs(self):
+        d = self._find("SHS", "10x10x1.0")
+        geom = prof.section_geometry(d)
+        self.assertEqual(prof.profile_from_geom(geom, self.families),
+                         ("SHS", "10x10x1.0"))
+
+    def test_body_style_descriptor_matches(self):
+        # What _centerline_prismatic/_centerline_round actually recover:
+        # bounding boxes only, no fillets, outer (+ inner) loops.
+        self.assertEqual(prof.profile_from_geom(
+            {"kind": "circles", "radii": [10.0, 9.0]}, self.families),
+            ("CHS", "20x1"))
+        self.assertEqual(prof.profile_from_geom(
+            {"kind": "polygons", "loops": [
+                [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)],
+                [(-4.0, -4.0), (4.0, -4.0), (4.0, 4.0), (-4.0, 4.0)]]},
+            self.families),
+            ("SHS", "10x10x1.0"))
+
+    def test_rotated_rhs_matches_either_orientation(self):
+        # A body's section axes are unordered, so an RHS may read back with
+        # height and width swapped.
+        geom = {"kind": "polygons", "loops": [
+            [(-7.5, -5.0), (7.5, -5.0), (7.5, 5.0), (-7.5, 5.0)],
+            [(-6.5, -4.0), (6.5, -4.0), (6.5, 4.0), (-6.5, 4.0)]]}
+        self.assertEqual(prof.profile_from_geom(geom, self.families),
+                         ("RHS", "15x10x1.0"))
+
+    def test_unknown_section_returns_none(self):
+        self.assertEqual(prof.profile_from_geom(None, self.families),
+                         (None, None))
+        self.assertEqual(prof.profile_from_geom({"kind": "weird"}, self.families),
+                         (None, None))
+        # A 400 mm solid-ish square is in no family.
+        self.assertEqual(prof.profile_from_geom(
+            {"kind": "polygons", "loops": [
+                [(-200.0, -200.0), (200.0, -200.0),
+                 (200.0, 200.0), (-200.0, 200.0)]]}, self.families),
+            (None, None))
+
+    def test_tube_families_round_trip(self):
+        # Every CHS/SHS/RHS designation must identify itself; the open
+        # sections (IPE/HEA/... whose loops are not rectangles) are outside
+        # what the toolbox body-recovery path produces.
+        for fam in self.families:
+            if fam["abbreviation"] not in ("CHS", "SHS", "RHS"):
+                continue
+            for d in prof.designations(fam):
+                geom = prof.section_geometry(d)
+                abbr, des = prof.profile_from_geom(geom, self.families)
+                self.assertEqual((abbr, des), (fam["abbreviation"],
+                                               d["designation"]),
+                                 f"{fam['abbreviation']} {d['designation']}")
+
+
 if __name__ == "__main__":
     unittest.main()

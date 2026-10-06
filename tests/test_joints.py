@@ -743,5 +743,29 @@ class TestBystanderLegAtCorner(unittest.TestCase):
         self.assertEqual(offs[2], (0.0, 0.0))      # bystander untouched
 
 
+class TestCopeKind(unittest.TestCase):
+    """The shared cope classification (T vs angled) used by every cope path."""
+
+    def test_perpendicular_is_t(self):
+        self.assertEqual(jt.cope_kind((1, 0, 0), (0, 0, 1)), 'cope_t')
+
+    def test_anti_parallel_dirs_still_t(self):
+        # Direction sign must not matter: a member run backwards is the same T.
+        self.assertEqual(jt.cope_kind((-1, 0, 0), (0, 0, 1)), 'cope_t')
+
+    def test_angled_is_cope_angle(self):
+        d = (math.cos(math.pi / 4), 0, math.sin(math.pi / 4))
+        self.assertEqual(jt.cope_kind(d, (0, 0, 1)), 'cope_angle')
+
+    def test_parallel_is_cope_angle(self):
+        # A coped member along its tool (an end cope) is not a T.
+        self.assertEqual(jt.cope_kind((1, 0, 0), (1, 0, 0)), 'cope_angle')
+
+    def test_just_off_perpendicular_is_angle(self):
+        eps = 0.05                          # > _COPES_TOL (0.02 rad)
+        self.assertEqual(jt.cope_kind((math.sin(eps), 0, math.cos(eps)),
+                                      (0, 0, 1)), 'cope_angle')
+
+
 if __name__ == '__main__':
     unittest.main()
