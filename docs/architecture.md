@@ -34,9 +34,9 @@ maintainers. For the derivations and formulas behind each joint, see
 2. **Data-driven.** Profiles and bend dies are JSON catalogues in `data/`;
    adding a size or a die needs no code change.
 3. **Parametric-history friendly.** Features are built so the timeline stays
-   clean (e.g. a butt is a length trim, not a boolean; a miter is a
-   `SplitBodyFeature` by the bisector plane plus a reversible `Remove` of the
-   waste sliver, never a giant boolean prism).
+   clean (e.g. a butt is a length trim, not a boolean; a miter is a finite
+   wedge prism on the bisector plane plus `Combine(Cut, keep_tool=False)`, so
+   deleting the cut cleanly restores the body for preview teardown).
 4. **A joint belongs to a line END.** Every member has a *start* and an *end*
    vertex; the two can carry different joints.
 
@@ -256,9 +256,9 @@ panel and drives the dialog.
   `_update_manipulators`, `_apply_row_manipulators`.
 - *Geometry bridge:* `_resolve`, `_joint_offsets`, `_build_bend_arcs`,
   `_build_weldment`, `_draw_section`, `_draw_model_line`.
-- *Cutting:* `_apply_corner_cuts`, `_miter_plane`, `_split_miter`,
-  `_side`, `_find_body_near`, `_all_bodies`, `_body_centroid`, `_bbox_of`,
-  `_remove_combine_orphans`.
+- *Cutting:* `_apply_corner_cuts`, `_miter_plane`, `_miter_cutter`,
+  `_box_cutter`, `_combine_cut`, `_survivor_after_cut`, `_side`,
+  `_find_body_near`, `_body_centroid`, `_bbox_of`.
 - *Existing members:* `_CtxPoint`, `_CtxGeometry`, `_ContextLine`,
   `_member_centerline`, `_recover_existing_members`.
 - *Preview/commit:* `command_execute_preview`, `command_execute`,
@@ -469,16 +469,17 @@ Non-obvious rules that must not regress:
   `FloatSpinner`'s `.value` is also **database units (cm)** — convert ×10 before
   feeding the mm-based joint layer (this was the cope-depth 10× bug).
 - **Bend direction is the angle SIGN**, not the axis vector.
-- **Miter = Split Body + Remove.** A `SplitBodyFeature` by the bisector plane
-  *is* usable in a parametric design (verified live): it returns a feature whose
-  `bodies` are the two halves, and the waste half is dropped with a reversible
-  `Remove` (deleting the Remove restores the body). The kept half is whichever
-  piece still `pointContainment`-contains the member's own far end, so no normal
-  sign is needed and both members' faces land on the identical plane. The old
-  "Split is unusable, use a hidden waste prism + combine" approach is retired.
-- **Cope orphans:** a cope tip overshooting a hollow tool's near wall shaves a
-  floating plug. `_remove_combine_orphans` keeps the tool + largest remaining
-  body and issues a `Remove` on the rest (Remove preserves the parametric flow).
+- **Miter = finite wedge prism + Combine(Cut).** `_miter_cutter` builds a prism
+  on the bisector plane whose `+nrm` face lies exactly on the miter face, then
+  `Combine(Cut, keep_tool=False)` produces the flat diagonal face with no Split
+  Body and no `pointContainment` guess. (An earlier Split Body + Remove approach
+  was retired: the combine is simpler and its delete cleanly restores the body
+  for preview teardown.)
+- **Cope survivor:** a cope tip overshooting a hollow tool's near wall shaves a
+  floating plug. `_survivor_after_cut` picks the member's main run (the largest
+  body in the region that is not the tool) so the spine re-stamps the right
+  body; the plug is dropped by the combine's own region classification. (The old
+  `_remove_combine_orphans` Remove-the-slivers helper is retired.)
 - **Never pass a negative index to a joint/flag list** — Python `list[-1]` is the
   last element. Context members are `~k`/`n+k` and guarded so they read as joint
   `'none'` (never edited).

@@ -391,15 +391,17 @@ changes don't regress them:
   control flips the angle's sign via `bend_plan`'s `direction`.
 - **Cope depth** read from a `'mm'` spinner is actually in cm (database units) —
   convert ×10 before feeding the mm-based joint layer.
-- **Cope orphans:** a cope tip overshooting a hollow tool's near wall shaves a
-  plug that floats in the void. Keep the tool + the largest remaining body and
-  issue a `Remove` feature on the rest (Remove keeps the parametric flow intact).
-- **Miter = Split Body + Remove.** A `SplitBodyFeature` by the bisector plane is
-  usable in a parametric design (verified live): it returns both halves, and the
-  waste half is dropped with a reversible `Remove`. The kept half is whichever
-  piece still contains the member's own far end, so the plane normal's sign never
-  matters and both members' faces land on the identical plane. (The old hidden
-  waste-prism + combine approach is retired.)
+- **Cope survivor:** a cope tip overshooting a hollow tool's near wall shaves a
+  plug that floats in the void. `_survivor_after_cut` keeps the tool + the
+  member's main run (the largest body in the joint region) so the spine
+  re-stamps the right body.
+- **Miter = wedge prism + Combine(Cut).** `_miter_cutter` builds a finite prism
+  on the bisector plane whose `+nrm` face lies exactly on the miter face, then
+  `Combine(Cut, keep_tool=False)` trims the member to that diagonal. Both members
+  are cut by prisms on the identical bisector plane, so their faces coincide for
+  any Rotation or Position — no Split Body and no `pointContainment` guess. (An
+  earlier Split Body + `Remove` approach was retired; deleting the combine cleanly
+  restores the body for preview teardown.)
 - **Joint/flag lookups must never receive a negative index** — Python's
   `list[-1]` is the last element. Context members are encoded as negative indices
   (`~k`) and guarded so they're treated as "never edited".

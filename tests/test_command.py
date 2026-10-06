@@ -1613,60 +1613,6 @@ class TestCopeAgainstExistingSquareMember(unittest.TestCase):
         self.assertNotAlmostEqual(offs[0][1], 0.0)
 
 
-class TestCopeOrphanRemoval(unittest.TestCase):
-    """A cope cut leaves a thin plug inside the tool's void; it must be Removed.
-
-    The combine output is [tool, main run, orphan plug].  _remove_combine_orphans
-    keeps the tool and the largest remaining body (the main run) and issues a
-    Remove feature on the rest, without disturbing the parametric flow.
-    """
-
-    def setUp(self):
-        adsk_stub.reset()
-        self.root = adsk_stub.FakeRoot()
-
-    def _combine(self, bodies):
-        comb = adsk_stub.FakeFeature("adsk::fusion::CombineFeature", self.root,
-                                     bodies)
-        self.root.features._items.append(comb)
-        return comb
-
-    def test_removes_only_the_smallest_non_tool_body(self):
-        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0)
-        main = adsk_stub.FakeBody(name="MAIN", volume=38.0)
-        plug = adsk_stub.FakeBody(name="PLUG", volume=3.7)
-        comb = self._combine([plug, main, tool])
-        removes = entry._remove_combine_orphans(self.root, comb, tool)
-        self.assertEqual(len(removes), 1)
-        names = [c[0] for c in adsk_stub.CALLS]
-        self.assertEqual(names.count("RemoveFeatures.add"), 1)
-        # The plug is gone from the design; the tool and main run remain.
-        self.assertNotIn(plug, comb.bodies._items)
-        self.assertIn(tool, comb.bodies._items)
-        self.assertIn(main, comb.bodies._items)
-
-    def test_no_orphan_when_only_the_main_run_remains(self):
-        # A solid tool (no void) yields [tool, main] -- nothing to remove.
-        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0)
-        main = adsk_stub.FakeBody(name="MAIN", volume=38.0)
-        comb = self._combine([main, tool])
-        removes = entry._remove_combine_orphans(self.root, comb, tool)
-        self.assertEqual(removes, [])
-        names = [c[0] for c in adsk_stub.CALLS]
-        self.assertNotIn("RemoveFeatures.add", names)
-
-    def test_removing_then_deleting_the_remove_restores_the_body(self):
-        tool = adsk_stub.FakeBody(name="TOOL", volume=90.0)
-        main = adsk_stub.FakeBody(name="MAIN", volume=38.0)
-        plug = adsk_stub.FakeBody(name="PLUG", volume=3.7)
-        comb = self._combine([plug, main, tool])
-        removes = entry._remove_combine_orphans(self.root, comb, tool)
-        self.assertEqual(len(removes), 1)
-        self.assertNotIn(plug, comb.bodies._items)
-        removes[0].deleteMe()   # preview teardown
-        self.assertIn(plug, comb.bodies._items)
-
-
 class TestCopeOntoBendArc(unittest.TestCase):
     """A cope that T-joints onto a BEND's curved arc downgrades to a butt.
 

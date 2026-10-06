@@ -197,15 +197,14 @@ must reach past the centreline vertex; the bisector plane through `V` then slice
 the diagonal. Without the extension the plane only clips the square end's centre
 — no visible miter.
 
-**Cutting mechanism (`_split_miter`):** the member body is cut with a
-`SplitBodyFeature` by the bisector construction plane (extended to fully cross
-the body), which yields two halves; the waste half is dropped with a reversible
-`Remove` feature. The kept half is whichever piece still
-`pointContainment`-contains the member's own far end, so the plane normal's sign
-never has to be reasoned about, and because both members are split by the
-*identical* plane their diagonal faces coincide exactly — for any Rotation or
-Position. This replaces the old hidden waste-prism + combine-cut (a boolean that
-was sensitive to the setback and left orphan slivers).
+**Cutting mechanism (`_miter_cutter`):** a finite wedge prism is built on the
+bisector construction plane (its `+nrm` face lying exactly on the miter face),
+then `Combine(Cut, keep_tool=False)` trims the member to that diagonal with no
+Split Body and no `pointContainment` guess. Because both members are cut by
+prisms on the *identical* bisector plane their diagonal faces coincide exactly —
+for any Rotation or Position. (An earlier `SplitBodyFeature` + `Remove` approach
+was retired in favour of this combine, whose delete cleanly restores the body
+for preview teardown.)
 
 **Degenerate guards:** `SB=0` when `φ/2 ≤ 0` or `≥ π/2` (collinear or folded
 back). No cut when `n·n < 1e-9` (members parallel → no bisector).
@@ -214,9 +213,9 @@ back). No cut when `n·n < 1e-9` (members parallel → no bisector).
 - *Miter only cuts one member* → miter is a **two-member relationship**;
   `_propagate_corner_joint` must set it on both. A lone miter leaves the
   neighbour's square end poking through.
-- *Diagonal face in the wrong direction* → the split keeps the half that
-  `pointContainment`-contains the member's far end; verify the probe point is
-  deep inside the member's own run (`_line_far_end`).
+- *Diagonal face in the wrong direction* → the `_miter_cutter` prism must grow
+  to the WASTE side of the bisector plane (its `+nrm` face lands on the miter
+  face); verify the extrude direction follows the plane's actual normal sign.
 - *No miter at 90°* → confirm `φ≈π/2` (not `θ`); using `θ` in `tan(φ/2)` gives
   the wrong setback.
 
@@ -250,7 +249,8 @@ coping mid-run is the only physical case.
 - *Cope does nothing* → it's at a corner, not a T-junction. Verify the end lands
   strictly inside the tool's run (`0<t<1`).
 - *Floating plug after a cope* → tip overshot a hollow tool's near wall.
-  `_remove_combine_orphans` keeps the tool + largest body and `Remove`s the rest.
+  `_survivor_after_cut` keeps the tool + the member's main run (largest body in
+  the joint region) so the spine re-stamps the right body.
 - *Cope too shallow/deep* → Cope Depth spinner is read in **cm** (database units)
   and ×10'd to mm; a 10× error here is the classic bug.
 - *Cope against an existing SHS/RHS does nothing* → the recovered section was
