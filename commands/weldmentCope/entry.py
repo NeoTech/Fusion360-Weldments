@@ -202,6 +202,7 @@ def _clear_preview():
 
 def command_execute_preview(args: adsk.core.CommandEventArgs):
     """Ghost the coping member's cut result so the user sees where it lands."""
+    global _preview_objs
     inputs = args.command.commandInputs
     w = _weldment()
     design = _design()

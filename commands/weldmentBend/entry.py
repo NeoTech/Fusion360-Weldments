@@ -342,6 +342,7 @@ def _clear_preview():
 
 def command_execute_preview(args: adsk.core.CommandEventArgs):
     """Ghost the trimmed legs and swept arc so the bend reads as transient."""
+    global _preview_objs
     inputs = args.command.commandInputs
     w = _weldment()
     design = _design()
@@ -381,8 +382,12 @@ def command_execute(args: adsk.core.CommandEventArgs):
         return
     root = design.rootComponent
 
-    # Replace the ghosted preview with the real, fully-opaque bend: tear the
-    # preview down first so the committed cut runs on restored geometry.
+    # Tear the preview down FIRST.  The preview's Combine features consumed
+    # (re-homed) the two member bodies; deleting those features restores the
+    # original bodies the selection inputs reference, so the reads below get
+    # whole members again.  (If the preview were left up, the picked bodies
+    # would still be consumed and _selected_body would spuriously return None,
+    # popping "select both members" even though the user picked two.)
     _clear_preview()
 
     body_a = _selected_body(inputs.itemById('member_a'))
