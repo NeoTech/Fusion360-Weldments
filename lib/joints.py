@@ -1458,6 +1458,81 @@ def butt_trim(subject, tool, landing, subject_geom=None, tool_geom=None,
                                        'region': box}}
 
 
+def cope_trim_box(subject, tool, landing, subject_geom=None, tool_geom=None,
+                  subject_basis=None, tool_basis=None, subject_anchor=None,
+                  tool_anchor=None, depth_mm=0.0):
+    """The pull-back prism for coping an EXISTING member (toolbox Cope, C1).
+
+    :func:`cope_cutter` builds the symmetric joint box the auto path uses while
+    the coping member is still being BUILT: its tip is *placed* at the stopping
+    face by an axial offset, and the tool boolean then carves the saddle.  The
+    toolbox copes a member that already exists -- its tip was built to the
+    vertex and now pokes into the tool's bore.  Before the saddle boolean can
+    run, that protruding tip must be pulled back to the same stopping face the
+    auto path builds to.  This is that pull-back: a finite prism spanning from
+    the offset plane to past the vertex, for a Combine(Cut, keep_tool=False)
+    against the member alone (the tool is not a target of this cut).
+
+    ``subject``/``tool`` are ``(start, end)`` centrelines in cm and ``landing``
+    the picked point (cm) on the tool where the subject's tip meets it; the
+    section descriptors / bases / anchors are as in :func:`cope_cutter`.  The
+    stopping face (``reach``, signed from the vertex along the subject's axis,
+    negative = short of the vertex, the :func:`corner_offsets` convention):
+
+    * hollow tool -> ``-trim + wall + depth``: just past the near wall's inner
+      face, deepened by ``depth_mm``.  The prism removes the member's plug
+      inside the bore; the following boolean then carves the wall it still
+      overlaps.
+    * solid tool  -> ``depth`` (the vertex plane by default).  An existing
+      member's tip is already at the vertex, embedded in the tool's near half;
+      the boolean (member minus tool) carves the conforming face by itself, so
+      the prism only needs to swallow any overshoot *past* the vertex.  (The
+      auto path instead builds the tip to the far face so the boolean spans the
+      whole section -- with equal sections the two end shapes agree.)
+
+    Returns ``{'reach': cm, 'region': box}`` -- ``region`` the asymmetric box
+    (its member-side face EXACTLY on the offset plane; the safety factor
+    extends only toward the tool) consumable by the builder's
+    ``_box_cutter``.  None when degenerate (zero-length member, collinear
+    pair, or a box clamped to nothing by the leg-room safety).
+    """
+    ss, se = subject
+    ts, te = tool
+    sd = line_direction_from(ss, se)
+    td = line_direction_from(ts, te)
+    if sd is None or td is None:
+        return None
+    if _sin_between(sd, td) <= 1e-6:
+        return None                       # collinear: nothing to trim against
+    own, _far = _tip_and_own(subject, landing)
+    if own is None:
+        return None
+    trim = _half_extent_cm(tool_geom, tool_basis, sd, tool_anchor)
+    depth = abs(depth_mm) * MM_TO_CM
+    sub_perp = _perp_extent_cm(subject_geom, subject_basis, subject_anchor, sd)
+    tool_perp = _perp_extent_cm(tool_geom, tool_basis, tool_anchor, td)
+    perp = max(sub_perp, tool_perp) * _BOX_SAFETY
+    if _is_hollow(tool_geom):
+        reach = -trim + (_wall_cm(tool_geom) or 0.0) + depth
+    else:
+        reach = depth
+    # Axial span along own (s = signed distance from the vertex, + into the
+    # member): the offset plane sits at s = -reach (corner_offsets' sign
+    # convention), and the prism extends from there PAST the vertex into the
+    # tool (s = -f).  f is the plug reach so the prism swallows any tip
+    # overshoot and the tool's whole cross-section, mirroring cope_cutter's
+    # box coverage.
+    f = _plug_reach(trim + depth, sub_perp + tool_perp, _angle_between(sd, td))
+    hi = min(-reach, 0.5 * max(_dist(landing, ss), _dist(landing, se)))
+    lo = max(-f, -0.5 * max(_dist(landing, ts), _dist(landing, te)))
+    if hi <= lo:
+        return None
+    center = _add(landing, _scale(own, 0.5 * (hi + lo)))
+    box = {'center': center, 'axes': _frame(own), 'half': (0.5 * (hi - lo),
+                                                           perp, perp)}
+    return {'reach': reach, 'region': box}
+
+
 def ci_index(idx, n):
     """Detection index -> combined-array index (selected 0..n-1, then context).
 

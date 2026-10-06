@@ -450,6 +450,108 @@ class TestCopeCutterExplicitPair(unittest.TestCase):
                                          ((0, 0, 0), (50, 0, 0)), (5, 0, 0)))
 
 
+class TestCopeTrimBox(unittest.TestCase):
+    """cope_trim_box (C1): the pull-back prism for coping an EXISTING member.
+
+    The toolbox copes a member whose tip already pokes into the tool; before
+    the saddle boolean, the overshoot must be trimmed back to the stopping
+    face corner_offsets uses.  The prism spans from the offset plane to past
+    the vertex, so it swallows exactly the protruding tip.
+    """
+
+    def setUp(self):
+        self.geom = _tube(20.0, 20.0, 2.0)     # SHS 20x20x2 (hollow)
+        self.solid = {'kind': 'polygons',
+                      'loops': [[(-10.0, -10.0), (10.0, -10.0),
+                                 (10.0, 10.0), (-10.0, 10.0)]],
+                      'fillets': [[]]}
+        # Subject runs down -Z onto the tool's axis at (25, 0, 0).
+        self.subj = ((25, 0, 20), (25, 0, 0))
+        self.tool = ((0, 0, 0), (50, 0, 0))
+        self.V = (25, 0, 0)
+
+    def _axial_s(self, box, point):
+        """Signed distance of ``point`` from the box centre along the axis."""
+        c = box['center']
+        d = box['axes'][0]
+        return jt._dot((point[0] - c[0], point[1] - c[1], point[2] - c[2]), d)
+
+    def test_hollow_t_reach_matches_corner_offsets(self):
+        r = jt.cope_trim_box(self.subj, self.tool, self.V,
+                             subject_geom=self.geom, tool_geom=self.geom)
+        trim = jt._half_extent_cm(self.geom, None, (0, 0, -1))
+        wall = jt._wall_cm(self.geom)
+        self.assertAlmostEqual(r['reach'], -trim + wall, 6)
+
+    def test_hollow_box_spans_offset_plane_to_tool(self):
+        r = jt.cope_trim_box(self.subj, self.tool, self.V,
+                             subject_geom=self.geom, tool_geom=self.geom)
+        box = r['region']
+        # own = vertex -> into member = +Z here.
+        self.assertAlmostEqual(box['axes'][0][2], 1.0, 6)
+        # The member-side face sits EXACTLY on the offset plane (no safety
+        # factor on the keep side): reach -0.8 -> plane at z = +0.8.
+        self.assertAlmostEqual(self._axial_s(box, (25, 0, 0.8)),
+                               box['half'][0], 6)
+        # The prism covers the vertex and reaches past it into the tool.
+        self.assertLess(self._axial_s(box, self.V), box['half'][0])
+        self.assertGreater(self._axial_s(box, self.V), -box['half'][0])
+        self.assertLessEqual(self._axial_s(box, (25, 0, -2.0)),
+                             -box['half'][0] + 1e-9)
+        # A point on the member clear of the cut survives the prism.
+        self.assertGreater(self._axial_s(box, (25, 0, 5.0)), box['half'][0])
+
+    def test_solid_tool_reach_past_vertex(self):
+        r = jt.cope_trim_box(self.subj, self.tool, self.V,
+                             subject_geom=self.geom, tool_geom=self.solid)
+        # An existing member's tip sits AT the vertex; the boolean carves the
+        # conforming face, so the prism only swallows overshoot past it.
+        self.assertAlmostEqual(r['reach'], 0.0, 6)
+        box = r['region']
+        # The member-side face is the vertex plane itself.
+        self.assertAlmostEqual(self._axial_s(box, self.V), box['half'][0], 6)
+        # And the prism reaches past the vertex into the tool (the point 1 cm
+        # into the tool lies strictly inside the box).
+        self.assertLess(abs(self._axial_s(box, (25, 0, -1.0))),
+                        box['half'][0])
+
+    def test_depth_deepens_the_stopping_face(self):
+        r0 = jt.cope_trim_box(self.subj, self.tool, self.V,
+                              subject_geom=self.geom, tool_geom=self.geom)
+        r5 = jt.cope_trim_box(self.subj, self.tool, self.V,
+                              subject_geom=self.geom, tool_geom=self.geom,
+                              depth_mm=5.0)
+        self.assertAlmostEqual(r5['reach'] - r0['reach'], 0.5, 6)  # 5 mm -> cm
+
+    def test_angled_t_grows_the_tool_side(self):
+        import math as _m
+        # 45-degree subject: shallower angle -> larger plug reach toward the
+        # tool (the _plug_reach perp/sin rule).
+        end = (25 + 20 * _m.cos(_m.pi / 4), 0.0, 20 * _m.sin(_m.pi / 4))
+        subj = (end, self.V)
+        r = jt.cope_trim_box(subj, self.tool, self.V,
+                             subject_geom=self.geom, tool_geom=self.geom)
+        sq = jt.cope_trim_box(self.subj, self.tool, self.V,
+                              subject_geom=self.geom, tool_geom=self.geom)
+        self.assertGreater(r['region']['half'][0], sq['region']['half'][0])
+
+    def test_clamped_by_leg_room(self):
+        # A stub subject (1 cm long): the member-side face cannot pass its
+        # midpoint (0.5 cm from the vertex).
+        r = jt.cope_trim_box(((25, 0, 1), self.V), self.tool, self.V,
+                             subject_geom=self.geom, tool_geom=self.geom)
+        box = r['region']
+        self.assertLessEqual(self._axial_s(box, (25, 0, 0.5)),
+                             box['half'][0] + 1e-9)
+
+    def test_degenerate_returns_none(self):
+        self.assertIsNone(jt.cope_trim_box(((5, 0, 0), (5, 0, 0)),
+                                          self.tool, (5, 0, 0)))
+        # Collinear pair: nothing to trim against.
+        self.assertIsNone(jt.cope_trim_box(((0, 0, 0), (10, 0, 0)),
+                                          self.tool, (10, 0, 0)))
+
+
 class TestMiterCutterExplicitPair(unittest.TestCase):
     """miter_cutter (Phase-4 toolbox) == joint_spec's miter for the same pair."""
 
