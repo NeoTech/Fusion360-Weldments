@@ -333,35 +333,6 @@ def ensure_data_panel():
     return panel
 
 
-def add_pinned_command(panel, cmd_def, cmd_id):
-    """Add a command button to ``panel`` and pin it to the ribbon by default.
-
-    A plain ``addCommand`` parks the button in the panel's overflow dropdown;
-    the user must promote it to see it on the ribbon. Setting ``isPromoted``
-    shows it on the panel now and ``isPromotedByDefault`` makes it the default
-    state after a UI reset -- together, "pinned to the ribbon by default".
-    Idempotent: reuses an existing control (a reload re-runs every start()),
-    and still (re)applies the promote flags so a button added by an older
-    version gets pinned too. The promote properties are set best-effort: an
-    older Fusion build without ``isPromotedByDefault`` still gets ``isPromoted``.
-    """
-    if panel is None:
-        return None
-    control = panel.controls.itemById(cmd_id)
-    if control is None:
-        control = panel.controls.addCommand(cmd_def)
-    if control is not None:
-        try:
-            control.isPromoted = True
-        except Exception:
-            futil.log(f'{CMD_NAME} could not promote {cmd_id}.')
-        try:
-            control.isPromotedByDefault = True
-        except Exception:
-            pass
-    return control
-
-
 def start():
     global _FAMILIES, _DIES
     try:
@@ -381,7 +352,8 @@ def start():
 
     panel = ensure_weldments_panel()
     if panel:
-        add_pinned_command(panel, cmd_def, CMD_ID)
+        if panel.controls.itemById(CMD_ID) is None:
+            panel.controls.addCommand(cmd_def)
     else:
         futil.log(f'{CMD_NAME} could not create the {PANEL_NAME} panel.')
 
@@ -1776,6 +1748,24 @@ def _miter_plane(root, point, normal):
     return plane, sk
 
 
+def _all_bodies(root):
+    """Every BRepBody currently in ``root``, re-fetched by feature index.
+
+    Split/combine prune or reparent features, so a cached feature index can
+    point past the end; always enumerate fresh.  A feature whose bodies raise
+    (mid-edit) is skipped.
+    """
+    out = []
+    for i in range(root.features.count):
+        try:
+            f = root.features.item(i)
+            for j in range(f.bodies.count):
+                out.append(f.bodies.item(j))
+        except Exception:
+            continue
+    return out
+
+
 class _CtxPoint:
     """Minimal ``(x, y, z)`` holder matching a Fusion Point3D read interface."""
 
@@ -2141,6 +2131,48 @@ def resolve_member(registry, body, context_line=None):
         return registry.member_near_point(
             reg.midpoint(context_line[0], context_line[1]), tol=0.5)
     return None
+
+
+def registry_context(root, registry):
+    """Member records as ``joint_spec`` context dicts, bodies re-resolved live.
+
+    Mirrors :func:`_recover_existing_members`' output shape
+    ``{'line','geom','basis','body'}`` but sourced from stored records: the
+    centreline comes from the record (so a bend member keeps its full virtual
+    corner, no stub-reunion needed) and the ``body`` is found through the
+    attribute spine -- the body whose stamp names this member (see
+    :func:`stamp_body`) -- falling back to the stored feature index for bodies
+    built before the spine existed. A record whose body is gone is skipped.
+    """
+    by_mid = {}
+    try:
+        feats = root.features
+        for i in range(feats.count):
+            try:
+                f = feats.item(i)
+                for j in range(f.bodies.count):
+                    b = f.bodies.item(j)
+                    mid = body_mid(b)
+                    if mid is not None:
+                        by_mid[mid] = b
+            except Exception:
+                continue
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} registry context')
+    members = []
+    for m in registry.members:
+        body = by_mid.get(m.mid)
+        if body is None and m.feature is not None:
+            try:
+                f = root.features.item(m.feature)
+                body = f.bodies.item(m.body_index or 0)
+            except Exception:
+                body = None
+        if body is None:
+            continue
+        members.append({'line': _ContextLine(m.start, m.end, body),
+                        'geom': m.geom, 'basis': m.basis, 'body': body})
+    return members
 
 
 def record_joints(registry, occs, lines, context=None):
@@ -2810,6 +2842,112 @@ def _box_cutter(root, region, preview=False):
     return body, feat, sk, (plane, psk)
 
 
+def _remove_combine_orphans(root, comb, tool_body):
+    """Delete the disconnected slivers a cope/saddle cut leaves inside the tool.
+
+    A cope runs the member's tip just past the tool's near wall, so the boolean
+    shaves a thin plug off the member that ends up floating in the tube's hollow
+    void -- a body that is neither the (kept) tool nor the member's main run.
+    Those are pure waste.  We cannot tell them apart by body identity (Fusion
+    re-homes the member's identity onto the wrong fragment), so we keep the tool
+    and the single largest remaining body (the member's main run -- a plug is
+    always a small sliver of it) and issue a ``Remove`` feature on the rest.
+    ``Remove`` deletes bodies without disturbing the parametric flow, and
+    deleting it later (preview teardown) restores them.  Returns the Remove
+    features created.
+    """
+    removed = []
+    try:
+        bodies = comb.bodies
+    except Exception:
+        return removed
+    # Partition the combine's output: the tool (kept) vs. the member's pieces.
+    pieces = []
+    for bi in range(bodies.count):
+        try:
+            b = bodies.item(bi)
+        except Exception:
+            continue
+        if tool_body is not None and b == tool_body:
+            continue  # the neighbour we cut against -- keep it
+        pieces.append(b)
+    if len(pieces) <= 1:
+        return removed  # nothing to separate: the lone piece is the main run
+    # The main run is by far the largest; every smaller piece is a waste plug.
+    def vol(b):
+        try:
+            return b.volume
+        except Exception:
+            return 0.0
+    keep = max(pieces, key=vol)
+    for b in pieces:
+        if b is keep:
+            continue
+        try:
+            removed.append(root.features.removeFeatures.add(b))
+        except Exception:
+            futil.handle_error(f'{CMD_NAME} remove cope orphan')
+    return removed
+
+
+def _split_miter(root, body, V, normal, test_pt):
+    """Trim a member to a miter plane with Split Body + Remove (no boolean).
+
+    A construction plane through the vertex ``V`` with the bisector ``normal``
+    splits ``body`` into the kept half (the member's own side) and a waste
+    sliver beyond the miter face.  The waste is dropped with a ``Remove``
+    feature -- reversible (deleting it restores the body) and it leaves the
+    parametric flow intact, unlike deleting the body outright.  The kept half
+    is whichever piece still contains ``test_pt`` (a point deep inside the
+    member's own run), so no normal-sign logic is needed and the diagonal face
+    lands exactly on the shared bisector plane -- coincident with the
+    neighbour's face for any rotation or Position offset.
+
+    Returns ``(created, kept)``: the objects to track for preview teardown in
+    delete order (Remove, then Split, then the plane and its helper sketch), and
+    the member's surviving body -- the half that still contains ``test_pt``.
+    The caller writes ``kept`` back into its body map so a later cut on the same
+    member (its other end) targets the re-homed body instead of the stale one.
+    """
+    plane, sk = _miter_plane(root, V, normal)
+    sbf = root.features.splitBodyFeatures.add(
+        root.features.splitBodyFeatures.createInput(body, plane, True))
+    # The real API returns a SplitBodyFeature whose ``bodies`` are the two
+    # halves; fall back to enumerating every body if it hands back None.
+    halves = sbf.bodies if sbf is not None else _all_bodies(root)
+    inside = adsk.fusion.PointContainment.PointInsidePointContainment
+    probe = adsk.core.Point3D.create(*test_pt)
+    waste = kept = None
+    for i in range(halves.count):
+        b = halves.item(i)
+        try:
+            if b.pointContainment(probe) != inside:
+                waste = b
+            else:
+                kept = b
+        except Exception:
+            continue
+    if kept is None:
+        kept = body          # no Inside half reported: assume the original
+    created = []
+    if waste is not None:
+        rm = root.features.removeFeatures.add(waste)
+        if rm is not None:
+            created.append(rm)
+    if sbf is not None:
+        created.append(sbf)
+    # The plane and its two long helper lines are live inputs to the split, so
+    # hide them (light bulb off) rather than delete them, and track them for
+    # teardown.
+    for helper in (sk, plane):
+        try:
+            helper.isLightBulbOn = False
+        except Exception:
+            pass
+    created.extend([sk, plane])
+    return created, kept
+
+
 def _miter_cutter(root, V, nrm, perp, depth, preview=False):
     """Build the finite wedge cutter for a miter: a prism on the bisector plane.
 
@@ -3050,6 +3188,31 @@ def cope_body_cut(root, body, tool_body, region):
     removes = _remove_inside_region(root, comb, tool_body, region)
     run = _survivor_after_cut(comb, tool_body, region)
     return removes + [comb], run
+
+
+def _combine_survivor(comb, tool_body):
+    """The member's main-run body in a combine's output (largest non-tool piece).
+
+    After a cope/saddle cut the combine holds the kept tool plus the member's
+    fragments; the plug(s) have already been Removed, so the largest body that is
+    not the tool is the member's surviving run.  Returns None when it cannot be
+    determined, so the caller keeps its previous reference.
+    """
+    best, best_v = None, None
+    try:
+        for k in range(comb.bodies.count):
+            b = comb.bodies.item(k)
+            if tool_body is not None and b == tool_body:
+                continue
+            try:
+                v = b.volume
+            except Exception:
+                v = 0.0
+            if best_v is None or v > best_v:
+                best, best_v = b, v
+    except Exception:
+        return None
+    return best
 
 
 def _draw_model_line(sketch, p_from, p_to):
