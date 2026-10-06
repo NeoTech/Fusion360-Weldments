@@ -44,16 +44,27 @@ PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
 
 local_handlers = []
 
-# Opacity used to ghost the coping member's preview survivor so it reads as
-# transient (matches the auto command's PREVIEW_OPACITY).
+# Opacity used to ghost the preview cutter prism so it reads as transient
+# (matches the auto command's PREVIEW_OPACITY).
 PREVIEW_OPACITY = 0.4
-# Features/sketches/planes made for the current in-dialog preview, in delete
-# order.  Rebuilt on every preview and torn down when the dialog closes or the
-# next preview starts (deleting them restores the members' original bodies).
+# The throwaway objects the current preview built, in creation order: the two
+# CopyPasteBody features (the ghost is cut on COPIES of the members, never the
+# selected bodies themselves -- a destructive boolean on a selected body inside
+# executePreview makes Fusion roll the preview back on OK and SKIP
+# command_execute entirely, the "preview shows, nothing commits" bug), the
+# prism cutter and its sketches/planes, and the Combine/Remove features.  The
+# preview ghosts the cut COPY so the user sees the real saddle result; every
+# object here is deleted by _clear_preview() at the start of the next
+# preview/execute and on destroy (mirrors the working weldment command, whose
+# preview likewise only cuts its own throwaway bodies).
 _preview_objs = []
-# (body, original_opacity) pairs for pre-existing bodies we ghosted; restored on
-# teardown so a Cancel never leaves a member translucent.
-_preview_ghosts = []
+# Real member bodies the preview hid while its ghost stands in for them
+# (_clear_preview shows them again).  Hiding is reversible and never consumes
+# a selection, unlike a Combine.
+_preview_hidden = []
+# The two member bodies captured during the last preview, kept as a fallback
+# in case Fusion drops a selection entry before execute reads it.
+_preview_bodies = (None, None)
 
 
 def _design():
@@ -86,6 +97,13 @@ def stop():
 
 
 def command_created(args: adsk.core.CommandCreatedEventArgs):
+    global _preview_objs, _preview_bodies, _preview_hidden
+    # Fresh dialog session: no leftover preview ghosts or cached bodies.
+    # (Module globals persist across dialog sessions, so a stale ghost from a
+    # previous OK/Cancel must not leak in.)
+    _preview_objs = []
+    _preview_hidden = []
+    _preview_bodies = (None, None)
     inputs = args.command.commandInputs
 
     subj = inputs.addSelectionInput('subject', 'Coping Member',
@@ -121,17 +139,15 @@ def _selected_body(sel):
     return None
 
 
-def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
-    """Resolve the joint and run the two-step cope cut, shared by execute/preview.
+def _cope_plan(w, subj_body, tool_body, depth_mm):
+    """Resolve the two members' centerlines and the cope's two cut regions.
 
-    Returns ``(error, payload)``.  On success ``error`` is None and ``payload``
-    is a dict with the resolved centerlines, the landing vertex, the surviving
-    run body, the prism helper objects (``track``), and -- in preview mode -- the
-    cut features (``feats``) to delete on teardown.  On failure ``error`` is a
-    user-facing message (execute shows it; preview ignores it so a half-picked
-    selection does not pop a dialog on every redraw).
+    Returns ``(error, plan)``.  On success ``plan`` carries the centerlines,
+    the landing vertex, the step-1 pull-back prism region and the step-2
+    saddle region.  Shared by the non-destructive preview (which ghosts only
+    the prism) and :func:`_do_cut` (which performs both cuts), so the two never
+    drift.
     """
-    design = _design()
     subj_cl = w._member_centerline(subj_body)
     tool_cl = w._member_centerline(tool_body)
     if subj_cl is None or tool_cl is None:
@@ -162,7 +178,26 @@ def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
                          subject_basis=sbasis, tool_basis=tbasis,
                          depth_mm=depth_mm)
     saddle_region = cut['region'] if cut else trim_region
+    return None, {'subj_cl': subj_cl, 'tool_cl': tool_cl, 'landing': landing,
+                  'trim_region': trim_region, 'saddle_region': saddle_region}
 
+
+def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
+    """Run the two-step cope cut (called from command_execute on OK).
+
+    Returns ``(error, payload)``.  On success ``error`` is None and ``payload``
+    carries the resolved centerlines, the landing vertex, the surviving run
+    body and the prism helper objects (``track``).  On failure ``error`` is a
+    user-facing message.  The preview never calls this -- it ghosts the prism
+    only (see command_execute_preview), because a destructive Combine in
+    executePreview suppresses command_execute.
+    """
+    err, plan = _cope_plan(w, subj_body, tool_body, depth_mm)
+    if err:
+        return err, None
+    subj_cl, tool_cl = plan['subj_cl'], plan['tool_cl']
+    landing = plan['landing']
+    trim_region, saddle_region = plan['trim_region'], plan['saddle_region']
     try:
         # Step 1: pull the protruding tip back to the stopping face with a
         # finite prism (the tool is not a target of this cut).
@@ -185,22 +220,48 @@ def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
     return None, payload
 
 
+def _flatten(objs):
+    """Flatten arbitrarily nested tuples/lists of objects to a flat list."""
+    out = []
+    for o in objs:
+        if isinstance(o, (tuple, list)):
+            out.extend(_flatten(o))
+        elif o is not None:
+            out.append(o)
+    return out
+
+
 def _clear_preview():
-    """Tear down the in-dialog preview: delete the cut features (restoring the
-    members' original bodies), then the prism helpers they consumed."""
-    global _preview_objs, _preview_ghosts
-    for obj in _preview_objs:
-        for o in (obj if isinstance(obj, (tuple, list)) else (obj,)):
-            try:
-                o.deleteMe()
-            except Exception:
-                pass
+    """Delete the throwaway preview objects in REVERSE creation order (the
+    cut features first, then the prism, then the body copies).  Nothing here
+    ever touched a selected body, so teardown is a plain deleteMe -- no undo
+    transaction, no rollback of the user's work."""
+    global _preview_objs, _preview_hidden
+    for obj in reversed(_flatten(_preview_objs)):
+        try:
+            obj.deleteMe()
+        except Exception:
+            pass
     _preview_objs = []
-    _preview_ghosts = []
+    for body in _preview_hidden:
+        try:
+            body.isVisible = True
+        except Exception:
+            pass
+    _preview_hidden = []
 
 
 def command_execute_preview(args: adsk.core.CommandEventArgs):
-    """Ghost the coping member's cut result so the user sees where it lands."""
+    """Ghost the coping member's CUT RESULT so the user sees where it lands.
+
+    The cut runs on throwaway COPIES of both members (CopyPasteBody features),
+    never on the selected bodies: a destructive boolean on a selection inside
+    executePreview makes Fusion skip command_execute on OK (the "preview
+    shows, nothing commits" bug, proven by A/B).  The copies are cut with the
+    exact same two-step _do_cut geometry the commit runs, ghosted, and deleted
+    by the next preview or on close.  command_execute performs the real cut.
+    """
+    global _preview_objs, _preview_bodies
     inputs = args.command.commandInputs
     w = _weldment()
     design = _design()
@@ -213,43 +274,90 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     depth_mm = inputs.itemById('depth').value * 10.0
     if subj_body is None or tool_body is None or subj_body is tool_body:
         return
-    err, payload = _do_cut(w, root, subj_body, tool_body, depth_mm, preview=True)
+    _preview_bodies = (subj_body, tool_body)
+    err, plan = _cope_plan(w, subj_body, tool_body, depth_mm)
     if err:
         return
-    # Ghost the re-homed survivor (the coping member's cut body) so it reads as
-    # a translucent preview; the tool stays solid as the reference surface.
-    run = payload['run']
+    # Work on copies so the real members are never consumed or re-homed.  If
+    # either copy fails, abort: falling back to the REAL body would make the
+    # preview destructive again -- the exact bug this whole design avoids.
+    cp_s = root.features.copyPasteBodies.add(subj_body)
+    cp_t = root.features.copyPasteBodies.add(tool_body)
+    if (cp_s is None or cp_s.bodies.count == 0 or
+            cp_t is None or cp_t.bodies.count == 0):
+        for cp in (cp_s, cp_t):
+            if cp is not None:
+                try:
+                    cp.deleteMe()
+                except Exception:
+                    pass
+        return
+    _preview_objs.append((cp_s, cp_t))
+    subj_copy = cp_s.bodies.item(0)
+    tool_copy = cp_t.bodies.item(0)
+    try:
+        box = w._box_cutter(root, plan['trim_region'], preview=True)
+        if box is None or box[0] is None:
+            return
+        _preview_objs.append(box)
+        comb1 = w._combine_cut(root, subj_copy, [box[0]], keep_tool=False)
+        _preview_objs.append(comb1)
+        run = w._survivor_after_cut(comb1, None,
+                                    plan['trim_region']) or subj_copy
+        removes, run2 = w.cope_body_cut(root, run, tool_copy,
+                                        plan['saddle_region'])
+        _preview_objs.append(removes)
+        run = run2 or run
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} preview cut')
+        return
+    # Ghost the cut copy and hide the REAL member it stands in for (the ghost
+    # is coincident with it except at the cope, and two overlapping copies of
+    # one member read as a render glitch).  _clear_preview restores it.
     try:
         run.opacity = PREVIEW_OPACITY
     except Exception:
         pass
-    # Track the cut features (delete order) then the prism helpers.  Deleting
-    # them restores the members' original bodies, so a Cancel is clean.
-    _preview_objs = list(payload['feats']) + list(payload['track'])
+    try:
+        subj_body.isVisible = False
+        _preview_hidden.append(subj_body)
+    except Exception:
+        pass
+    try:
+        tool_copy.isVisible = False
+    except Exception:
+        pass
 
 
 def command_destroy(args: adsk.core.CommandEventArgs):
-    # On OK, execute already cleared the preview and committed the cut, so this
-    # is a no-op.  On Cancel the preview is still live -- remove it.
+    # On Cancel, delete the preview ghost.  On OK, command_execute already
+    # cleared it and committed the real cut, so this is a harmless no-op.
     _clear_preview()
 
 
 def command_execute(args: adsk.core.CommandEventArgs):
+    """Perform the real cope cut on OK (the preview is non-destructive)."""
+    global _preview_bodies
     inputs = args.command.commandInputs
     w = _weldment()
     design = _design()
     if design is None:
         return
     root = design.rootComponent
+    # Linear .value is cm; the joints layer wants millimetres.
+    depth_mm = inputs.itemById('depth').value * 10.0
 
-    # Replace the ghosted preview with the real, fully-opaque cut: tear the
-    # preview down first so the committed cut runs on the restored bodies.
+    # Replace the non-destructive preview ghost with the real cut.
     _clear_preview()
 
     subj_body = _selected_body(inputs.itemById('subject'))
     tool_body = _selected_body(inputs.itemById('tool'))
-    # Linear .value is cm; the joints layer wants millimetres.
-    depth_mm = inputs.itemById('depth').value * 10.0
+    # The preview never consumed the bodies, so the selections are live; fall
+    # back to the cached refs only if Fusion dropped an entry.
+    if subj_body is None:
+        subj_body = _preview_bodies[0]
+    if tool_body is None:
+        tool_body = _preview_bodies[1]
     if subj_body is None or tool_body is None:
         ui.messageBox('Select both members.')
         return
