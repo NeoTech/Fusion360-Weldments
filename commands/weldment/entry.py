@@ -2475,7 +2475,7 @@ def rebuild_from_registry(design):
         if native is not None:
             stamp_body(native, m.mid)
         surv = cut_bodies.get(i)
-        if surv is not None and surv is not native and body_mid(surv) is None:
+        if surv is not None and surv != native and body_mid(surv) is None:
             stamp_body(surv, m.mid)
     save_registry(design, registry)
     return len(members)
@@ -2725,7 +2725,9 @@ def _remove_inside_region(root, comb, keep_body, region):
         cand = [bodies.item(bi) for bi in range(bodies.count)]
     except Exception:
         return removed
-    non_tool = [b for b in cand if keep_body is None or b is not keep_body]
+    # ``==`` compares the native pointer; ``is`` fails because every
+    # ``bodies.item(k)`` hands back a fresh Python wrapper for the same body.
+    non_tool = [b for b in cand if keep_body is None or b != keep_body]
     survivor = None
     best_v = None
     for b in non_tool:
@@ -2823,9 +2825,10 @@ def _box_cutter(root, region, preview=False):
         return None
     ei = root.features.extrudeFeatures.createInput(
         sk.profiles.item(0), adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-    # Symmetric about the profile plane (which sits at the box centre), so the
-    # box spans c +/- ha along d regardless of the plane normal's sign.
-    ei.setDistanceExtent(True, adsk.core.ValueInput.createByReal(2.0 * ha))
+    # Symmetric about the profile plane (which sits at the box centre).  With
+    # isSymmetric the distance is applied EACH WAY, so pass the half-extent --
+    # 2*ha would double the box and the cut would overshoot (verified live).
+    ei.setDistanceExtent(True, adsk.core.ValueInput.createByReal(ha))
     feat = root.features.extrudeFeatures.add(ei)
     body = feat.bodies.item(0) if feat.bodies.count else None
     if preview and body is not None:
@@ -3017,7 +3020,7 @@ def _survivor_after_cut(comb, keep_body, region):
             b = bodies.item(k)
         except Exception:
             continue
-        if keep_body is not None and b is keep_body:
+        if keep_body is not None and b == keep_body:
             continue
         try:
             v = b.volume
