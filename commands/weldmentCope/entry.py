@@ -73,8 +73,7 @@ def start():
     # Shared Weldments tab/panel; create it if needed so the button is never
     # dropped when this start() runs before weldment's.
     panel = _weldment().ensure_weldments_panel()
-    if panel and panel.controls.itemById(CMD_ID) is None:
-        panel.controls.addCommand(cmd_def)
+    _weldment().add_pinned_command(panel, cmd_def, CMD_ID)
 
 
 def stop():

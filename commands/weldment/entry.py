@@ -333,6 +333,35 @@ def ensure_data_panel():
     return panel
 
 
+def add_pinned_command(panel, cmd_def, cmd_id):
+    """Add a command button to ``panel`` and pin it to the ribbon by default.
+
+    A plain ``addCommand`` parks the button in the panel's overflow dropdown;
+    the user must promote it to see it on the ribbon. Setting ``isPromoted``
+    shows it on the panel now and ``isPromotedByDefault`` makes it the default
+    state after a UI reset -- together, "pinned to the ribbon by default".
+    Idempotent: reuses an existing control (a reload re-runs every start()),
+    and still (re)applies the promote flags so a button added by an older
+    version gets pinned too. The promote properties are set best-effort: an
+    older Fusion build without ``isPromotedByDefault`` still gets ``isPromoted``.
+    """
+    if panel is None:
+        return None
+    control = panel.controls.itemById(cmd_id)
+    if control is None:
+        control = panel.controls.addCommand(cmd_def)
+    if control is not None:
+        try:
+            control.isPromoted = True
+        except Exception:
+            futil.log(f'{CMD_NAME} could not promote {cmd_id}.')
+        try:
+            control.isPromotedByDefault = True
+        except Exception:
+            pass
+    return control
+
+
 def start():
     global _FAMILIES, _DIES
     try:
@@ -352,8 +381,7 @@ def start():
 
     panel = ensure_weldments_panel()
     if panel:
-        if panel.controls.itemById(CMD_ID) is None:
-            panel.controls.addCommand(cmd_def)
+        add_pinned_command(panel, cmd_def, CMD_ID)
     else:
         futil.log(f'{CMD_NAME} could not create the {PANEL_NAME} panel.')
 

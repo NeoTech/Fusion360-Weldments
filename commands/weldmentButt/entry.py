@@ -58,8 +58,7 @@ def start():
     futil.add_handler(cmd_def.commandCreated, command_created,
                       local_handlers=local_handlers)
     panel = _weldment().ensure_weldments_panel()
-    if panel and panel.controls.itemById(CMD_ID) is None:
-        panel.controls.addCommand(cmd_def)
+    _weldment().add_pinned_command(panel, cmd_def, CMD_ID)
 
 
 def stop():

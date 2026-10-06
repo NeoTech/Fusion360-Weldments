@@ -59,8 +59,7 @@ def start():
     # button is never silently dropped (the bug that lost the buttons).
     from ..weldment import entry as weldment
     panel = weldment.ensure_data_panel()
-    if panel and panel.controls.itemById(CMD_ID) is None:
-        panel.controls.addCommand(cmd_def)
+    weldment.add_pinned_command(panel, cmd_def, CMD_ID)
 
 
 def stop():
