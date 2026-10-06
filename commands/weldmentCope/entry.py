@@ -44,6 +44,17 @@ PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'
 
 local_handlers = []
 
+# Opacity used to ghost the coping member's preview survivor so it reads as
+# transient (matches the auto command's PREVIEW_OPACITY).
+PREVIEW_OPACITY = 0.4
+# Features/sketches/planes made for the current in-dialog preview, in delete
+# order.  Rebuilt on every preview and torn down when the dialog closes or the
+# next preview starts (deleting them restores the members' original bodies).
+_preview_objs = []
+# (body, original_opacity) pairs for pre-existing bodies we ghosted; restored on
+# teardown so a Cancel never leaves a member translucent.
+_preview_ghosts = []
+
 
 def _design():
     return adsk.fusion.Design.cast(app.activeProduct)
@@ -94,6 +105,10 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 
     futil.add_handler(args.command.execute, command_execute,
                       local_handlers=local_handlers)
+    futil.add_handler(args.command.executePreview, command_execute_preview,
+                      local_handlers=local_handlers)
+    futil.add_handler(args.command.destroy, command_destroy,
+                      local_handlers=local_handlers)
 
 
 def _selected_body(sel):
@@ -107,30 +122,21 @@ def _selected_body(sel):
     return None
 
 
-def command_execute(args: adsk.core.CommandEventArgs):
-    inputs = args.command.commandInputs
-    w = _weldment()
+def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
+    """Resolve the joint and run the two-step cope cut, shared by execute/preview.
+
+    Returns ``(error, payload)``.  On success ``error`` is None and ``payload``
+    is a dict with the resolved centerlines, the landing vertex, the surviving
+    run body, the prism helper objects (``track``), and -- in preview mode -- the
+    cut features (``feats``) to delete on teardown.  On failure ``error`` is a
+    user-facing message (execute shows it; preview ignores it so a half-picked
+    selection does not pop a dialog on every redraw).
+    """
     design = _design()
-    if design is None:
-        return
-    root = design.rootComponent
-
-    subj_body = _selected_body(inputs.itemById('subject'))
-    tool_body = _selected_body(inputs.itemById('tool'))
-    # Linear .value is cm; the joints layer wants millimetres.
-    depth_mm = inputs.itemById('depth').value * 10.0
-    if subj_body is None or tool_body is None:
-        ui.messageBox('Select both members.')
-        return
-    if subj_body is tool_body:
-        ui.messageBox('Pick two different members.')
-        return
-
     subj_cl = w._member_centerline(subj_body)
     tool_cl = w._member_centerline(tool_body)
     if subj_cl is None or tool_cl is None:
-        ui.messageBox('Both selections must be straight weldment members.')
-        return
+        return 'Both selections must be straight weldment members.', None
     ss, se, sgeom, sbasis = subj_cl
     ts, te, tgeom, tbasis = tool_cl
 
@@ -147,8 +153,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
                             subject_basis=sbasis, tool_basis=tbasis,
                             depth_mm=depth_mm)
     if plan is None:
-        ui.messageBox('Could not compute the cope (members are collinear).')
-        return
+        return 'Could not compute the cope (members are collinear).', None
     trim_region = plan['region']
     # Step 2's boolean classifies the plug with the SAME symmetric joint box the
     # auto path uses (cope_cutter), not the asymmetric pull-back prism -- the
@@ -162,32 +167,114 @@ def command_execute(args: adsk.core.CommandEventArgs):
     try:
         # Step 1: pull the protruding tip back to the stopping face with a
         # finite prism (the tool is not a target of this cut).
-        box = w._box_cutter(root, trim_region)
+        box = w._box_cutter(root, trim_region, preview=preview)
         if box is None or box[0] is None:
-            ui.messageBox('Could not build the cope cutter.')
-            return
+            return 'Could not build the cope cutter.', None
         prism, track = box[0], box[1:]
         comb1 = w._combine_cut(root, subj_body, [prism], keep_tool=False)
         run = w._survivor_after_cut(comb1, None, trim_region) or subj_body
         # Step 2: carve the tool's cross-section out of the member -- the exact
         # boolean the auto path performs.
-        _removes, run2 = w.cope_body_cut(root, run, tool_body, saddle_region)
+        removes, run2 = w.cope_body_cut(root, run, tool_body, saddle_region)
         run = run2 or run
     except Exception:
         futil.handle_error(f'{CMD_NAME} cut')
+        return 'The cope cut failed.', None
+
+    payload = {'subj_cl': subj_cl, 'tool_cl': tool_cl, 'landing': landing,
+               'run': run, 'track': track, 'feats': removes + [comb1]}
+    return None, payload
+
+
+def _clear_preview():
+    """Tear down the in-dialog preview: delete the cut features (restoring the
+    members' original bodies), then the prism helpers they consumed."""
+    global _preview_objs, _preview_ghosts
+    for obj in _preview_objs:
+        for o in (obj if isinstance(obj, (tuple, list)) else (obj,)):
+            try:
+                o.deleteMe()
+            except Exception:
+                pass
+    _preview_objs = []
+    _preview_ghosts = []
+
+
+def command_execute_preview(args: adsk.core.CommandEventArgs):
+    """Ghost the coping member's cut result so the user sees where it lands."""
+    inputs = args.command.commandInputs
+    w = _weldment()
+    design = _design()
+    _clear_preview()
+    if design is None:
+        return
+    root = design.rootComponent
+    subj_body = _selected_body(inputs.itemById('subject'))
+    tool_body = _selected_body(inputs.itemById('tool'))
+    depth_mm = inputs.itemById('depth').value * 10.0
+    if subj_body is None or tool_body is None or subj_body is tool_body:
+        return
+    err, payload = _do_cut(w, root, subj_body, tool_body, depth_mm, preview=True)
+    if err:
+        return
+    # Ghost the re-homed survivor (the coping member's cut body) so it reads as
+    # a translucent preview; the tool stays solid as the reference surface.
+    run = payload['run']
+    try:
+        run.opacity = PREVIEW_OPACITY
+    except Exception:
+        pass
+    # Track the cut features (delete order) then the prism helpers.  Deleting
+    # them restores the members' original bodies, so a Cancel is clean.
+    _preview_objs = list(payload['feats']) + list(payload['track'])
+
+
+def command_destroy(args: adsk.core.CommandEventArgs):
+    # On OK, execute already cleared the preview and committed the cut, so this
+    # is a no-op.  On Cancel the preview is still live -- remove it.
+    _clear_preview()
+
+
+def command_execute(args: adsk.core.CommandEventArgs):
+    inputs = args.command.commandInputs
+    w = _weldment()
+    design = _design()
+    if design is None:
+        return
+    root = design.rootComponent
+
+    # Replace the ghosted preview with the real, fully-opaque cut: tear the
+    # preview down first so the committed cut runs on the restored bodies.
+    _clear_preview()
+
+    subj_body = _selected_body(inputs.itemById('subject'))
+    tool_body = _selected_body(inputs.itemById('tool'))
+    # Linear .value is cm; the joints layer wants millimetres.
+    depth_mm = inputs.itemById('depth').value * 10.0
+    if subj_body is None or tool_body is None:
+        ui.messageBox('Select both members.')
+        return
+    if subj_body is tool_body:
+        ui.messageBox('Pick two different members.')
+        return
+
+    err, payload = _do_cut(w, root, subj_body, tool_body, depth_mm,
+                           preview=False)
+    if err:
+        ui.messageBox(err)
         return
 
     # The prism's feature/sketch/plane form a chain the combine depends on, so
     # they cannot be deleted without breaking health -- hide them instead.
-    for obj in track:
+    for obj in payload['track']:
         for o in (obj if isinstance(obj, (tuple, list)) else (obj,)):
             try:
                 o.isLightBulbOn = False
             except Exception:
                 pass
 
-    _record(design, subj_body, tool_body, subj_cl, tool_cl, landing, run,
-            depth_mm)
+    _record(design, subj_body, tool_body, payload['subj_cl'],
+            payload['tool_cl'], payload['landing'], payload['run'], depth_mm)
 
 
 def _record(design, subj_body, tool_body, subj_cl, tool_cl, landing, run,
