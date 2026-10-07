@@ -248,6 +248,7 @@ JOINT_LABELS = {
     'cope_t': 'Cope (T)',
     'cope_angle': 'Cope (angled)',
     'cope': 'Cope',
+    'gusset': 'Gusset',
 }
 
 
@@ -269,6 +270,16 @@ def _joint_label(joint, names):
         bits.append(f'clr {joint.params["clr_mm"]:g} mm')
     if joint.params.get('depth_mm'):
         bits.append(f'depth {joint.params["depth_mm"]:g} mm')
+    # A gusset carries its plate size instead of a cut parameter: corner plates
+    # read "120 x 80 x 6 mm" (width x height x thickness), profile stiffeners
+    # reuse depth above plus the thickness.
+    if joint.kind == 'gusset':
+        w, h, t = (joint.params.get('width_mm'), joint.params.get('height_mm'),
+                   joint.params.get('thickness_mm'))
+        if w and h and t:
+            bits = [f'{w:g} x {h:g} x {t:g} mm']
+        elif t:
+            bits.append(f'{t:g} mm thick')
     if bits:
         label += ' (' + ', '.join(bits) + ')'
     return label
@@ -413,6 +424,11 @@ class Registry:
                 continue
             subj = refs[0]
             kind = j.kind
+            # A gusset is an ADDITIVE plate, never a geometry cut: it must not
+            # feed the builder at all (its depth_mm would otherwise be misread
+            # as a cope setback).  It exists in the registry only for the BOM.
+            if kind == 'gusset':
+                continue
             partner = refs[1] if len(refs) > 1 else None
             if kind in ('cope', 'cope_end', 'cope_t', 'cope_angle'):
                 cid = 'cope'

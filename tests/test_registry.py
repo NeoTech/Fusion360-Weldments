@@ -331,6 +331,20 @@ class TestSummary(unittest.TestCase):
         j = r.summary()['joints'][0]
         self.assertTrue(j['label'].startswith('Weird'))
 
+    def test_gusset_label_shows_the_plate_size(self):
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0), name='Tube-1')
+        b = r.add_member((10, 0, 0), (10, 10, 0), name='Tube-2')
+        r.add_joint('gusset', [{'mid': a.mid, 'role': None},
+                              {'mid': b.mid, 'role': None}],
+                    vertex=(10, 0, 0),
+                    params={'width_mm': 120.0, 'height_mm': 80.0,
+                            'thickness_mm': 6.0})
+        j = r.summary()['joints'][0]
+        self.assertEqual(j['kind'], 'gusset')
+        self.assertIn('Gusset', j['label'])
+        self.assertIn('120 x 80 x 6 mm', j['label'])
+
     def test_body_names_win_the_display_name(self):
         # The BOM panel reflects the browser-tree body names (the user's spine
         # complaint): when the command layer resolves a live name for a member,
@@ -415,6 +429,23 @@ class TestPlanRebuild(unittest.TestCase):
         self.assertEqual(plan[a.mid]['joint_ids'], ('none', 'none'))
         self.assertFalse(plan[a.mid]['through'])
         self.assertFalse(plan[a.mid]['saddle'])
+
+    def test_gusset_is_skipped_by_the_builder(self):
+        # A gusset is additive: it must never feed the builder, and its
+        # depth_mm must not leak in as a cope setback.
+        r = reg.Registry()
+        a = r.add_member((0, 0, 0), (10, 0, 0))
+        b = r.add_member((10, 0, 0), (10, 10, 0))
+        r.add_joint('gusset', [{'mid': a.mid, 'role': 'end'},
+                              {'mid': b.mid, 'role': 'start'}],
+                    vertex=(10, 0, 0),
+                    params={'width_mm': 100.0, 'height_mm': 80.0,
+                            'thickness_mm': 6.0})
+        r.add_joint('gusset', [{'mid': a.mid, 'role': 'end'}],
+                    vertex=(5, 0, 0), params={'depth_mm': 40.0})
+        plan = r.plan_rebuild()
+        self.assertEqual(plan[a.mid]['joint_ids'], ('none', 'none'))
+        self.assertEqual(plan[a.mid]['cope_depth_mm'], 0.0)
 
     def test_joint_referencing_a_deleted_member_is_dropped(self):
         r = reg.Registry()

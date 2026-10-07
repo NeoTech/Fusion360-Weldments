@@ -12,6 +12,8 @@ from .weldmentCope import entry as weldmentCope
 from .weldmentMiter import entry as weldmentMiter
 from .weldmentButt import entry as weldmentButt
 from .weldmentBend import entry as weldmentBend
+from .weldmentGusset import entry as weldmentGusset
+from .weldmentGussetProfile import entry as weldmentGussetProfile
 
 # TODO add your imported modules to this list.
 # Fusion will automatically call the start() and stop() functions.
@@ -26,7 +28,9 @@ commands = [
     weldmentCope,
     weldmentMiter,
     weldmentButt,
-    weldmentBend
+    weldmentBend,
+    weldmentGusset,
+    weldmentGussetProfile
 ]
 
 

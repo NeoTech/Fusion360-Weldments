@@ -2824,6 +2824,70 @@ def _box_cutter(root, region, preview=False):
     return body, feat, sk, (plane, psk)
 
 
+def _draw_polygon(sketch, origin, axis_u, axis_v, loop_mm):
+    """Draw a closed ``(u, v)`` millimetre polygon on ``sketch`` (sheet space).
+
+    ``origin`` is the model-space point the polygon's local ``(0, 0)`` maps to;
+    ``axis_u``/``axis_v`` are the model-space unit vectors of the local axes
+    (they span the sketch plane).  Points go through
+    :func:`lib.profiles.map_local_to_model` then the sketch's inverse transform,
+    exactly as :func:`_draw_section` does, so the loop is closed and coplanar.
+    """
+    to_sheet = sketch.transform.copy()
+    to_sheet.invert()
+
+    def sheet(u_mm, v_mm):
+        model = prof.map_local_to_model(origin, axis_u, axis_v, u_mm, v_mm)
+        p = adsk.core.Point3D.create(*model)
+        p.transformBy(to_sheet)
+        return p
+
+    n = len(loop_mm)
+    for j in range(n):
+        sketch.sketchCurves.sketchLines.addByTwoPoints(
+            sheet(*loop_mm[j]), sheet(*loop_mm[(j + 1) % n]))
+
+
+def _plate_body(root, origin, axis_u, axis_v, loop_mm, thickness_cm,
+                preview=False, name='WeldGusset'):
+    """Build a flat plate: extrude a polygon ``thickness_cm`` symmetric about its plane.
+
+    The gusset builder shared by both gusset commands (and reusable by any
+    additive plate).  A construction plane through ``origin`` with normal
+    ``cross(axis_u, axis_v)`` carries the closed ``loop_mm`` polygon (local mm,
+    mapped by ``axis_u``/``axis_v``); extruding it symmetrically by half the
+    thickness centres the plate on the plane.  Returns ``(body, track)`` where
+    ``track`` lists the feature + sketches + planes to delete on a preview
+    clear, or ``(None, [])`` if the profile could not be built.
+    """
+    normal = prof._norm(prof._cross(axis_u, axis_v))
+    plane, psk = _miter_plane(root, origin, normal)
+    sk = root.sketches.add(plane)
+    sk.name = name
+    _draw_polygon(sk, origin, axis_u, axis_v, loop_mm)
+    if sk.profiles.count == 0:
+        sk.deleteMe()
+        psk.deleteMe()
+        plane.deleteMe()
+        return None, []
+    ei = root.features.extrudeFeatures.createInput(
+        sk.profiles.item(0),
+        adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
+    # Symmetric about the profile plane: pass the HALF thickness (with
+    # isSymmetric the distance applies each way -- see _box_cutter).
+    ei.setDistanceExtent(True, adsk.core.ValueInput.createByReal(thickness_cm / 2.0))
+    feat = root.features.extrudeFeatures.add(ei)
+    body = feat.bodies.item(0) if feat.bodies.count else None
+    if preview and body is not None:
+        try:
+            body.opacity = PREVIEW_OPACITY
+        except Exception:
+            pass
+    for e in (feat, sk, plane, psk):
+        tag_entity(e)
+    return body, [feat, sk, plane, psk]
+
+
 def _miter_cutter(root, V, nrm, perp, depth, preview=False):
     """Build the finite wedge cutter for a miter: a prism on the bisector plane.
 
