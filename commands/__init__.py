@@ -12,6 +12,7 @@ from .weldmentCope import entry as weldmentCope
 from .weldmentMiter import entry as weldmentMiter
 from .weldmentButt import entry as weldmentButt
 from .weldmentBend import entry as weldmentBend
+from .weldmentBendTable import entry as weldmentBendTable
 from .weldmentGusset import entry as weldmentGusset
 from .weldmentGussetProfile import entry as weldmentGussetProfile
 
@@ -29,6 +30,7 @@ commands = [
     weldmentMiter,
     weldmentButt,
     weldmentBend,
+    weldmentBendTable,
     weldmentGusset,
     weldmentGussetProfile
 ]

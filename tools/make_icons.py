@@ -169,6 +169,24 @@ def glyph_bend():
     return img
 
 
+def glyph_bend_table():
+    img = canvas()
+    # a bent tube carrying two scribed mark ticks -- the bend instruction sheet
+    cx, cy = 10, 46
+    arc(img, cx, cy, 30, -90, 0, INK)               # outer wall
+    arc(img, cx, cy, 20, -90, 0, INK)               # inner wall
+    line(img, (cx, cy - 30), (cx, cy - 20), INK)    # top cap
+    line(img, (cx + 30, cy), (cx + 20, cy), INK)    # right cap
+    # tick marks across the tube: start/end marks on the straight legs
+    line(img, (cx + 22, cy - 26), (cx + 32, cy - 20), ACCENT, 3)
+    line(img, (cx + 24, cy - 2), (cx + 24, cy + 8), ACCENT, 3)
+    # a small table grid at the lower right (the instruction list)
+    rect(img, 38, 34, 58, 56, INK)
+    line(img, (38, 42), (58, 42), INK)
+    line(img, (48, 34), (48, 56), INK)
+    return img
+
+
 def glyph_gusset():
     img = canvas()
     # an L corner with a triangular gusset plate in the joint
@@ -191,7 +209,9 @@ def glyph_gusset_profile():
 GLYPHS = {'weldment': glyph_weldment,
           'weldmentCope': glyph_cope, 'weldmentMiter': glyph_miter,
           'weldmentButt': glyph_butt, 'weldmentBom': glyph_bom,
-          'weldmentBend': glyph_bend, 'weldmentGusset': glyph_gusset,
+          'weldmentBend': glyph_bend,
+          'weldmentBendTable': glyph_bend_table,
+          'weldmentGusset': glyph_gusset,
           'weldmentGussetProfile': glyph_gusset_profile}
 
 
