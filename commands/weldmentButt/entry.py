@@ -31,8 +31,7 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_butt'
 CMD_NAME = 'Weld Butt'
 CMD_Description = 'Butt, saddle, or run through where two weldment members meet'
-ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'resources', '')
+ICON_FOLDER = config.icon_folder(__file__)
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'

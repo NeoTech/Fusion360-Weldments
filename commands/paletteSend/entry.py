@@ -24,8 +24,10 @@ WORKSPACE_ID = 'FusionSolidEnvironment'
 PANEL_ID = 'SolidScriptsAddinsPanel'
 COMMAND_BESIDE_ID = 'ScriptsManagerCommand'
 
-# Resource location for command icons, here we assume a sub folder in this directory named "resources".
-ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
+# Resource location for command icons. config.icon_folder mirrors resources/*.png
+# into a content-hashed sibling folder so editing an icon busts Fusion's
+# process-wide ribbon bitmap cache on reload (no restart needed).
+ICON_FOLDER = config.icon_folder(__file__)
 
 # Local list of event handlers used to maintain a reference so
 # they are not released and garbage collected.

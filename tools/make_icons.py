@@ -59,6 +59,17 @@ def fill(img, x0, y0, x1, y1, c):
             px(img, x, y, c)
 
 
+def arc(img, cx, cy, r, a0, a1, c, w=3):
+    # circular arc, angles in degrees, sampled densely
+    import math as _m
+    n = max(int(abs(a1 - a0) * r * 0.06), 24)
+    pts = [(cx + r * _m.cos(_m.radians(a0 + (a1 - a0) * i / n)),
+            cy + r * _m.sin(_m.radians(a0 + (a1 - a0) * i / n)))
+           for i in range(n + 1)]
+    for j in range(len(pts) - 1):
+        line(img, pts[j], pts[j + 1], c, w)
+
+
 def down(img, k):
     out = [[(0, 0, 0, 0) for _ in range(S // k)] for _ in range(S // k)]
     for y in range(S // k):
@@ -138,20 +149,89 @@ def glyph_bom():
     return img
 
 
-GLYPHS = {'weldmentCope': glyph_cope, 'weldmentMiter': glyph_miter,
-          'weldmentButt': glyph_butt, 'weldmentBom': glyph_bom}
+def glyph_weldment():
+    img = canvas()
+    # a hollow structural profile (the member being created)
+    rect(img, 12, 20, 52, 44, INK)            # outer section
+    rect(img, 20, 27, 44, 37, ACCENT)          # hollow interior
+    return img
+
+
+def glyph_bend():
+    img = canvas()
+    # a tube bent through a smooth 90-degree curve (distinct from the L frames)
+    cx, cy = 14, 50
+    arc(img, cx, cy, 34, -90, 0, INK)                # outer wall
+    arc(img, cx, cy, 22, -90, 0, INK)                # inner wall
+    line(img, (cx, cy - 34), (cx, cy - 22), INK)     # top cap
+    line(img, (cx + 34, cy), (cx + 22, cy), INK)     # right cap
+    arc(img, cx, cy, 28, -80, -10, ACCENT, 3)        # bend centreline accent
+    return img
+
+
+def glyph_gusset():
+    img = canvas()
+    # an L corner with a triangular gusset plate in the joint
+    poly(img, [(10, 12), (24, 12), (24, 40), (52, 40),
+               (52, 54), (10, 54)], INK)
+    poly(img, [(24, 26), (24, 40), (38, 40)], ACCENT)
+    return img
+
+
+def glyph_gusset_profile():
+    img = canvas()
+    # an I-beam cross-section with a gusset inside the flanges
+    rect(img, 14, 12, 50, 22, INK)            # top flange
+    rect(img, 14, 42, 50, 52, INK)            # bottom flange
+    rect(img, 28, 22, 36, 42, INK)            # web
+    poly(img, [(36, 28), (36, 40), (48, 40)], ACCENT)  # gusset
+    return img
+
+
+GLYPHS = {'weldment': glyph_weldment,
+          'weldmentCope': glyph_cope, 'weldmentMiter': glyph_miter,
+          'weldmentButt': glyph_butt, 'weldmentBom': glyph_bom,
+          'weldmentBend': glyph_bend, 'weldmentGusset': glyph_gusset,
+          'weldmentGussetProfile': glyph_gusset_profile}
+
+
+def contact_sheet(imgs):
+    # lay the 64x64 glyphs out in a row over a mid-gray (theme-agnostic) bg
+    n = len(imgs)
+    pad = 6
+    w = n * (S + pad) + pad
+    h = S + 2 * pad
+    sheet = [[(128, 128, 128, 255) for _ in range(w)] for _ in range(h)]
+    for idx, img in enumerate(imgs):
+        ox = pad + idx * (S + pad)
+        for y in range(S):
+            for x in range(S):
+                r, g, b, a = img[y][x]
+                if a:
+                    bg = sheet[y + pad][ox + x]
+                    sheet[y + pad][ox + x] = (
+                        (r * a + bg[0] * (255 - a)) // 255,
+                        (g * a + bg[1] * (255 - a)) // 255,
+                        (b * a + bg[2] * (255 - a)) // 255, 255)
+    return sheet
 
 
 def main():
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    imgs = []
     for name, fn in GLYPHS.items():
         img = fn()
+        imgs.append(img)
         out = os.path.join(base, 'commands', name, 'resources')
         os.makedirs(out, exist_ok=True)
         write_png(os.path.join(out, '64x64.png'), img)
         write_png(os.path.join(out, '32x32.png'), down(img, 2))
         write_png(os.path.join(out, '16x16.png'), down(img, 4))
         print('wrote', out)
+    sheet = contact_sheet(imgs)
+    write_png(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'contact_sheet.png'), sheet)
+    print('contact sheet written')
 
 
 if __name__ == '__main__':

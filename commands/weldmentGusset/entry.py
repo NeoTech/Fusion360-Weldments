@@ -37,8 +37,7 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_gusset'
 CMD_NAME = 'Corner Gusset'
 CMD_Description = 'Add a gusset plate at the corner where two members meet'
-ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'resources', '')
+ICON_FOLDER = config.icon_folder(__file__)
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
 PANEL_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_panel'

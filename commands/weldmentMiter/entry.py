@@ -38,8 +38,7 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_miter'
 CMD_NAME = 'Weld Miter'
 CMD_Description = 'Miter the corner where two weldment members meet'
-ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'resources', '')
+ICON_FOLDER = config.icon_folder(__file__)
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
 # Shared Weldments panel on the dedicated Weldments tab (see

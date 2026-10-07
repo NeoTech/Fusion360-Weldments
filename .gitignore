@@ -2,3 +2,5 @@ __pycache__/**
 **/__pycache__/**
 **/**/__pycache__/**
 .vscode
+# runtime-generated content-hashed ribbon-icon mirrors (config.icon_folder)
+**/resources/_v*/

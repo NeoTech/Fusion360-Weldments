@@ -34,8 +34,7 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_cope'
 CMD_NAME = 'Weld Cope'
 CMD_Description = 'Cope one weldment member onto another (explicit selection)'
-ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'resources', '')
+ICON_FOLDER = config.icon_folder(__file__)
 
 WORKSPACE_ID = 'FusionSolidEnvironment'
 # Shared Weldments panel on the dedicated Weldments tab (see

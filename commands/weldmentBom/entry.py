@@ -31,8 +31,7 @@ ui = app.userInterface
 CMD_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_weldment_bom'
 CMD_NAME = 'Weldment BOM'
 CMD_Description = 'List the weldment members and joints (read-only BOM)'
-ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'resources', '')
+ICON_FOLDER = config.icon_folder(__file__)
 PALETTE_ID = f'{config.COMPANY_NAME}_{config.ADDIN_NAME}_bom_palette'
 PALETTE_NAME = 'Weldment BOM'
 
