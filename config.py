@@ -22,6 +22,21 @@ COMPANY_NAME = 'ACME'
 # Palettes
 sample_palette_id = f'{COMPANY_NAME}_{ADDIN_NAME}_palette_id'
 
+# --------------------------------------------------------------------------- #
+# Feature flags (ROADMAP candidate #2: registry-first Auto context recovery).
+#
+# When False (the default), the Auto builder recovers the design's EXISTING
+# members by face-scanning every body (_recover_existing_members) and stitching
+# tangent-trimmed bend legs back to their virtual corner (_reunite_bend_context).
+# When True, it reads them from the registry instead: each member record already
+# stores its DRAWN centreline (the full virtual corner), so the reunite heuristic
+# is unnecessary by construction.  Flip ON only after a live cope/butt/miter
+# against a previously-CUT member confirms the body-as-tool resolves correctly
+# (a Combine re-homes a body, so the record's feature/body_index can go stale --
+# the one thing the stub suite cannot exercise).  See plan/execution-plan.md.
+# --------------------------------------------------------------------------- #
+REGISTRY_FIRST_CONTEXT = False
+
 
 def icon_folder(module_file):
     """Return a ribbon-icon folder whose *path* changes when the icons change.

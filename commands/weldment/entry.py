@@ -1538,7 +1538,7 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     # instead of the user drawing a shadow line and deleting a duplicate.  Done
     # before building so the bodies created this run are not mistaken for
     # pre-existing ones.
-    context = _recover_existing_members(root)
+    context = _recover_context(root, saved)
     clr_by_line = _bend_radii(inputs, saved, designation)
     cope_depths = _row_cope_depths(inputs, saved)
     inverses = _row_inverses(inputs, saved)
@@ -1606,7 +1606,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
     ref = _selection_reference(saved)
     # See the preview path: recover the design's existing members so a new
     # line's joint end can join them directly (no shadow part / duplicate).
-    context = _recover_existing_members(root)
+    context = _recover_context(root, saved)
     clr_by_line = _bend_radii(inputs, saved, designation)
     cope_depths = _row_cope_depths(inputs, saved)
     inverses = _row_inverses(inputs, saved)
@@ -2514,6 +2514,76 @@ def _recover_existing_members(root, exclude_feats=None):
         futil.handle_error(f'{CMD_NAME} recover members')
     _reunite_bend_context(members)
     return members
+
+
+def _recover_existing_members_registry(root, design, saved_lines=None):
+    """Registry-first sibling of :func:`_recover_existing_members`.
+
+    Returns the SAME ``context`` list shape (``{'line','geom','basis','body'}``)
+    but sources each member from the design's registry instead of face-scanning
+    bodies.  A registry ``Member`` stores its DRAWN centreline -- the full
+    virtual corner even for a swept-bend leg trimmed to its tangent points --
+    so the ``_reunite_bend_context`` stitch is unnecessary here by construction.
+
+    ``saved_lines`` (the lines picked this run) are excluded by centreline so a
+    re-run does not joint a new line against its own stale registry self (the
+    registry-first analogue of ``exclude_feats``).  Each member's live body is
+    resolved by scanning the bodies for the member-id stamp (robust across a
+    Combine re-homing the body); falls back to ``feature``/``body_index``, then
+    to ``None`` (line-only context, never a boolean tool).  When the registry
+    holds no members (a design built before the spine, or a plain-extrude-only
+    file) this defers to the face-scan path so behaviour is unchanged.
+    """
+    registry = load_registry(design)
+    if not registry.members:
+        return _recover_existing_members(root)
+    # mid -> live body, via the attribute stamp (survives a body re-home).
+    body_of_mid = {}
+    try:
+        bodies = root.bRepBodies
+        for i in range(bodies.count):
+            b = bodies.item(i)
+            mid = body_mid(b)
+            if mid is not None:
+                body_of_mid[mid] = b
+    except Exception:
+        pass
+    skip = set()
+    for line in (saved_lines or []):
+        try:
+            s, e = jt.line_endpoints(line)
+            skip.add(reg.midpoint(s, e))
+        except Exception:
+            continue
+    members = []
+    for m in registry.members:
+        if m.start == m.end:
+            continue
+        if reg.midpoint(m.start, m.end) in skip:      # this run's own line
+            continue
+        body = body_of_mid.get(m.mid)
+        if body is None and m.feature is not None:
+            try:                                        # fall back to the index
+                body = root.features.item(m.feature).bodies.item(m.body_index or 0)
+            except Exception:
+                body = None
+        basis = (tuple(m.basis[0]), tuple(m.basis[1])) \
+            if m.basis and len(m.basis) == 2 else None
+        members.append({'line': _ContextLine(m.start, m.end, body),
+                        'geom': m.geom, 'basis': basis, 'body': body})
+    return members
+
+
+def _recover_context(root, saved_lines=None):
+    """Dispatch context recovery on the REGISTRY_FIRST_CONTEXT flag.
+
+    Default (False) is the face-scan path, byte-for-byte unchanged. When the
+    flag is on, use the registry-first sibling, excluding the lines picked this
+    run so a re-run does not joint against its own stale self.
+    """
+    if getattr(config, 'REGISTRY_FIRST_CONTEXT', False):
+        return _recover_existing_members_registry(root, _design(), saved_lines)
+    return _recover_existing_members(root)
 
 
 # How far (cm) a recovered context leg may be extended to a bend's virtual

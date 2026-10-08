@@ -52,6 +52,7 @@ entry = importlib.import_module("Weldments.commands.weldment.entry")
 prof = importlib.import_module("Weldments.lib.profiles")
 jt = importlib.import_module("Weldments.lib.joints")
 bd = importlib.import_module("Weldments.lib.bending_dies")
+reg = importlib.import_module("Weldments.lib.registry")
 
 
 def _names():
@@ -1564,6 +1565,113 @@ class TestRecoverExistingMembers(unittest.TestCase):
         self.assertEqual(members[0]['geom']['kind'], 'polygons')
         self.assertIsNotNone(members[0]['basis'])
         self.assertIs(members[0]['body'], body)
+
+
+class TestRegistryFirstContextRecovery(unittest.TestCase):
+    """Acceptance gate for the REGISTRY_FIRST_CONTEXT flag (ROADMAP candidate #2).
+
+    The registry-first sibling must return the SAME context shape as the
+    face-scan path for a member that exists in both, must exclude the lines
+    picked this run (so a re-run never joints against its own stale self), and
+    must defer to the face-scan path when the registry is empty.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+        families = prof.annotate_families(prof.load_profiles())
+        self.geom = prof.section_geometry(prof.designations(families[0])[0])
+
+    def _design_with_member(self, start, end):
+        """A FakeDesign whose registry holds one member stamped on its body."""
+        design = adsk_stub.FakeDesign()
+        body = adsk_stub.make_square_tube(start, end, 2.0, 2.0, wall_cm=0.2)
+        design.rootComponent.bRepBodies.append(body)
+        registry = reg.Registry()
+        m = registry.add_member(start, end, geom=self.geom,
+                                basis=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                                designation='SHS 40x40x2', family='SHS')
+        entry.save_registry(design, registry)
+        entry.stamp_body(body, m.mid)
+        return design, body
+
+    def test_matches_face_scan_centreline_and_body(self):
+        # A member present in BOTH the registry and as a body resolves to the
+        # same centreline, geom, basis, and live body as the face-scan path.
+        design, body = self._design_with_member((0, 0, 0), (50, 0, 0))
+        adsk_stub.set_active_design(design)
+        members = entry._recover_existing_members_registry(
+            design.rootComponent, design)
+        self.assertEqual(len(members), 1)
+        m = members[0]
+        self.assertIs(m['body'], body)
+        self.assertEqual(m['geom']['kind'], 'polygons')
+        wg = m['line'].worldGeometry
+        self.assertEqual((wg.startPoint.x, wg.startPoint.y, wg.startPoint.z),
+                         (0.0, 0.0, 0.0))
+        self.assertEqual((wg.endPoint.x, wg.endPoint.y, wg.endPoint.z),
+                         (50.0, 0.0, 0.0))
+        self.assertIsNotNone(m['basis'])
+
+    def test_excludes_lines_picked_this_run(self):
+        # saved_lines (this run's picks) are dropped by centreline so a re-run
+        # does not joint a new line against its own stale registry self.
+        design, _body = self._design_with_member((0, 0, 0), (50, 0, 0))
+        adsk_stub.set_active_design(design)
+        same_line = adsk_stub.FakeLine(start=(0, 0, 0), end=(50, 0, 0))
+        members = entry._recover_existing_members_registry(
+            design.rootComponent, design, saved_lines=[same_line])
+        self.assertEqual(members, [])
+
+    def test_defers_to_face_scan_when_registry_empty(self):
+        # No registry members -> identical to the face-scan path (a plain-
+        # extrude-only design built before the spine keeps working unchanged).
+        design = adsk_stub.FakeDesign()
+        body = adsk_stub.make_square_tube((0, 0, 0), (50, 0, 0), 2.0, 2.0,
+                                          wall_cm=0.2)
+        feat = adsk_stub.FakeFeature("adsk::fusion::ExtrudeFeature",
+                                     design.rootComponent, [body])
+        design.rootComponent.features._items.append(feat)
+        adsk_stub.set_active_design(design)
+        via_registry = entry._recover_existing_members_registry(
+            design.rootComponent, design)
+        via_scan = entry._recover_existing_members(design.rootComponent)
+        self.assertEqual(len(via_registry), len(via_scan))
+        self.assertEqual(len(via_registry), 1)
+        self.assertIs(via_registry[0]['body'], via_scan[0]['body'])
+
+    def test_dispatcher_uses_registry_when_flag_on(self):
+        # With the flag on, _recover_context routes to the registry sibling and
+        # forwards saved_lines for self-exclusion.
+        design, body = self._design_with_member((0, 0, 0), (50, 0, 0))
+        adsk_stub.set_active_design(design)
+        same_line = adsk_stub.FakeLine(start=(0, 0, 0), end=(50, 0, 0))
+        config_mod = importlib.import_module("Weldments.config")
+        prev = getattr(config_mod, "REGISTRY_FIRST_CONTEXT", False)
+        try:
+            config_mod.REGISTRY_FIRST_CONTEXT = True
+            kept = entry._recover_context(design.rootComponent)
+            dropped = entry._recover_context(design.rootComponent,
+                                             saved_lines=[same_line])
+        finally:
+            config_mod.REGISTRY_FIRST_CONTEXT = prev
+        self.assertEqual(len(kept), 1)
+        self.assertIs(kept[0]['body'], body)
+        self.assertEqual(dropped, [])
+
+    def test_dispatcher_unchanged_when_flag_off(self):
+        # Flag off (the shipped default) -> byte-for-byte the face-scan path,
+        # even when a populated registry is present.
+        design, body = self._design_with_member((0, 0, 0), (50, 0, 0))
+        adsk_stub.set_active_design(design)
+        config_mod = importlib.import_module("Weldments.config")
+        prev = getattr(config_mod, "REGISTRY_FIRST_CONTEXT", False)
+        try:
+            config_mod.REGISTRY_FIRST_CONTEXT = False
+            out = entry._recover_context(design.rootComponent)
+        finally:
+            config_mod.REGISTRY_FIRST_CONTEXT = prev
+        scan = entry._recover_existing_members(design.rootComponent)
+        self.assertEqual(len(out), len(scan))
 
 
 class TestCopeAgainstExistingSquareMember(unittest.TestCase):
