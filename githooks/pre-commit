@@ -1,0 +1,48 @@
+#!/bin/bash
+# Weldments pre-commit gate: byte-compile + full unit suite before any commit.
+#
+# Install (once per clone/machine):
+#     git config core.hooksPath githooks
+#
+# Skip in an emergency: git commit --no-verify
+#
+# data/profiles.json and data/bendingdies.json churn at runtime (Fusion
+# rewrites them); that churn causes ~13 false failures, so we stash them for
+# the duration of the run only if they are actually dirty, and restore after.
+
+set -u
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-commit: byte-compiling..."
+python -m py_compile Weldments.py config.py
+find commands lib tests tools -name '*.py' -print0 |
+    xargs -0 -n1 python -m py_compile || {
+        echo "pre-commit: py_compile FAILED"; exit 1; }
+
+DATA="data/profiles.json data/bendingdies.json"
+STASHED=0
+if ! git diff --quiet -- $DATA 2>/dev/null; then
+    echo "pre-commit: stashing runtime churn in data/*.json..."
+    # Only pop later if the stash was really created (compare stash counts).
+    BEFORE=$(git stash list | wc -l)
+    git stash push --quiet -- $DATA
+    AFTER=$(git stash list | wc -l)
+    [ "$AFTER" -gt "$BEFORE" ] && STASHED=1
+fi
+
+echo "pre-commit: running unit tests..."
+OUT=$(python -m unittest discover -s tests 2>&1)
+RC=$?
+echo "$OUT" | tail -n 5
+
+if [ "$STASHED" = "1" ]; then
+    git stash pop --quiet
+fi
+
+if [ "$RC" != "0" ]; then
+    echo ""
+    echo "pre-commit: FAILED - tests are red. Fix them, or commit with"
+    echo "            git commit --no-verify (you'll answer for it)."
+    exit 1
+fi
+echo "pre-commit: OK"

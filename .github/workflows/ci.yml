@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unittest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'   # close to the Fusion 360 embedded interpreter
+
+      - name: Byte-compile all sources
+        run: |
+          python -m py_compile Weldments.py config.py
+          Get-ChildItem -Recurse -Filter *.py -Path commands, lib, tests, tools |
+            ForEach-Object { python -m py_compile $_.FullName }
+
+      - name: Run unit test suite
+        run: python -m unittest discover -s tests -v 2>&1 | Select-Object -Last 20

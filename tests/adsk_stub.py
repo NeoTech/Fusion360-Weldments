@@ -130,6 +130,9 @@ class FakeFace:
     def __init__(self, geometry, area=1.0):
         self.geometry = geometry
         self.area = area
+        # A point on the face (the geometry's origin works for both Plane and
+        # Cylinder); the miter grow-tip code reads it.
+        self.pointOnFace = geometry.origin
 
 
 class FakeFaces:
@@ -279,14 +282,21 @@ class FakeConstructionPlane:
 
 
 class FakeSketchLines:
-    """Records added lines and supports count/item (needed for a revolve axis)."""
+    """Records added lines and supports count/item (needed for a revolve axis).
+
+    Returns a real FakeLine carrying the two endpoints as worldGeometry so
+    callers of _materialize_line get a path-able, direction-able line (the
+    rebuild and toolbox-bend paths read worldGeometry off the returned object).
+    """
 
     def __init__(self):
         self._lines = []
 
     def addByTwoPoints(self, p1, p2):
         _record("SketchLines.addByTwoPoints", p1, p2)
-        node = _Node("sketchLine")
+        t1 = (p1.x, p1.y, p1.z) if hasattr(p1, "x") else tuple(p1)
+        t2 = (p2.x, p2.y, p2.z) if hasattr(p2, "x") else tuple(p2)
+        node = FakeLine(t1, t2)
         self._lines.append(node)
         return node
 
@@ -531,6 +541,13 @@ class FakeAttributes:
     def itemByName(self, group, name):
         return self._items.get((group, name))
 
+    @property
+    def count(self):
+        return len(self._items)
+
+    def item(self, i):
+        return list(self._items.values())[i]
+
 
 class FakeBody:
     """A body with a real centroid (``center``) and a scripted pointContainment.
@@ -743,6 +760,32 @@ class FakeRoot:
         self.constructionPlanes = FakeConstructionPlanes(self)
         self.sketches = FakeSketches(self)
         self.xYConstructionPlane = FakeConstructionPlane((0, 0, 1))
+        self.bRepBodies = FakeBodies()
+
+
+class FakeDesign:
+    """A design with a root component and a real attribute store, so the
+    registry load/save glue (weldment.load_registry/save_registry) works."""
+
+    def __init__(self):
+        self.rootComponent = FakeRoot()
+        self.attributes = FakeAttributes()
+
+
+class _DesignClass:
+    """Stand-in for adsk.fusion.Design: cast() returns the active design."""
+
+    ACTIVE = None
+
+    @staticmethod
+    def cast(obj):
+        _record("Design.cast")
+        return _DesignClass.ACTIVE
+
+
+def set_active_design(design):
+    """Make ``design`` (usually a FakeDesign) what Design.cast returns."""
+    _DesignClass.ACTIVE = design
 
 
 # --- command-input fakes (for driving the dialog event handlers) ----------- #
@@ -959,6 +1002,9 @@ class FakeCommandInputs:
     def addDistanceValueCommandInput(self, id, name, vi):
         return self._add(FakeInput(id, "distance", 0.0))
 
+    def addValueInput(self, id, name, unit, vi):
+        return self._add(FakeInput(id, "value", 0.0))
+
 
 # --- install into sys.modules ---------------------------------------------- #
 def install():
@@ -981,7 +1027,8 @@ def install():
     fusion.ToEntityExtentDefinition = _Node("ToEntityExtentDefinition")
     fusion.DistanceExtentDefinition = _Node("DistanceExtentDefinition")
     fusion.ProfilePlaneStartDefinition = _Node("ProfilePlaneStartDefinition")
-    fusion.Design = _Node("Design")
+    fusion.Design = _DesignClass
+    fusion.BRepBody = FakeBody   # isinstance(ent, adsk.fusion.BRepBody) checks
 
     adsk.core = core
     adsk.fusion = fusion

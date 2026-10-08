@@ -6,3 +6,5 @@ __pycache__/**
 **/resources/_v*/
 AGENTS.md
 ROADMAP.md
+plan/
+plan/**
