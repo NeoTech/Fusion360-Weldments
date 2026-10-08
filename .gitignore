@@ -4,3 +4,5 @@ __pycache__/**
 .vscode
 # runtime-generated content-hashed ribbon-icon mirrors (config.icon_folder)
 **/resources/_v*/
+AGENTS.md
+ROADMAP.md
