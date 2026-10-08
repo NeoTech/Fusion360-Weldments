@@ -25,17 +25,22 @@ sample_palette_id = f'{COMPANY_NAME}_{ADDIN_NAME}_palette_id'
 # --------------------------------------------------------------------------- #
 # Feature flags (ROADMAP candidate #2: registry-first Auto context recovery).
 #
-# When False (the default), the Auto builder recovers the design's EXISTING
-# members by face-scanning every body (_recover_existing_members) and stitching
+# When False, the Auto builder recovers the design's EXISTING members by
+# face-scanning every body (_recover_existing_members) and stitching
 # tangent-trimmed bend legs back to their virtual corner (_reunite_bend_context).
-# When True, it reads them from the registry instead: each member record already
-# stores its DRAWN centreline (the full virtual corner), so the reunite heuristic
-# is unnecessary by construction.  Flip ON only after a live cope/butt/miter
-# against a previously-CUT member confirms the body-as-tool resolves correctly
-# (a Combine re-homes a body, so the record's feature/body_index can go stale --
-# the one thing the stub suite cannot exercise).  See plan/execution-plan.md.
+# When True (the current default), it reads them from the registry instead: each
+# member record already stores its DRAWN centreline (the full virtual corner), so
+# the reunite heuristic is unnecessary by construction.  Flipped ON after the
+# live gate passed: a Combine never deletes/re-homes the target body in this
+# Fusion build -- it persists (volume changes) and keeps its member-id stamp, so
+# both the stamp-scan and the feature/body_index fallback resolve the correct
+# live body after a cut (verified in throwaway docs; see plan/execution-plan.md).
+# The registry path also avoids the phantom duplicate members face-scan
+# reconstructs from a cut's leftover faces.  detect_corners/_reunite_bend_context
+# stay callable as the fallback (empty registry defers to face-scan) until the
+# registry path has soaked across a full milestone of live use.
 # --------------------------------------------------------------------------- #
-REGISTRY_FIRST_CONTEXT = False
+REGISTRY_FIRST_CONTEXT = True
 
 
 def icon_folder(module_file):
