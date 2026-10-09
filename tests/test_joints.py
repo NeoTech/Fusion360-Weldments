@@ -767,5 +767,116 @@ class TestCopeKind(unittest.TestCase):
                                       (0, 0, 1)), 'cope_angle')
 
 
+class TestBendContextState(unittest.TestCase):
+    """Candidate #4 phase A: joints against an EXISTING swept bend.
+
+    A 90-deg corner at V=(0,30,0) between a +X leg and a -Y leg, die radius
+    89.9 mm (R=8.99 cm), the geometry from the live-doc assessment in
+    plan/candidate4-bend-joints.md.  Legs are given as endpoint pairs so the
+    classifier is exercised without a Fusion sketch line.
+    """
+
+    V = (0.0, 30.0, 0.0)
+    R = 8.99
+
+    def setUp(self):
+        self.legs = [(self.V, (30.0, 30.0, 0.0), 'start'),
+                     (self.V, (0.0, 0.0, 0.0), 'start')]
+        # bend_arc_geometry takes [(leg, role)] with leg = (start, end).
+        self.pairs = [(((0.0, 30.0, 0.0), (30.0, 30.0, 0.0)), 'start'),
+                      (((0.0, 30.0, 0.0), (0.0, 0.0, 0.0)), 'start')]
+        self.g = jt.bend_arc_geometry(self.V, self.pairs, self.R / jt.MM_TO_CM)
+
+    def test_geometry_matches_bend_path(self):
+        # Center sits at (R, 30-R); setback = R*tan(45) = R for a square corner.
+        self.assertAlmostEqual(self.g['center'][0], self.R, places=4)
+        self.assertAlmostEqual(self.g['center'][1], 30.0 - self.R, places=4)
+        self.assertAlmostEqual(self.g['setback_cm'], self.R, places=4)
+        self.assertAlmostEqual(self.g['theta'], math.pi / 2, places=6)
+
+    def test_s1_corner_gap_extends(self):
+        # A member drawn to the vertex V floats ~3.7 cm outside the centerline
+        # arc; aimed along the bisector it must EXTEND (negative delta) to
+        # reach the CL circle plus one wall (2r) of overlap.
+        r = 1.0
+        s = jt.bend_context_state(self.V, (math.sqrt(.5), -math.sqrt(.5), 0),
+                                  self.g, r)
+        self.assertEqual(s['state'], 'S1')
+        self.assertLess(s['delta_cm'], 0.0)          # extend
+        # first crossing of |l(t)-C|=R is |V-C|-R along the bisector, + 2r
+        expect = (self.R / math.cos(math.pi / 4)) - self.R + 2.0 * r
+        self.assertAlmostEqual(-s['delta_cm'], expect, places=4)
+
+    def test_s0_tip_on_straight_leg(self):
+        # A tip well along a leg's straight run (past its tangent point) is the
+        # existing cope/butt-vs-leg path: no length change.
+        s = jt.bend_context_state((20.0, 30.0, 0.0), (1.0, 0.0, 0.0),
+                                  self.g, 1.0)
+        self.assertEqual(s['state'], 'S0')
+        self.assertEqual(s['delta_cm'], 0.0)
+
+    def test_s2_overshoot_shortens(self):
+        # A tip inside the centerline circle on the concave side must SHORTEN
+        # (positive delta) back to R from C.
+        C = self.g['center']
+        s = jt.bend_context_state(C, (1.0, 0.0, 0.0), self.g, 1.0)
+        self.assertEqual(s['state'], 'S2')
+        self.assertGreater(s['delta_cm'], 0.0)       # shorten
+        self.assertAlmostEqual(s['delta_cm'], self.R, places=4)
+
+    def test_s3_tip_on_arc(self):
+        # A tip sitting on the centerline arc (within the tube envelope) needs
+        # no length change; cope/saddle vs the arc body.
+        C = self.g['center']
+        ang = -math.pi / 4                            # mid of the 90-deg arc
+        tip = (C[0] + self.R * math.cos(ang), C[1] + self.R * math.sin(ang), 0)
+        s = jt.bend_context_state(tip, (math.sqrt(.5), math.sqrt(.5), 0),
+                                  self.g, 1.0)
+        self.assertEqual(s['state'], 'S3')
+        self.assertEqual(s['delta_cm'], 0.0)
+
+    def test_s4_out_of_plane_skew(self):
+        # The user's vertical member at V: its axis never crosses the CL
+        # circle (skew pass-by) -> S4, target = nearest arc point, no delta.
+        s = jt.bend_context_state(self.V, (0.0, 0.0, -1.0), self.g, 1.0)
+        self.assertEqual(s['state'], 'S4')
+        self.assertEqual(s['delta_cm'], 0.0)
+        # nearest arc point lies in the bend plane (z=0) at radius R from C
+        self.assertAlmostEqual(s['target'][2], 0.0, places=6)
+        self.assertAlmostEqual(jt._dist(s['target'], self.g['center']),
+                               self.R, places=4)
+
+    def test_idempotent_delta(self):
+        # delta is recomputed from geometry, never accumulated: same inputs,
+        # same answer, twice.
+        r = 1.0
+        a = jt.bend_context_state(self.V, (math.sqrt(.5), -math.sqrt(.5), 0),
+                                  self.g, r)['delta_cm']
+        b = jt.bend_context_state(self.V, (math.sqrt(.5), -math.sqrt(.5), 0),
+                                  self.g, r)['delta_cm']
+        self.assertAlmostEqual(a, b)
+
+    def test_zones_for_member_from_stored_setback(self):
+        # A context member's arc zone comes from a bend joint referencing it;
+        # the stored setback_cm (no live legs) yields the vertex->tangent span.
+        joint = {'kind': 'bend', 'vertex': list(self.V),
+                 'refs': [{'mid': 3, 'role': 'start'},
+                          {'mid': 4, 'role': 'start'}],
+                 'params': {'clr_mm': self.R / jt.MM_TO_CM,
+                            'setback_cm': self.R}}
+        line = FakeLine(self.V, (30.0, 30.0, 0.0))
+        zones = jt.bend_arc_zones_for_member(line, 3, [joint])
+        self.assertEqual(len(zones), 1)
+        lo, hi = zones[0]
+        self.assertAlmostEqual(lo, 0.0, places=4)     # tangent point at x=R
+        self.assertAlmostEqual(hi, self.R, places=4)  # vertex at x=... wait
+
+    def test_zones_for_member_none_when_unrelated(self):
+        joint = {'kind': 'cope_t', 'vertex': [0, 30, 0],
+                 'refs': [{'mid': 9, 'role': 'end'}], 'params': {}}
+        line = FakeLine(self.V, (30.0, 30.0, 0.0))
+        self.assertEqual(jt.bend_arc_zones_for_member(line, 3, [joint]), [])
+
+
 if __name__ == '__main__':
     unittest.main()

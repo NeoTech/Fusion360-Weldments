@@ -1075,6 +1075,252 @@ def _outward(line, role):
     return (-d[0], -d[1], -d[2]) if role == 'end' else d
 
 
+# --------------------------------------------------------------------------- #
+# Bends as EXISTING context (candidate #4): joints against bent elements.
+#
+# A swept bend in the registry is a 'bend' Joint record (vertex V, two leg
+# refs, params.clr_mm) plus an arc BODY that is deliberately not a member --
+# it hangs off the joint so the BOM / Bend Table never see it.  To cope or
+# butt a NEW member against such a corner, the straight-run zone math above
+# is blind (a context member carries no joint setting of its own), so these
+# helpers rebuild the arc from the joint record and classify where the new
+# member's tip sits relative to it.  See plan/candidate4-bend-joints.md.
+# --------------------------------------------------------------------------- #
+def _xyz(p):
+    """A 3-tuple for a point given either as a tuple/list or an adsk point."""
+    if p is None:
+        return None
+    if isinstance(p, (tuple, list)):
+        return (p[0], p[1], p[2])
+    return (p.x, p.y, p.z)
+
+
+def _leg_ends(leg):
+    """``(start, end)`` 3-tuples for a leg given as a line, a ``{'line':...}``
+    context dict, or a plain ``(start, end)`` endpoint pair."""
+    if isinstance(leg, dict):
+        return line_endpoints(leg['line'])
+    if hasattr(leg, 'worldGeometry'):
+        return line_endpoints(leg)
+    s, e = leg                              # endpoint pair
+    return _xyz(s), _xyz(e)
+
+
+def _leg_outward(leg, role):
+    """Outward unit direction at the vertex for any leg form (see _leg_ends)."""
+    if isinstance(leg, dict) or hasattr(leg, 'worldGeometry'):
+        return _outward(leg['line'] if isinstance(leg, dict) else leg, role)
+    s, e = _leg_ends(leg)
+    d = line_direction_from(s, e)
+    if d is None:
+        return None
+    return _scale(d, -1) if role == 'end' else d
+
+
+def bend_arc_geometry(V, leg_lines, clr_mm):
+    """Centerline arc of the bend rounding the corner V between ``leg_lines``.
+
+    ``V`` is the sharp vertex (cm) as recorded on the joint; ``leg_lines`` is
+    ``[(leg, role), ...]`` for the two legs, where a leg is a sketch line, a
+    ``{'line': ...}`` context dict, or a ``(start, end)`` endpoint pair -- the
+    outward directions at V come from it exactly like :func:`bend_path`.
+    Returns the :func:`bend_path` dict augmented with ``'legs'`` (the input
+    pairs) and ``'setback_cm'``, or None when the corner is degenerate.
+    """
+    if clr_mm is None or clr_mm <= 0.0 or len(leg_lines) != 2:
+        return None
+    dirs = [_leg_outward(leg, role) for (leg, role) in leg_lines]
+    if any(d is None for d in dirs):
+        return None
+    g = bend_path(_xyz(V), dirs[0], dirs[1], clr_mm * MM_TO_CM)
+    if g is None:
+        return None
+    g['legs'] = list(leg_lines)
+    g['setback_cm'] = g['radius_cm'] * math.tan(g['theta'] / 2.0)
+    return g
+
+
+def bend_arc_zones_for_member(line, mid, joints, legs_by_mid=None):
+    """Curved-arc intervals [lo, hi] (cm) a CONTEXT member occupies on its axis.
+
+    The context-tool twin of :func:`_bend_arc_zones`: a member stored in the
+    registry takes part in a swept corner through a ``'bend'`` Joint record
+    rather than a joint setting of its own, so the zones come from every bend
+    joint referencing ``mid``.  ``line`` is the member's centreline (a sketch
+    line or a ``{'line': ...}`` context dict); ``joints`` an iterable of Joint
+    records (or their ``to_dict`` form); ``legs_by_mid`` optionally maps
+    ``mid -> (leg, role)`` so the setback is re-derived from live geometry --
+    otherwise the joint's stored ``params['setback_cm']`` is used.  Each zone
+    spans vertex -> tangent point along the member's own axis, the same
+    interval :func:`_bend_arc_zones` produces for a selected tool.  Returns
+    ``[]`` when no bend references ``mid``.
+    """
+    ln = line['line'] if isinstance(line, dict) else line
+    s, e = line_endpoints(ln)
+    d = line_direction(ln)
+    zones = []
+    for j in joints or []:
+        kind = j.get('kind') if isinstance(j, dict) else j.kind
+        if kind != 'bend':
+            continue
+        refs = j.get('refs') if isinstance(j, dict) else j.refs
+        params = (j.get('params') if isinstance(j, dict) else j.params) or {}
+        V = _xyz(j.get('vertex') if isinstance(j, dict) else j.vertex)
+        if V is None or not refs:
+            continue
+        for r in refs:
+            if r.get('mid') != mid:
+                continue
+            own = _outward(ln, r.get('role'))
+            sb = params.get('setback_cm')
+            if sb is None and legs_by_mid:
+                pair = [(legs_by_mid[rr['mid']], rr.get('role'))
+                        for rr in refs if rr.get('mid') in legs_by_mid]
+                if len(pair) == 2:
+                    g = bend_arc_geometry(V, pair, params.get('clr_mm'))
+                    sb = g['setback_cm'] if g else None
+            if sb is None or sb <= 0.0:
+                continue
+            t_pt = _add(V, _scale(own, sb))
+            lo = _dot(_sub(t_pt, s), d)
+            hi = _dot(_sub(V, s), d)
+            zones.append((min(lo, hi), max(lo, hi)))
+    return zones
+
+
+def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6):
+    """Where a member tip ``tip`` (cm) running along unit ``d`` meets a bend.
+
+    ``arc_geom`` is a :func:`bend_arc_geometry` result (centerline arc C/R,
+    tangent points T1/T2, ``legs``) and ``r_cm`` the new member's tube
+    half-extent (its section radius).  Returns::
+
+        {'state': 'S0'|'S1'|'S2'|'S3'|'S4', 'target': P|None,
+         'delta_cm': float, 'reason': str}
+
+    States (plan/candidate4-bend-joints.md, user policy "Reach CL + Wall"):
+      S0  tip lies on a leg's STRAIGHT run (outside every arc zone) -- the
+          existing cope/butt-vs-leg-body path handles it; delta 0.
+      S1  corner gap: the tip is outside the arc's tube envelope and the
+          axis crosses the centerline circle beyond the tip -- extend to the
+          first crossing of |l(t)-C| = R plus one wall (2r) of overlap.
+      S2  overshoot: the tip is inside the centerline circle (R - r) on the
+          concave side -- shorten to R from C (first crossing behind the tip).
+      S3  on-arc: the tip is within the tube envelope -- no length change;
+          cope/saddle against the arc body.
+      S4  skew / out-of-plane: the axis never crosses the circle -- butt to
+          the nearest point of the centerline arc pulled back by r (saddle
+          cut vs the arc body is the execution layer's choice).
+
+    ``delta_cm`` is the SIGNED axial move along ``d`` from tip to target
+    (negative = extend, positive = shorten); it is recomputed from the joint
+    geometry every call, never accumulated, so re-runs are idempotent.
+    """
+    tip = _xyz(tip)
+    d = _norm(d)
+    C = arc_geom['center']
+    R = arc_geom['radius_cm']
+    env = R + r_cm
+    inner = R - r_cm
+    dist = _dist(tip, C)
+
+    def _crossings():
+        w = _sub(C, tip)
+        b = _dot(w, d)
+        c = _dot(w, w) - R * R
+        disc = b * b - c
+        if disc < -1e-9:
+            return None                      # skew: never meets the circle
+        sq = math.sqrt(max(disc, 0.0))
+        return (b - sq, b + sq)              # sorted (t1 <= t2)
+
+    if dist > env + tol:
+        # Outside the tube envelope.  Whichever centreline feature is NEAREST
+        # to the tip decides: a leg's straight segment (S0 -- the existing
+        # cope/butt-vs-leg-body path is correct) or the curved arc.  When the
+        # arc is nearest, the axis either crosses the circle ahead (S1: the
+        # tip floats in the corner void short of the arc -- extend) or misses
+        # it entirely (S4: a skew/out-of-plane pass-by).
+        V = arc_geom['point']
+        sb = arc_geom.get('setback_cm')
+        if sb is None:
+            sb = R * math.tan(arc_geom['theta'] / 2.0)
+        leg_d = float('inf')
+        for (leg, role) in arc_geom.get('legs') or []:
+            s, e = _leg_ends(leg)
+            own = _leg_outward(leg, role)
+            far, tang = e if role == 'start' else s, _add(V, _scale(own, sb))
+            leg_d = min(leg_d, _seg_dist(tip, far, tang))
+        arc_d = _dist(tip, _arc_nearest(tip, arc_geom))
+        if leg_d <= arc_d + tol:
+            return {'state': 'S0', 'target': tip, 'delta_cm': 0.0,
+                    'reason': 'nearest bend material is a straight leg'}
+        x = _crossings()
+        if x is None or x[1] <= tol:
+            return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
+                    'delta_cm': 0.0,
+                    'reason': 'axis never crosses the centerline circle'}
+        t_star = max(x[0], 0.0) + 2.0 * r_cm   # reach CL + one wall overlap
+        return {'state': 'S1', 'target': _add(tip, _scale(d, t_star)),
+                'delta_cm': -t_star,
+                'reason': 'corner gap: extend to centerline + wall'}
+
+    # S3: inside the tube envelope (R - r <= dist <= R + r) -> cope vs arc.
+    if dist >= inner - tol:
+        return {'state': 'S3', 'target': tip, 'delta_cm': 0.0,
+                'reason': 'tip within the arc tube envelope'}
+
+    # S2: tip inside the centerline circle on the concave side -> shorten.
+    x = _crossings()
+    if x is None:
+        return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
+                'delta_cm': 0.0, 'reason': 'inside circle, no crossing'}
+    t_back = -x[0]                            # crossing behind the tip
+    return {'state': 'S2', 'target': _add(tip, _scale(d, t_back)),
+            'delta_cm': t_back,
+            'reason': 'overshoot: shorten to centerline radius from C'}
+
+
+def _arc_nearest(P, arc_geom):
+    """Nearest point of the centerline ARC (not its circle) to ``P``.
+
+    Projects ``P`` onto the bend plane, radializes about the center, and
+    clamps to the arc's angular span between the tangent points; outside the
+    span the nearest point is the closer tangent point.
+    """
+    C, R, axis = arc_geom['center'], arc_geom['radius_cm'], arc_geom['axis']
+    w = _sub(P, C)
+    radial = _sub(w, _scale(axis, _dot(w, axis)))
+    n = math.sqrt(_dot(radial, radial))
+    v1 = _sub(arc_geom['t1'], C)
+    v2 = _sub(arc_geom['t2'], C)
+    if n <= 1e-9:
+        return arc_geom['t1'] if _dist(P, arc_geom['t1']) <= \
+            _dist(P, arc_geom['t2']) else arc_geom['t2']
+    uq = _scale(radial, 1.0 / n)
+
+    def _ang(u):
+        return math.atan2(_dot(_cross(v1, u), axis), _dot(v1, u))
+
+    a2, aq = _ang(_scale(v2, 1.0 / _dist((0, 0, 0), v2))), _ang(uq)
+    lo, hi = (a2, 0.0) if a2 < 0 else (0.0, a2)   # the arc's angular span
+    if aq < lo - 1e-9 or aq > hi + 1e-9:
+        return arc_geom['t1'] if _dist(P, arc_geom['t1']) <= \
+            _dist(P, arc_geom['t2']) else arc_geom['t2']
+    return _add(C, _scale(uq, R))
+
+
+def _seg_dist(P, A, B):
+    """Distance from point ``P`` to the segment ``A``->``B`` (cm)."""
+    ab = _sub(B, A)
+    t = _dot(_sub(P, A), ab)
+    ll = _dot(ab, ab)
+    if ll <= 1e-12:
+        return _dist(P, A)
+    t = max(0.0, min(ll, t)) / ll
+    return _dist(P, _add(A, _scale(ab, t)))
+
+
 def bend_plan(lines, joint_by_line, clr_by_line, inverse_by_line=None,
               tol=_CORNER_TOL, context=None):
     """Plan every swept-bend corner among ``lines``.
