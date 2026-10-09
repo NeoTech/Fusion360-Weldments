@@ -905,11 +905,13 @@ class TestBendContextWiring(unittest.TestCase):
                  'geom': _rect(100.0), 'basis': None, 'mid': 2}]
 
     def _new_line(self):
-        # Runs from the +X/-Y quadrant INTO V, so its outward at the END points
-        # along the bisector toward the arc (the S1 corner-gap case).
+        # Runs from the CONVEX side (outside the bend) INTO V, so the tip at V
+        # grows toward the arc center -- the realistic cope-onto-a-bend-corner
+        # approach (the live img4 case).  The classifier's d is this tip-growth
+        # direction; the call sites derive it as -outward (see corner_offsets).
         import math as _m
         s = _m.sqrt(.5)
-        return FakeLine((10.0 * s, 30.0 - 10.0 * s, 0.0), self.V)
+        return FakeLine((-10.0 * s, 30.0 + 10.0 * s, 0.0), self.V)
 
     def test_classify_s1_from_joint(self):
         import math as _m

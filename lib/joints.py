@@ -678,7 +678,13 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                 own = dir_of[(idx, role)]
                 r_cm = _perp_extent_cm(geomv(idx), basisv(idx), anchorv(idx),
                                        own)
-                st = bend_context_classify(point, own, point, bend_joints,
+                # The classifier wants the direction the TIP GROWS (from the
+                # member's body toward and past the tip), which is the OPPOSITE
+                # of the outward-from-vertex direction dir_of stores.  Passing
+                # outward made every outside-approach cope read the arc as
+                # BEHIND the tip (S4, delta 0) and silently skip the extension.
+                grow = (-own[0], -own[1], -own[2])
+                st = bend_context_classify(point, grow, point, bend_joints,
                                            legs_by_mid, r_cm)
                 if st is None or st['state'] == 'S0':
                     continue
@@ -2034,13 +2040,18 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
     def arc_case(V, idx, role):
         """The bend-arc state for selected member ``idx``'s tip at corner ``V``.
 
-        None unless bend_context is on and a bend joint rounds ``V``.
+        None unless bend_context is on and a bend joint rounds ``V``.  The
+        classifier wants the TIP-GROWTH direction (from the member's body
+        toward/past the tip), the opposite of ``outward`` -- see the note in
+        :func:`corner_offsets` (an outside approach read S4/0 through the
+        outward vector and skipped the arc path entirely).
         """
         if not (bend_context and bend_joints):
             return None
         own = outward(idx, role)
+        grow = (-own[0], -own[1], -own[2])
         r_cm = _perp_extent_cm(geomv(idx), basisv(idx), anchorv(idx), own)
-        return bend_context_classify(V, own, V, bend_joints, legs_by_mid, r_cm)
+        return bend_context_classify(V, grow, V, bend_joints, legs_by_mid, r_cm)
 
 
     def is_sel(i):
