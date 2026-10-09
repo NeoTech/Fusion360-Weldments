@@ -577,7 +577,7 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
     on and ``bend_joints`` carries the design's Joint records, a corner rounded
     by an EARLIER swept bend is classified with :func:`bend_context_state` and
     the new member's length is set to meet the ARC rather than a leg's flat end
-    (S1 extends to the centerline + wall, S2 shortens to the centerline radius;
+    (S1 extends to the bend centerline, S2 shortens to the centerline radius;
     S0/S3/S4 need no length change).  Off by default: behaviour is then exactly
     as before, since a context member carries no joint setting of its own and the
     leg-based trim below is blind to the arc.
@@ -667,7 +667,7 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
         # Candidate #4: a corner an EARLIER swept bend rounded.  A new butt/
         # cope member's tip meets the curved ARC, not a leg's flat end, so the
         # leg-based trim below is wrong for it -- classify the tip and set the
-        # length from the arc instead (S1 extends to centerline + wall, S2
+        # length from the arc instead (S1 extends to the bend centerline, S2
         # shortens to the centerline radius; S3/S4 need no length change).
         # S0 (nearest material is a straight leg) stays with the normal path.
         arc_handled = set()
@@ -1328,12 +1328,12 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6):
         {'state': 'S0'|'S1'|'S2'|'S3'|'S4', 'target': P|None,
          'delta_cm': float, 'reason': str}
 
-    States (plan/candidate4-bend-joints.md, user policy "Reach CL + Wall"):
+    States (plan/candidate4-bend-joints.md, user policy "Reach CL"):
       S0  tip lies on a leg's STRAIGHT run (outside every arc zone) -- the
           existing cope/butt-vs-leg-body path handles it; delta 0.
       S1  corner gap: the tip is outside the arc's tube envelope and the
           axis crosses the centerline circle beyond the tip -- extend to the
-          first crossing of |l(t)-C| = R plus one wall (2r) of overlap.
+          first crossing of |l(t)-C| = R (the bend's imaginary centerline).
       S2  overshoot: the tip is inside the centerline circle (R - r) on the
           concave side -- shorten to R from C (first crossing behind the tip).
       S3  on-arc: the tip is within the tube envelope -- no length change;
@@ -1390,10 +1390,17 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6):
             return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
                     'delta_cm': 0.0,
                     'reason': 'axis never crosses the centerline circle'}
-        t_star = max(x[0], 0.0) + 2.0 * r_cm   # reach CL + one wall overlap
+        # Reach the centerline EXACTLY (user policy, live img4: a +2r wall
+        # margin punched the tip clean through the arc tube -- the chord of
+        # the torus along any line through it is ~2*r_bend, so CL+2r is the
+        # FAR surface -- and left a stub poking out the other side).  The
+        # end face sits on the CL circle, i.e. mid-wall of the arc tube, so
+        # its disc is inscribed in the torus bore and the arc-body boolean
+        # removes it wholly -- no overlap margin needed.
+        t_star = max(x[0], 0.0)                # first crossing of |l-C| = R
         return {'state': 'S1', 'target': _add(tip, _scale(d, t_star)),
                 'delta_cm': -t_star,
-                'reason': 'corner gap: extend to centerline + wall'}
+                'reason': 'corner gap: extend to the bend centerline'}
 
     # S3: inside the tube envelope (R - r <= dist <= R + r) -> cope vs arc.
     if dist >= inner - tol:

@@ -797,15 +797,21 @@ class TestBendContextState(unittest.TestCase):
     def test_s1_corner_gap_extends(self):
         # A member drawn to the vertex V floats ~3.7 cm outside the centerline
         # arc; aimed along the bisector it must EXTEND (negative delta) to
-        # reach the CL circle plus one wall (2r) of overlap.
+        # reach the CL circle exactly (user policy "Reach CL": a +2r wall
+        # margin punched the tip through the torus and left a stub, live img4).
         r = 1.0
         s = jt.bend_context_state(self.V, (math.sqrt(.5), -math.sqrt(.5), 0),
                                   self.g, r)
         self.assertEqual(s['state'], 'S1')
         self.assertLess(s['delta_cm'], 0.0)          # extend
-        # first crossing of |l(t)-C|=R is |V-C|-R along the bisector, + 2r
-        expect = (self.R / math.cos(math.pi / 4)) - self.R + 2.0 * r
+        # first crossing of |l(t)-C|=R is |V-C|-R along the bisector
+        expect = (self.R / math.cos(math.pi / 4)) - self.R
         self.assertAlmostEqual(-s['delta_cm'], expect, places=4)
+        # The target lies ON the centerline circle: |target - C| == R.
+        tgt = s['target']
+        C = self.g['center']
+        d = math.sqrt(sum((tgt[k] - C[k]) ** 2 for k in range(3)))
+        self.assertAlmostEqual(d, self.R, places=4)
 
     def test_s0_tip_on_straight_leg(self):
         # A tip well along a leg's straight run (past its tangent point) is the
@@ -942,7 +948,7 @@ class TestBendContextWiring(unittest.TestCase):
         self.assertLess(off_plain[0][1], 0.0)
         # Flag on: the arc classifier extends it (a positive end offset) -- the
         # opposite sign, because the tip floats in the corner void short of the
-        # arc and must reach the centerline + wall.
+        # arc and must reach the bend centerline.
         off_arc = jt.corner_offsets(lines, geoms, ['butt'], context=ctx,
                                     bend_joints=joints, bend_context=True)
         self.assertGreater(off_arc[0][1], 0.0)
