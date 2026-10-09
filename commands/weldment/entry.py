@@ -2186,23 +2186,82 @@ def body_jid(body):
         return None
 
 
-def arc_body_for_joint(root, jid):
-    """The live swept-bend arc BODY stamped with joint id ``jid``, or None.
+def _has_torus_face(body):
+    """True if ``body`` has a Torus face -- i.e. it is a swept-bend arc, not a
+    straight leg (cylinder/plane) or a solid block.  The one cheap geometric
+    signature that isolates arc bodies from every other body in the design."""
+    try:
+        for k in range(body.faces.count):
+            if isinstance(body.faces.item(k).geometry, adsk.core.Torus):
+                return True
+    except Exception:
+        return False
+    return False
 
-    Scans the root's bodies for the Weldments.Joint stamp (the arc is not a
-    member, so it is invisible to the member stamp-scan).  Used by the corner-cut
-    layer to cope/butt a NEW member against an EXISTING bend's curved surface
-    (candidate #4; see plan/candidate4-bend-joints.md).
+
+def _point_to_body_cm(point, body):
+    """Distance (cm) from ``point`` to ``body``'s bounding box (0 if inside).
+
+    A corner's own arc has the corner vertex ON or just inside its bbox; the
+    other corners' arcs sit tens of cm away, so nearest-bbox cleanly picks the
+    right one without needing the exact torus parameters.
+    """
+    try:
+        bb = body.boundingBox
+        mn, mx = bb.minPoint, bb.maxPoint
+        d2 = 0.0
+        for p, lo, hi in ((point[0], mn.x, mx.x), (point[1], mn.y, mx.y),
+                          (point[2], mn.z, mx.z)):
+            if p < lo:
+                d2 += (lo - p) ** 2
+            elif p > hi:
+                d2 += (p - hi) ** 2
+        return d2 ** 0.5
+    except Exception:
+        return None
+
+
+def arc_body_for_joint(root, jid, vertex=None):
+    """The live swept-bend arc BODY for joint id ``jid``, or None.
+
+    Primary key is the ``Weldments.Joint`` stamp (candidate #4 phase B): scan the
+    root's bodies for the one carrying ``jid``.  When no body is stamped -- an arc
+    built before stamping existed, or a build whose stamp silently failed -- fall
+    back to GEOMETRY: the arc is the only Torus-faced body whose bounding box is
+    nearest the joint's ``vertex`` (the corner it rounds).  This keeps cope/butt
+    against an existing bend working on already-built frames without a rebuild.
+    The arc is not a member, so it is invisible to the member stamp-scan.
     """
     try:
         bodies = root.bRepBodies
-        for i in range(bodies.count):
-            b = bodies.item(i)
-            if body_jid(b) == jid:
-                return b
     except Exception:
         futil.handle_error(f'{CMD_NAME} arc resolve')
-    return None
+        return None
+    # 1. exact: the Weldments.Joint stamp.
+    try:
+        for i in range(bodies.count):
+            if body_jid(bodies.item(i)) == jid:
+                return bodies.item(i)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} arc resolve')
+    # 2. geometric fallback: nearest torus body to the corner vertex.
+    if vertex is None:
+        return None
+    best, best_d = None, None
+    try:
+        for i in range(bodies.count):
+            b = bodies.item(i)
+            if not _has_torus_face(b):
+                continue
+            d = _point_to_body_cm(vertex, b)
+            if d is None:
+                continue
+            if best is None or d < best_d:
+                best, best_d = b, d
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} arc resolve')
+    return best
+
 
 
 def _stamp_bend_arcs(root, registry, arcs, verts):
@@ -3274,9 +3333,12 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
             # into the tool's void), one that pokes out is the surviving run.
             # An 'arc' cut (candidate #4) is the same boolean against the swept
             # bend's ARC body instead of a straight member -- the arc hangs off
-            # its joint record (see arc_body_for_joint), never a member.
+            # its joint record (see arc_body_for_joint), never a member.  Pass the
+            # corner vertex so an unstamped arc (built before phase B, or a build
+            # whose stamp failed) still resolves by geometry.
             if cut['type'] == 'arc':
-                tool_body = arc_body_for_joint(root, cut['jid'])
+                tool_body = arc_body_for_joint(root, cut['jid'],
+                                               vertex=occ.get('vertex'))
                 if tool_body is None:
                     continue
             else:

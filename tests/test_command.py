@@ -1867,5 +1867,65 @@ class TestAngledTCutoffRemoval(unittest.TestCase):
         self.assertIn(far, comb.bodies._items)
 
 
+def _arc_body(center, name="Arc"):
+    """A swept-bend arc body: two torus faces + two caps, bbox centred on
+    ``center`` (half=1) so nearest-bbox resolves the corner it rounds."""
+    faces = [adsk_stub.FakeFace(adsk_stub.Torus((0, 0, 1), center, 9.0, 1.0)),
+             adsk_stub.FakeFace(adsk_stub.Torus((0, 0, 1), center, 8.0, 1.0)),
+             adsk_stub.FakeFace(adsk_stub.Plane((1, 0, 0), center), 1.0),
+             adsk_stub.FakeFace(adsk_stub.Plane((-1, 0, 0), center), 1.0)]
+    return adsk_stub.FakeBody(name=name, center=center, faces=faces)
+
+
+class TestArcBodyForJoint(unittest.TestCase):
+    """arc_body_for_joint: stamp first, geometric (nearest-torus) fallback.
+
+    The live-doc bug this guards: a frame whose arcs were built before phase B
+    (or whose stamp silently failed) has NO Weldments.Joint on the torus bodies,
+    so a cope/butt against the bend found no tool and skipped the cut.  The
+    fallback resolves the arc by geometry from the joint's corner vertex.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+
+    def _root_with_arcs(self):
+        root = adsk_stub.FakeRoot()
+        # Four corner arcs (a 90deg frame, R~9cm), none stamped.
+        self.a_ne = _arc_body((29.0, 29.0, 0.0), "arcNE")
+        self.a_nw = _arc_body((5.0, 25.0, 0.0), "arcNW")
+        self.a_sw = _arc_body((5.0, 5.0, 0.0), "arcSW")
+        self.a_se = _arc_body((29.0, 5.0, 0.0), "arcSE")
+        leg = adsk_stub.make_round_tube((5.0, 30.0, 0.0), (29.0, 30.0, 0.0), 1.0)
+        for b in (self.a_ne, self.a_nw, self.a_sw, self.a_se, leg):
+            root.bRepBodies.append(b)
+        return root
+
+    def test_resolves_by_geometry_when_unstamped(self):
+        root = self._root_with_arcs()
+        # jid 99 is on no body's stamp; the NW corner vertex must pick arcNW.
+        got = entry.arc_body_for_joint(root, 99, vertex=(0.0, 30.0, 0.0))
+        self.assertIs(got, self.a_nw)
+
+    def test_stamp_wins_over_geometry(self):
+        root = self._root_with_arcs()
+        entry.stamp_joint(self.a_se, 7)          # stamp the SE arc as jid 7
+        # Even though the vertex is near the NW arc, the stamp for jid 7 wins.
+        got = entry.arc_body_for_joint(root, 7, vertex=(0.0, 30.0, 0.0))
+        self.assertIs(got, self.a_se)
+
+    def test_no_vertex_and_no_stamp_returns_none(self):
+        root = self._root_with_arcs()
+        self.assertIsNone(entry.arc_body_for_joint(root, 99))
+
+    def test_ignores_straight_legs(self):
+        # A vertex sitting on a straight tube (no torus there) still resolves to
+        # the nearest TORUS body, never the leg.
+        root = self._root_with_arcs()
+        got = entry.arc_body_for_joint(root, 99, vertex=(29.0, 30.0, 0.0))
+        self.assertIsInstance(got, adsk_stub.FakeBody)
+        self.assertTrue(entry._has_torus_face(got))
+
+
 if __name__ == "__main__":
     unittest.main()

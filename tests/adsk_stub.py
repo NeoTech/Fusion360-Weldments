@@ -126,6 +126,17 @@ class Plane:
         self.origin = Point3D(*origin)
 
 
+class Torus:
+    """A toroidal face geometry (a swept-bend arc body's signature face)."""
+
+    def __init__(self, axis=(0, 0, 1), origin=(0, 0, 0),
+                 major_radius=1.0, minor_radius=0.5):
+        self.axis = Vector3D(*axis)
+        self.origin = Point3D(*origin)
+        self.majorRadius = major_radius
+        self.minorRadius = minor_radius
+
+
 class FakeFace:
     def __init__(self, geometry, area=1.0):
         self.geometry = geometry
@@ -1022,6 +1033,7 @@ def install():
     core.ObjectCollection = FakeObjectCollection
     core.Cylinder = Cylinder
     core.Plane = Plane
+    core.Torus = Torus
 
     fusion.Path = FakePath
     fusion.ToEntityExtentDefinition = _Node("ToEntityExtentDefinition")
