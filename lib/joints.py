@@ -1389,8 +1389,17 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
         leg_d = float('inf')
         for (leg, role) in arc_geom.get('legs') or []:
             s, e = _leg_ends(leg)
-            own = _leg_outward(leg, role)
-            far, tang = e if role == 'start' else s, _add(V, _scale(own, sb))
+            # The leg's STRAIGHT material runs from the tangent point (setback
+            # from V, away from the corner) to the end FARTHEST from V.  Use the
+            # vertex-outward direction, not the stored role: a toolbox-bend leg
+            # records role=None, and `_leg_outward(leg, None)`/`far` then resolve
+            # to the VERTEX end, collapsing this segment onto the corner so a tip
+            # sitting on V reads leg_d 0 and wrongly bails to S0.
+            own = _vertex_outward(leg, V)
+            if own is None:
+                own = _leg_outward(leg, role)
+            far = e if _dist(V, e) >= _dist(V, s) else s
+            tang = _add(V, _scale(own, sb))
             leg_d = min(leg_d, _seg_dist(tip, far, tang))
         arc_d = _dist(tip, _arc_nearest(tip, arc_geom))
         if leg_d <= arc_d + tol:
@@ -1404,11 +1413,14 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
         if x[1] <= tol:
             # Both crossings lie BEHIND the tip: the member's BODY runs through
             # the arc (an INSIDE/concave approach -- the mirror of S1).  The tip
-            # overshoots out the far side, so SHORTEN it back to the same
-            # stopping face the outside case uses: r - 2mm SHORT of the near
-            # circle crossing (-x[1] back along the body), plus the Cope Depth
-            # walking it toward the centerline.  delta > 0 = shorten.
-            t_short = -x[1] - r_cm + 0.2 + depth_cm
+            # overshoots out the far side, so SHORTEN it back.  Back the stub off
+            # a FULL tube diameter past the S1 face (to the arc's INNER wall,
+            # R - r + 2mm from C) rather than stopping at the outer wall: a
+            # through-member trimmed only to the outer face still hugs the bend's
+            # outside and doesn't read like the accepted outside cope.  The extra
+            # clearance is the user's to dial back with Cope Depth (depth_cm
+            # walks it toward the centerline again).  delta > 0 = shorten.
+            t_short = -x[1] + r_cm - 0.2 + depth_cm
             if t_short <= tol:
                 return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
                         'delta_cm': 0.0,

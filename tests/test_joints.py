@@ -877,10 +877,12 @@ class TestBendContextState(unittest.TestCase):
         s = jt.bend_context_state(self.V, grow, self.g, r)
         self.assertEqual(s['state'], 'S5')
         self.assertGreater(s['delta_cm'], 0.0)      # shorten
-        # The stopping face is r - 2mm SHORT of the near circle crossing, i.e.
-        # |target - C| = R + (r - 0.2) -- the same face the outside case uses.
+        # The stub is backed off a full tube diameter past the S1 face, to the
+        # arc's INNER wall: |target - C| = R - (r - 0.2) -- the same concave
+        # face the accepted outside cope bites into, so the two read alike.
+        # Cope Depth walks it back toward the centerline for fine tuning.
         d = jt._dist(s['target'], C)
-        self.assertAlmostEqual(d, self.R + r - 0.2, places=2)
+        self.assertAlmostEqual(d, self.R - r + 0.2, places=2)
 
     def test_idempotent_delta(self):
         # delta is recomputed from geometry, never accumulated: same inputs,
