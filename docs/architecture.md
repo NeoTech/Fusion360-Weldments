@@ -29,8 +29,9 @@ maintainers. For the derivations and formulas behind each joint, see
 
 1. **Pure geometry is separated from the Fusion API.** Everything in `lib/` is
    plain Python with **no `adsk` imports**, so it unit-tests headlessly on
-   CPython. `commands/weldment/entry.py` is the *only* module that touches
-   `adsk.fusion`.
+   CPython. Only `commands/*/entry.py` modules touch `adsk.fusion` —
+   `commands/weldment/entry.py` (Auto) is the main one; the toolbox commands and
+   Tube (which delegates to weldment's helpers) are thin glue layers.
 2. **Data-driven.** Profiles and bend dies are JSON catalogues in `data/`;
    adding a size or a die needs no code change.
 3. **Parametric-history friendly.** Features are built so the timeline stays
@@ -49,7 +50,10 @@ Weldments.py                 run()/stop() -> commands.start()/stop()
 config.py                    DEBUG, ADDIN_NAME, COMPANY_NAME, palette id
 commands/
   __init__.py                command registry (start/stop each)
-  weldment/entry.py          THE feature: dialog + all adsk.fusion glue
+  weldment/entry.py          the Auto builder: dialog + all adsk.fusion glue
+                             (Solid > Create, after PrimitivePipe)
+  weldmentTube/entry.py      Tube: profiles/rotation/offsets, no joints
+                             (delegates geometry to weldment/entry.py)
   commandDialog/, paletteShow/, paletteSend/   template scaffold (unused)
 lib/
   profiles.py                pure: section outlines + placement basis
@@ -62,6 +66,7 @@ data/
 tests/
   adsk_stub.py               fake adsk API for headless command tests
   test_profiles.py / test_joints.py / test_bending_dies.py / test_command.py
+  test_tube_command.py       Tube dialog/execute freeze tests (15)
 ```
 
 The `lib/` modules are the product; `entry.py` translates between Fusion's
@@ -213,8 +218,13 @@ as a square one, so RHS shares SHS's tooling instead of duplicating every entry.
 
 ## `commands/weldment/entry.py` — command layer
 
-The only `adsk.fusion` module. Registers the **Weldment** command on the Create
-panel and drives the dialog.
+The main `adsk.fusion` module. Registers the **Auto** command into **Solid →
+Create** (after `PrimitivePipe`, via
+`SolidCreatePanel.controls.addCommand(cmd_def, 'PrimitivePipe', After)`;
+fallbacks: plain `addCommand`, then the Weldments panel) and drives the dialog.
+`commands/weldmentTube/entry.py` (Tube) reuses this module's helpers
+(`_resolve`, `_build_weldment`, `persist_members`, ...) through a thin
+`_weldment()` delegation and adds no joint logic of its own.
 
 **Registration constants:**
 `CMD_ID = f'{COMPANY_NAME}_{ADDIN_NAME}_weldment'`, `WORKSPACE_ID =

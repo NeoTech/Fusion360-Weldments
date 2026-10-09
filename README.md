@@ -136,7 +136,8 @@ To reload after editing code without restarting Fusion, use
 
 | Command | Panel | What it does |
 |---------|-------|--------------|
-| **Weldment** | Weldments | The main builder: extrude profiles along sketch lines and resolve every corner. |
+| **Tube** | Weldments | Extrude profiles along sketch lines with rotation and end offsets — no joints. |
+| **Auto** | Solid → Create | The original all-in-one builder: extrude profiles along sketch lines and auto-resolve every corner (miter/cope/bend/T-joint). |
 | **Weld Bend** | Weldments | Sweep a bend between two existing tube legs (die-driven centerline arc). |
 | **Weld Cope** | Weldments | Saddle/notch one member's end over another at a T-junction. |
 | **Weld Miter** | Weldments | Cut a 45° (bisector) miter between two existing members. |
@@ -146,17 +147,20 @@ To reload after editing code without restarting Fusion, use
 | **Bend Table** | Weldments | Output rotary-draw bending instructions (marks, feed, angle, clock, die) for one bent tube. |
 | **Weldment BOM** | Data | A docked bill-of-materials palette listing every member, live from the registry. |
 
-The eight **Weldments**-panel commands share one design: pick the member(s),
-set the joint parameters, preview, and commit. **Bend Table** and **Weldment
-BOM** are read-only outputs — they describe what is already built rather than
-changing it.
+The commands share one design: pick the member(s), set the joint parameters,
+preview, and commit. **Bend Table** and **Weldment BOM** are read-only outputs —
+they describe what is already built rather than changing it. **Tube** is the
+joints-free builder (profiles, rotation, offsets only); **Auto** keeps the
+full auto-detected joint engine and now lives in the Solid → Create menu,
+after the native Pipe command.
 
 ---
 
 ## Usage
 
 1. Draw the frame path as **3D sketch lines** (one line per member).
-2. Run **Create → Weldment**.
+2. Run **Weldments → Tube** (or **Solid → Create → Auto** for the version that
+   also resolves every corner joint automatically).
 3. **Lines** — select the 3D sketch line(s). A row appears per line in the table.
 4. **Profile** — pick the family (IPE, HEA, HEB, UPE, UPN, SHS, RHS, CHS).
 5. **Designation** — pick the size (e.g. `CHS 48.3 x 2.0`).
@@ -351,9 +355,10 @@ Weldments/
 ├── AddInIcon.svg             # command icon
 ├── commands/
 │   ├── __init__.py           # registers all commands
-│   ├── weldment/             # the Weldment command (the main builder)
+│   ├── weldment/             # the Auto command (all-in-one builder, Solid > Create)
 │   │   ├── entry.py          # dialog + Fusion API glue (the adsk.fusion touchpoint)
 │   │   └── resources/        # command icons
+│   ├── weldmentTube/         # Tube (profiles + rotation + offsets, no joints)
 │   ├── weldmentBend/         # Weld Bend  (bend two existing legs)
 │   ├── weldmentCope/         # Weld Cope   (saddle one end over another)
 │   ├── weldmentMiter/        # Weld Miter  (bisector cut between members)
