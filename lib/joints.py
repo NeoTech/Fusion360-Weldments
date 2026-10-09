@@ -1338,9 +1338,10 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
       S1  corner gap: the tip is outside the arc's tube envelope and the
           axis crosses the centerline circle beyond the tip -- extend to the
           first crossing of |l(t)-C| = R (the bend's imaginary centerline)
-          plus the member's tube radius and 2 mm, plus ``depth_cm`` (the
+          minus the member's tube radius plus 2 mm, plus ``depth_cm`` (the
           user's Cope Depth: the stopping face -- and therefore how deep the
-          saddle sits on the arc -- is offset by it; live img4 policy).
+          saddle sits on the arc -- is offset by it; live policy "CL - r +
+          2mm").
       S2  overshoot: the tip is inside the centerline circle (R - r) on the
           concave side -- shorten to R from C (first crossing behind the tip).
       S3  on-arc: the tip is within the tube envelope -- no length change;
@@ -1397,19 +1398,15 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
             return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
                     'delta_cm': 0.0,
                     'reason': 'axis never crosses the centerline circle'}
-        # Reach the centerline plus the member's own tube radius, a 2 mm
-        # boolean-overlap floor, and the user's Cope Depth (live img4 policy:
-        # "stop at centerline + radius of tube + 2mm so the offset determines
-        # how deep the cope sits").  A bare +2r margin punched the tip clean
-        # through the arc tube (the chord of the torus along any line is
-        # ~2*r_bend, so CL+2r is the FAR surface) and left a visible stub;
-        # CL + r + 2mm keeps the end face's centre one radius past the CL --
-        # tangent to the arc tube's far wall -- with 2 mm of guaranteed
-        # overlap for the boolean, and the depth column walks it in/out.
-        t_star = max(x[0], 0.0) + r_cm + 0.2 + depth_cm
+        # Reach the centerline SHORT of it by the member's own tube radius,
+        # plus a 2 mm overlap floor and the user's Cope Depth (live policy:
+        # "CL - r + 2mm so the offset determines how deep the cope sits").
+        # The end face's centre stops one radius before the CL -- tangent to
+        # the arc tube's NEAR wall -- and the depth column walks it in/out.
+        t_star = max(x[0], 0.0) - r_cm + 0.2 + depth_cm
         return {'state': 'S1', 'target': _add(tip, _scale(d, t_star)),
                 'delta_cm': -t_star,
-                'reason': 'corner gap: extend to centerline + tube radius'}
+                'reason': 'corner gap: extend to centerline - tube radius'}
 
     # S3: inside the tube envelope (R - r <= dist <= R + r) -> cope vs arc.
     if dist >= inner - tol:

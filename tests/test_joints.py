@@ -804,15 +804,15 @@ class TestBendContextState(unittest.TestCase):
                                   self.g, r)
         self.assertEqual(s['state'], 'S1')
         self.assertLess(s['delta_cm'], 0.0)          # extend
-        # first crossing of |l(t)-C|=R is |V-C|-R along the bisector, + r + 2mm
-        expect = (self.R / math.cos(math.pi / 4)) - self.R + r + 0.2
+        # first crossing of |l(t)-C|=R is |V-C|-R along the bisector, - r + 2mm
+        expect = (self.R / math.cos(math.pi / 4)) - self.R - r + 0.2
         self.assertAlmostEqual(-s['delta_cm'], expect, places=4)
-        # The target's centre sits r + 2mm PAST the CL circle (toward the arc
-        # centre): |target - C| = R - (r + 0.2) -- that is the cope depth.
+        # The target's centre sits r - 2mm SHORT of the CL circle (the near
+        # side): |target - C| = R + (r - 0.2) -- policy "CL - r + 2mm".
         tgt = s['target']
         C = self.g['center']
         d = math.sqrt(sum((tgt[k] - C[k]) ** 2 for k in range(3)))
-        self.assertAlmostEqual(d, self.R - r - 0.2, places=4)
+        self.assertAlmostEqual(d, self.R + r - 0.2, places=4)
 
     def test_s1_depth_offsets_stopping_face(self):
         # The Cope Depth column walks the S1 stopping face in/out: doubling
