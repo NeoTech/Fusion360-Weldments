@@ -961,6 +961,14 @@ class FakeCommand:
         self.commandInputs = FakeCommandInputs(self)
         self.dialogInitialSize = None
         self.dialogMinimumSize = None
+        # Event objects a command_created handler attaches to (futil.add_handler
+        # just reads the attribute; the recording _Node stands in for the real
+        # adsk.core.CommandEvent).
+        self.execute = _Node("command.execute")
+        self.executePreview = _Node("command.executePreview")
+        self.inputChanged = _Node("command.inputChanged")
+        self.select = _Node("command.select")
+        self.destroy = _Node("command.destroy")
 
     def setDialogInitialSize(self, width, height):
         _record("command.setDialogInitialSize", width, height)

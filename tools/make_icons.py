@@ -196,6 +196,20 @@ def glyph_gusset():
     return img
 
 
+def glyph_tube():
+    img = canvas()
+    # a straight tube (two parallel walls + end cap) with a rotation arrow --
+    # profile creation only, no joint
+    line(img, (10, 22), (46, 22), INK)             # top wall
+    line(img, (10, 42), (46, 42), INK)             # bottom wall
+    line(img, (10, 22), (10, 42), INK)             # start cap
+    arc(img, 46, 32, 10, -90, 90, INK)             # rounded end cap
+    arc(img, 28, 52, 8, 200, 340, ACCENT)           # rotation arrow
+    line(img, (35, 49), (38, 52), ACCENT, 2)        # arrow head
+    line(img, (35, 55), (38, 52), ACCENT, 2)
+    return img
+
+
 def glyph_gusset_profile():
     img = canvas()
     # an I-beam cross-section with a gusset inside the flanges
@@ -211,7 +225,7 @@ GLYPHS = {'weldment': glyph_weldment,
           'weldmentButt': glyph_butt, 'weldmentBom': glyph_bom,
           'weldmentBend': glyph_bend,
           'weldmentBendTable': glyph_bend_table,
-          'weldmentGusset': glyph_gusset,
+          'weldmentGusset': glyph_gusset, 'weldmentTube': glyph_tube,
           'weldmentGussetProfile': glyph_gusset_profile}
 
 

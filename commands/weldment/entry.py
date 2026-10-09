@@ -379,11 +379,31 @@ def start():
         CMD_ID, CMD_LABEL, CMD_Description, ICON_FOLDER)
     futil.add_handler(cmd_def.commandCreated, command_created)
 
-    panel = ensure_weldments_panel()
-    if panel:
-        add_pinned_command(panel, cmd_def, CMD_ID)
-    else:
-        futil.log(f'{CMD_NAME} could not create the {PANEL_NAME} panel.')
+    # The Tube command (commands/weldmentTube) is the Weldments-tab builder
+    # now; Auto moved to the native Solid -> Create panel right after Pipe,
+    # where frame-level auto-detection sits naturally next to the other
+    # whole-feature creation tools.  Falls back to the Weldments panel when
+    # the Create panel is unavailable (different workspace active).
+    placed = False
+    workspace = ui.workspaces.itemById(WORKSPACE_ID)
+    create_panel = (workspace.toolbarPanels.itemById('SolidCreatePanel')
+                    if workspace else None)
+    if create_panel is not None:
+        control = create_panel.controls.itemById(CMD_ID)
+        if control is None:
+            try:
+                control = create_panel.controls.addCommand(
+                    cmd_def, 'PrimitivePipe', adsk.core.ControlPosition.After)
+            except Exception:
+                control = create_panel.controls.addCommand(cmd_def)
+        if control is not None:
+            placed = True
+    if not placed:
+        panel = ensure_weldments_panel()
+        if panel:
+            add_pinned_command(panel, cmd_def, CMD_ID)
+        else:
+            futil.log(f'{CMD_NAME} could not create the {PANEL_NAME} panel.')
 
 
 def stop():
@@ -395,8 +415,9 @@ def stop():
     # commands/__init__ stops us before our siblings, and the helper copes).
     remove_command_from_panel(CMD_ID)
 
-    # Clean up the legacy Create-panel button from before the own-panel move.
-    for pid in LEGACY_PANEL_IDS:
+    # Remove the button from wherever it lives: the native Solid -> Create
+    # panel (current placement) and the legacy panels from earlier layouts.
+    for pid in (['SolidCreatePanel'] + LEGACY_PANEL_IDS):
         legacy = workspace.toolbarPanels.itemById(pid)
         if legacy:
             cc = legacy.controls.itemById(CMD_ID)
