@@ -148,9 +148,14 @@ def _cope_plan(w, subj_body, tool_body, depth_mm):
     drift.
     """
     subj_cl = w._member_centerline(subj_body)
-    tool_cl = w._member_centerline(tool_body)
-    if subj_cl is None or tool_cl is None:
+    if subj_cl is None:
         return 'Both selections must be straight weldment members.', None
+    tool_cl = w._member_centerline(tool_body)
+    if tool_cl is None:
+        # The tool is a swept bend (an arc body, or a leg rounding into one):
+        # it has no single straight centreline.  Saddle onto the ARC instead
+        # (candidate #4's toolbox path; see :func:`_bend_cope_plan`).
+        return _bend_cope_plan(w, subj_body, tool_body, subj_cl, depth_mm)
     ss, se, sgeom, sbasis = subj_cl
     ts, te, tgeom, tbasis = tool_cl
 
@@ -181,6 +186,68 @@ def _cope_plan(w, subj_body, tool_body, depth_mm):
                   'trim_region': trim_region, 'saddle_region': saddle_region}
 
 
+def _bend_cope_plan(w, subj_body, tool_body, subj_cl, depth_mm):
+    """Plan a cope whose TOOL is a swept bend (an arc body, or a leg rounding
+    into one).  The coping member already exists at its drawn length, so we
+    cannot extend/shorten it -- we saddle its tip onto the arc with a single
+    boolean against the arc BODY (candidate #4's toolbox path).  Returns the
+    same ``(error, plan)`` shape as :func:`_cope_plan`, with ``plan['arc_tool']``
+    set and ``plan['tool_cl']`` None.
+    """
+    design = w._design()
+    if design is None:
+        return 'Open a design first.', None
+    root = design.rootComponent
+    ss, se, sgeom, sbasis = subj_cl
+    # The tip is the coping member's end nearest the tool.
+    tip = se if w._point_to_body_cm(se, tool_body) <= \
+        w._point_to_body_cm(ss, tool_body) else ss
+    far = ss if tip == se else se
+    own = jt.line_direction_from(far, tip)          # toward the tool
+    r_cm = jt._perp_extent_cm(sgeom, sbasis, None, own)
+    # The arc to cut against: the tool body if it IS the torus, else the arc
+    # nearest the tip (the user may have picked a straight leg of the bend).
+    arc = (tool_body if w._has_torus_face(tool_body)
+           else w.arc_body_near(root, tip))
+    if arc is None:
+        return 'Both selections must be straight weldment members.', None
+    # A joint box straddling the tip, wide enough to cover the arc tube so the
+    # boolean classifies the plug (inside) vs the run (outside) correctly.
+    room = 0.5 * jt._dist(ss, se)
+    reach = 2.0 * r_cm + depth_mm * 0.1 + 2.0
+    perp = r_cm + 2.0
+    region = jt._region_box(tip, own, reach, perp, room)
+    return None, {'subj_cl': subj_cl, 'tool_cl': None, 'landing': tip,
+                  'trim_region': None, 'saddle_region': region, 'arc_tool': arc}
+
+
+def _bend_tool_member(w, registry, tool_body, landing):
+    """The registry Member (a bend leg) nearest ``landing`` for a bent tool.
+
+    The arc hangs off a 'bend' joint, never a member; the joint's two refs are
+    the legs.  Pick the leg whose centreline passes nearest the cope landing so
+    the joint record references a real member on the tool side.
+    """
+    jid = w.body_jid(tool_body)
+    bends = [j for j in registry.joints if j.kind == 'bend']
+    j = next((x for x in bends if x.jid == jid), None)
+    if j is None:
+        j = next((x for x in bends if x.vertex is not None and
+                  reg.distance(x.vertex, landing) <= 20.0), None)
+    if j is None:
+        return None
+    best, best_d = None, None
+    for r in j.refs:
+        m = registry.member(r.get('mid'))
+        if m is None:
+            continue
+        cp, _t = reg.closest_point_on_segment(landing, m.start, m.end)
+        d = reg.distance(cp, landing)
+        if best is None or d < best_d:
+            best, best_d = m, d
+    return best
+
+
 def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
     """Run the two-step cope cut (called from command_execute on OK).
 
@@ -197,7 +264,17 @@ def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
     subj_cl, tool_cl = plan['subj_cl'], plan['tool_cl']
     landing = plan['landing']
     trim_region, saddle_region = plan['trim_region'], plan['saddle_region']
+    arc_tool = plan.get('arc_tool')
     try:
+        if arc_tool is not None:
+            # Bend tool: a single boolean against the arc body saddles the
+            # coping member onto the curved surface (no axial prism -- the
+            # member already exists at its drawn length).
+            removes, run = w.cope_body_cut(root, subj_body, arc_tool,
+                                           saddle_region)
+            payload = {'subj_cl': subj_cl, 'tool_cl': None, 'landing': landing,
+                       'run': run or subj_body, 'track': [], 'feats': removes}
+            return None, payload
         # Step 1: pull the protruding tip back to the stopping face with a
         # finite prism (the tool is not a target of this cut).
         box = w._box_cutter(root, trim_region, preview=preview)
@@ -281,7 +358,7 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     # either copy fails, abort: falling back to the REAL body would make the
     # preview destructive again -- the exact bug this whole design avoids.
     cp_s = root.features.copyPasteBodies.add(subj_body)
-    cp_t = root.features.copyPasteBodies.add(tool_body)
+    cp_t = root.features.copyPasteBodies.add(plan.get('arc_tool') or tool_body)
     if (cp_s is None or cp_s.bodies.count == 0 or
             cp_t is None or cp_t.bodies.count == 0):
         for cp in (cp_s, cp_t):
@@ -295,18 +372,24 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     subj_copy = cp_s.bodies.item(0)
     tool_copy = cp_t.bodies.item(0)
     try:
-        box = w._box_cutter(root, plan['trim_region'], preview=True)
-        if box is None or box[0] is None:
-            return
-        _preview_objs.append(box)
-        comb1 = w._combine_cut(root, subj_copy, [box[0]], keep_tool=False)
-        _preview_objs.append(comb1)
-        run = w._survivor_after_cut(comb1, None,
-                                    plan['trim_region']) or subj_copy
-        removes, run2 = w.cope_body_cut(root, run, tool_copy,
-                                        plan['saddle_region'])
-        _preview_objs.append(removes)
-        run = run2 or run
+        if plan.get('arc_tool') is not None:
+            removes, run = w.cope_body_cut(root, subj_copy, tool_copy,
+                                           plan['saddle_region'])
+            _preview_objs.append(removes)
+            run = run or subj_copy
+        else:
+            box = w._box_cutter(root, plan['trim_region'], preview=True)
+            if box is None or box[0] is None:
+                return
+            _preview_objs.append(box)
+            comb1 = w._combine_cut(root, subj_copy, [box[0]], keep_tool=False)
+            _preview_objs.append(comb1)
+            run = w._survivor_after_cut(comb1, None,
+                                        plan['trim_region']) or subj_copy
+            removes, run2 = w.cope_body_cut(root, run, tool_copy,
+                                            plan['saddle_region'])
+            _preview_objs.append(removes)
+            run = run2 or run
     except Exception:
         futil.handle_error(f'{CMD_NAME} preview cut')
         return
@@ -395,9 +478,19 @@ def _record(design, subj_body, tool_body, subj_cl, tool_cl, landing, run,
     sm = registry.upsert_member(subj_cl[0], subj_cl[1], geom=subj_cl[2],
                                 basis=list(subj_cl[3]) if subj_cl[3] else None,
                                 **w.profile_fields(subj_cl[2]))
-    tm = registry.upsert_member(tool_cl[0], tool_cl[1], geom=tool_cl[2],
-                                basis=list(tool_cl[3]) if tool_cl[3] else None,
-                                **w.profile_fields(tool_cl[2]))
+    if tool_cl is not None:
+        tm = registry.upsert_member(tool_cl[0], tool_cl[1], geom=tool_cl[2],
+                                    basis=list(tool_cl[3]) if tool_cl[3] else None,
+                                    **w.profile_fields(tool_cl[2]))
+    else:
+        # Bend tool: the arc is not a member; resolve the leg member the tip
+        # landed near so the joint record names a real member on both sides.
+        tm = _bend_tool_member(w, registry, tool_body, landing)
+        if tm is None:
+            if run is not None and w.body_mid(run) is None:
+                w.stamp_body(run, sm.mid)
+            w.save_registry(design, registry)
+            return
     # The coping member's body was re-homed by the cut; stamp the survivor so
     # the spine points at the live body.  Never clobber an existing stamp.
     for body, mem in ((run, sm), (tool_body, tm)):
@@ -414,8 +507,9 @@ def _record(design, subj_body, tool_body, subj_cl, tool_cl, landing, run,
     # Classify like the auto path (lib.joints.corner_cuts): a coped member
     # meeting its tool at a right angle is a T cope, anything else an angled
     # cope -- a bare 'cope' made the BOM's joint list unreadable.
-    kind = jt.cope_kind(jt.line_direction_from(*subj_cl[:2]),
-                        jt.line_direction_from(*tool_cl[:2]))
+    tool_dir = (jt.line_direction_from(*tool_cl[:2]) if tool_cl is not None
+                else jt.line_direction_from(tm.start, tm.end))
+    kind = jt.cope_kind(jt.line_direction_from(*subj_cl[:2]), tool_dir)
     registry.add_joint(kind, [{'mid': sm.mid, 'role': None},
                               {'mid': tm.mid, 'role': None}],
                        vertex=landing, params=params,

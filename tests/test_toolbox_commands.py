@@ -198,6 +198,77 @@ class TestCopeExecute(unittest.TestCase):
         self.assertNotIn("CombineFeatures.add", _names())
 
 
+class TestCopeBendTool(unittest.TestCase):
+    """Coping onto a swept-bend ARC (candidate #4's toolbox path).
+
+    The historical bug: a bent tool has no single straight centreline, so
+    _member_centerline returned None and the command hard-errored "Both
+    selections must be straight weldment members."  It now saddles onto the
+    arc body with a single keep-tool boolean and records the joint against the
+    nearest bend LEG member.
+    """
+
+    def setUp(self):
+        adsk_stub.reset()
+        self.design = adsk_stub.FakeDesign()
+        root = self.design.rootComponent
+        # A straight coping member whose tip lands on a corner arc.
+        self.subj = adsk_stub.make_round_tube((25, 0, 20), (5, 25, 0), 2.12, 1.92)
+        fs = adsk_stub.FakeFeature("adsk::fusion::ExtrudeFeature", root, [self.subj])
+        root.features._items.append(fs)
+        root.bRepBodies.append(self.subj)
+        # The bend's corner arc (a torus body) near the tip, unstamped (the
+        # geometric fallback must find it).
+        self.arc = adsk_stub.FakeBody(
+            name="Arc", center=(5.0, 25.0, 0.0), volume=8.0,
+            faces=[adsk_stub.FakeFace(adsk_stub.Torus((0, 0, 1), (5, 25, 0), 9.0, 1.0)),
+                   adsk_stub.FakeFace(adsk_stub.Plane((1, 0, 0), (5, 25, 0)), 1.0)])
+        fa = adsk_stub.FakeFeature("adsk::fusion::SweepFeature", root, [self.arc])
+        root.features._items.append(fa)
+        root.bRepBodies.append(self.arc)
+        # Registry: the corner's two legs + the bend joint rounding it.
+        registry = reg.Registry()
+        leg1 = registry.add_member((5, 30, 0), (30, 30, 0), designation="20x1", family="CHS")
+        leg2 = registry.add_member((0, 5, 0), (0, 30, 0), designation="20x1", family="CHS")
+        registry.add_joint("bend", [{"mid": leg1.mid, "role": "start"},
+                                    {"mid": leg2.mid, "role": "end"}],
+                           vertex=(0.0, 30.0, 0.0), params={"clr_mm": 89.9})
+        w.save_registry(self.design, registry)
+        adsk_stub.set_active_design(self.design)
+
+    def _run(self, subj, tool):
+        dlg = _CopeDialog()
+        subj and _select(dlg.command, "subject", subj)
+        tool and _select(dlg.command, "tool", tool)
+        cope.command_execute(_Args(dlg.command))
+        return dlg
+
+    def test_bend_tool_does_not_error(self):
+        self._run(self.subj, self.arc)
+        boxes = [c for c in adsk_stub.CALLS
+                 if c[0].endswith("messageBox")]
+        self.assertFalse(boxes, "a bent tool must not pop the straight-only error")
+
+    def test_bend_tool_cuts_against_the_arc(self):
+        self._run(self.subj, self.arc)
+        combs = _combines()
+        self.assertTrue(any(_cut(op) and keep for op, keep, _t in combs),
+                        "a cope onto a bend must Combine(Cut, keep_tool=True)")
+        # The tool of that cut is the arc body itself.
+        self.assertTrue(any(_cut(op) and keep and self.arc in tools
+                            for op, keep, tools in combs))
+
+    def test_bend_tool_records_a_cope_joint(self):
+        self._run(self.subj, self.arc)
+        registry = w.load_registry(self.design)
+        joints = [j for j in registry.joints if j.kind.startswith("cope")]
+        self.assertEqual(len(joints), 1)
+        # The tool side names a real bend LEG member (mid 1 or 2), never the arc.
+        mids = set(joints[0].member_ids())
+        self.assertTrue(mids & {1, 2},
+                        "the cope joint must reference a bend leg member")
+
+
 class _MiterDialog:
     def __init__(self):
         self.command = adsk_stub.FakeCommand()
