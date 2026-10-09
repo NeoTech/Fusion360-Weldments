@@ -438,11 +438,16 @@ def command_execute(args: adsk.core.CommandEventArgs):
                 pass
 
     _record(design, w, body_a, body_b, payload['cl_a'], payload['cl_b'],
-            payload['vertex'], clr_mm)
+            payload['vertex'], clr_mm, arc=payload.get('arc'))
 
 
-def _record(design, w, body_a, body_b, cl_a, cl_b, vertex, clr_mm):
-    """Persist the bend as a registry joint (and its members), for re-run/BOM."""
+def _record(design, w, body_a, body_b, cl_a, cl_b, vertex, clr_mm, arc=None):
+    """Persist the bend as a registry joint (and its members), for re-run/BOM.
+
+    Also stamps the swept ``arc`` body with the joint id (Weldments.Joint) so a
+    later member coping into this corner can find the arc to cut against
+    (candidate #4 phase B; see weldment.entry.arc_body_for_joint).
+    """
     registry = w.load_registry(design)
     ma = registry.upsert_member(cl_a[0], cl_a[1], geom=cl_a[2],
                                 basis=list(cl_a[3]) if cl_a[3] else None,
@@ -454,15 +459,22 @@ def _record(design, w, body_a, body_b, cl_a, cl_b, vertex, clr_mm):
         if w.body_mid(body) is None:      # keep an existing stamp's owner
             w.stamp_body(body, mem.mid)
     params = {'clr_mm': clr_mm}
+    joint = None
     for j in registry.joints:
         if j.kind == 'bend' and set(j.member_ids()) == {ma.mid, mb.mid} and \
                 j.vertex and reg.distance(j.vertex, vertex) < 0.05:
             j.params.update(params)
-            w.save_registry(design, registry)
-            return
-    registry.add_joint('bend', [{'mid': ma.mid, 'role': None},
-                                {'mid': mb.mid, 'role': None}],
-                       vertex=vertex, params=params,
-                       selections={'member_a': body_a.name,
-                                   'member_b': body_b.name})
+            joint = j
+            break
+    if joint is None:
+        joint = registry.add_joint(
+            'bend', [{'mid': ma.mid, 'role': None},
+                     {'mid': mb.mid, 'role': None}],
+            vertex=vertex, params=params,
+            selections={'member_a': body_a.name, 'member_b': body_b.name})
+    if arc is not None and arc[0] is not None:
+        try:
+            w.stamp_joint(arc[0].bodies.item(0), joint.jid)
+        except Exception:
+            pass
     w.save_registry(design, registry)

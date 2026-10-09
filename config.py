@@ -43,6 +43,27 @@ sample_palette_id = f'{COMPANY_NAME}_{ADDIN_NAME}_palette_id'
 REGISTRY_FIRST_CONTEXT = True
 
 
+# --------------------------------------------------------------------------- #
+# Feature flag (ROADMAP candidate #4: joints against EXISTING bent elements).
+#
+# When False (the current default), a new member coping/butting against a
+# corner that an EARLIER swept bend rounded falls back to the historical
+# behaviour: the arc is invisible to the straight-run zone math, so a cope onto
+# the curved part downgrades to a flat butt (the _arc_downgrades message).
+# When True, the joint layer rebuilds the bend's centerline arc from its JOINT
+# record (the arc body hangs off the joint, never a member -- BOM/Bend Table
+# unaffected) and classifies the new member's tip with the S0..S4 state engine
+# (lib/joints.bend_context_state): S0 straight-leg cope (unchanged), S1 corner
+# gap -> extend to centerline + wall, S2 overshoot -> shorten to R, S3 on-arc ->
+# cope vs the arc body, S4 skew -> saddle vs the arc surface.  Requires the arc
+# bodies to carry the Weldments.Joint stamp (candidate #4 phase B, always on).
+# Off by default until the live gate passes: a green stub suite does not prove
+# a torus boolean cut behaves like a solid, so this must be verified in a
+# throwaway doc before promotion (see plan/candidate4-bend-joints.md).
+# --------------------------------------------------------------------------- #
+BEND_CONTEXT_CUTS = False
+
+
 def icon_folder(module_file):
     """Return a ribbon-icon folder whose *path* changes when the icons change.
 

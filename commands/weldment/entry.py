@@ -1127,7 +1127,7 @@ def _trim_bend_context_end(root, plan, context):
 
 def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
                      inverse_by_line=None, preview=False, context=None,
-                     bases=None, anchor=None):
+                     bases=None, anchor=None, verts_out=None):
     """Build the swept-bend arc bodies for every ``bend`` corner among ``lines``.
 
     Returns a list of (feature, sketch, plane) tuples for the caller to track.
@@ -1150,6 +1150,9 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
     Returns ``(arcs, trims)``: the arc ``(feature, sketch, plane)`` tuples (the
     caller's existing tracking list) and the flat context-trim objects, which
     must be torn down like corner cuts -- BEFORE the member features they cut.
+    ``verts_out`` (optional list) receives, parallel to ``arcs``, each built
+    arc's corner vertex so the committed build can stamp the arc body with its
+    joint id (see :func:`stamp_joint`); the preview path leaves it unset.
     """
     arcs, trims = [], []
     try:
@@ -1177,6 +1180,8 @@ def _build_bend_arcs(root, lines, joints, clr_by_line, geom, ref,
                                   anchor=anchor)
         if arc:
             arcs.append(arc)
+            if verts_out is not None:
+                verts_out.append(plan['point'])
         # If the other leg of this corner is an EXISTING member, its square end
         # pokes through the arc -- trim it to the tangent plane (see
         # _trim_bend_context_end).  Done whether or not the arc built, so a
@@ -1639,9 +1644,11 @@ def command_execute(args: adsk.core.CommandEventArgs):
                              'offset_end': off_e + je}
         objs.append(built)
         feat_idx.append(idx if built else None)
+    bend_arc_verts = []
     bend_arcs, bend_trims = _build_bend_arcs(
         root, saved, _row_joints(inputs, saved), clr_by_line, geom, ref,
-        inverse_by_line=inverses, context=context, bases=tbases, anchor=anchor)
+        inverse_by_line=inverses, context=context, bases=tbases, anchor=anchor,
+        verts_out=bend_arc_verts)
     created += len(bend_arcs)
     _bases, _anchor = _joint_frame(inputs, saved, geom, ref)
     global _arc_downgrades
@@ -1681,6 +1688,10 @@ def command_execute(args: adsk.core.CommandEventArgs):
         # Record the joints that were just built (A3): the BOM becomes the
         # frame's history -- every miter/cope/bend is a re-runnable record.
         record_joints(registry, occs, saved, context=context)
+        # Link each swept-bend arc body to its 'bend' joint record by stamping
+        # Weldments.Joint (candidate #4 phase B) so a LATER member coping into
+        # this corner can find the arc to cut against (see arc_body_for_joint).
+        _stamp_bend_arcs(root, registry, bend_arcs, bend_arc_verts)
         # Drop records whose body no longer exists (A5): a deleted feature or a
         # moved tube leaves a ghost that would mislead a later cope/bend.
         prune_ghosts(root, registry)
@@ -2047,6 +2058,14 @@ def profile_fields(geom):
 BODY_ATTR_GROUP = 'Weldments'
 BODY_ATTR_NAME = 'Member'
 
+# The swept-bend ARC body carries a parallel stamp -- (group 'Weldments', name
+# 'Joint', value str(jid)) -- linking it to the 'bend' Joint record it rounds.
+# An arc is deliberately NOT a member (it never enters the BOM or Bend Table),
+# so it hangs off the joint by this stamp instead of a Weldments.Member one.
+# body_mid reads only 'Member', so an arc body resolves to NO member and the
+# recovery/BOM/prune paths are unaffected by this additive stamp.
+BODY_JOINT_NAME = 'Joint'
+
 # The same group tags every FEATURE / SKETCH / CONSTRUCTION PLANE the weldment
 # tools create, with name 'Weldment' = '1'.  A rebuild deletes exactly the tagged
 # entities (see :func:`_delete_weldment_entities`) and nothing else, so it can
@@ -2135,6 +2154,82 @@ def body_mid(body):
         return int(a.value)
     except (TypeError, ValueError):
         return None
+
+
+def stamp_joint(body, jid):
+    """Attach (or update) the joint-id stamp on a bend ``arc`` body. Best-effort.
+
+    The arc is not a member; this stamp is the only link from the live body back
+    to the 'bend' Joint record it rounds (see :func:`arc_body_for_joint`).
+    """
+    try:
+        body.attributes.add(BODY_ATTR_GROUP, BODY_JOINT_NAME, str(jid))
+        return True
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} stamp arc joint')
+        return False
+
+
+def body_jid(body):
+    """The joint id stamped on a bend ``arc`` body, or None (a member/plain body)."""
+    try:
+        a = body.attributes.itemByName(BODY_ATTR_GROUP, BODY_JOINT_NAME)
+    except Exception:
+        return None
+    if a is None:
+        return None
+    try:
+        return int(a.value)
+    except (TypeError, ValueError):
+        return None
+
+
+def arc_body_for_joint(root, jid):
+    """The live swept-bend arc BODY stamped with joint id ``jid``, or None.
+
+    Scans the root's bodies for the Weldments.Joint stamp (the arc is not a
+    member, so it is invisible to the member stamp-scan).  Used by the corner-cut
+    layer to cope/butt a NEW member against an EXISTING bend's curved surface
+    (candidate #4; see plan/candidate4-bend-joints.md).
+    """
+    try:
+        bodies = root.bRepBodies
+        for i in range(bodies.count):
+            b = bodies.item(i)
+            if body_jid(b) == jid:
+                return b
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} arc resolve')
+    return None
+
+
+def _stamp_bend_arcs(root, registry, arcs, verts):
+    """Stamp each built bend arc body with the jid of its 'bend' joint record.
+
+    ``arcs`` are the ``(feature, ...)`` tuples :func:`_build_bend_arcs` built and
+    ``verts`` the parallel corner vertices (see its ``verts_out``).  A bend joint
+    is matched by vertex (within 0.05 cm) among the registry's ``bend`` records;
+    the arc's own body (``feature.bodies.item(0)``) then carries Weldments.Joint
+    so a later member can resolve it via :func:`arc_body_for_joint`.  Best-effort:
+    an arc whose joint cannot be matched is simply left unstamped.
+    """
+    try:
+        bends = [j for j in registry.joints if j.kind == 'bend']
+        for arc, V in zip(arcs, verts):
+            if not arc or arc[0] is None or V is None:
+                continue
+            match = next((j for j in bends if j.vertex is not None and
+                          reg.distance(j.vertex, V) <= 0.05), None)
+            if match is None:
+                continue
+            try:
+                body = arc[0].bodies.item(0)
+            except Exception:
+                body = None
+            if body is not None:
+                stamp_joint(body, match.jid)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} stamp bend arcs')
 
 
 def resolve_member(registry, body, context_line=None):
@@ -2570,7 +2665,8 @@ def _recover_existing_members_registry(root, design, saved_lines=None):
         basis = (tuple(m.basis[0]), tuple(m.basis[1])) \
             if m.basis and len(m.basis) == 2 else None
         members.append({'line': _ContextLine(m.start, m.end, body),
-                        'geom': m.geom, 'basis': basis, 'body': body})
+                        'geom': m.geom, 'basis': basis, 'body': body,
+                        'mid': m.mid})
     return members
 
 
