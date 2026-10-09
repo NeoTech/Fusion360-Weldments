@@ -72,8 +72,13 @@ def _new_uid():
 def start():
     cmd_def = ui.commandDefinitions.addButtonDefinition(
         CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
-    futil.add_handler(cmd_def.commandCreated, command_created,
-                      local_handlers=local_handlers)
+    # commandCreated goes on the GLOBAL handler list (no local_handlers=), like
+    # the Auto command.  command_destroy clears local_handlers, so a handler
+    # parked there is garbage-collected after the first dialog closes -- the
+    # second run then opens an inert dialog (no execute/preview handlers) until
+    # the add-in is reloaded.  The per-dialog handlers added inside
+    # command_created DO use local_handlers (they are re-added every session).
+    futil.add_handler(cmd_def.commandCreated, command_created)
     # Shared Weldments tab/panel; create it if needed so the button is never
     # dropped when this start() runs before weldment's.
     panel = _weldment().ensure_weldments_panel()
