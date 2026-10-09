@@ -878,5 +878,97 @@ class TestBendContextState(unittest.TestCase):
         self.assertEqual(jt.bend_arc_zones_for_member(line, 3, [joint]), [])
 
 
+class TestBendContextWiring(unittest.TestCase):
+    """Candidate #4 phases C/D: the arc state engine wired into the joint layer.
+
+    A 90-deg corner at V=(0,30,0) swept by an EARLIER bend between two EXISTING
+    (context) legs -- leg 1 along +X, leg 2 along -Y, die clr 89.9 mm (R=8.99).
+    A NEW member's END lands at V; its tip meets the curved arc, not a leg's flat
+    end.  With bend_context on, corner_offsets sets its length from the arc and
+    joint_spec emits an 'arc' cutter; with it off, both fall back to the ordinary
+    butt path (the through context leg's half-depth trim).
+    """
+
+    V = (0.0, 30.0, 0.0)
+    CLR = 89.9                                   # mm (R = 8.99 cm)
+
+    def _joints(self):
+        return [{'jid': 7, 'kind': 'bend', 'vertex': list(self.V),
+                 'refs': [{'mid': 1, 'role': 'start'},
+                          {'mid': 2, 'role': 'start'}],
+                 'params': {'clr_mm': self.CLR}}]
+
+    def _ctx(self):
+        return [{'line': FakeLine(self.V, (30.0, 30.0, 0.0)),
+                 'geom': _rect(100.0), 'basis': None, 'mid': 1},
+                {'line': FakeLine(self.V, (0.0, 0.0, 0.0)),
+                 'geom': _rect(100.0), 'basis': None, 'mid': 2}]
+
+    def _new_line(self):
+        # Runs from the +X/-Y quadrant INTO V, so its outward at the END points
+        # along the bisector toward the arc (the S1 corner-gap case).
+        import math as _m
+        s = _m.sqrt(.5)
+        return FakeLine((10.0 * s, 30.0 - 10.0 * s, 0.0), self.V)
+
+    def test_classify_s1_from_joint(self):
+        import math as _m
+        legs = {1: FakeLine(self.V, (30.0, 30.0, 0.0)),
+                2: FakeLine(self.V, (0.0, 0.0, 0.0))}
+        st = jt.bend_context_classify(self.V, (_m.sqrt(.5), -_m.sqrt(.5), 0),
+                                      self.V, self._joints(), legs, 1.0)
+        self.assertEqual(st['state'], 'S1')
+        self.assertLess(st['delta_cm'], 0.0)     # extend
+        self.assertEqual(st['jid'], 7)
+
+    def test_classify_none_without_bend(self):
+        import math as _m
+        legs = {1: FakeLine(self.V, (30.0, 30.0, 0.0)),
+                2: FakeLine(self.V, (0.0, 0.0, 0.0))}
+        st = jt.bend_context_classify(self.V, (_m.sqrt(.5), -_m.sqrt(.5), 0),
+                                      self.V, [], legs, 1.0)
+        self.assertIsNone(st)
+
+    def test_corner_offsets_arc_vs_plain(self):
+        lines = [self._new_line()]
+        geoms = [_rect(20.0)]                       # slim tube -> tip floats (S1)
+        ctx = self._ctx()
+        joints = self._joints()
+        # Flag off: the ordinary butt path backs the new member off the through
+        # context leg (a negative end offset).
+        off_plain = jt.corner_offsets(lines, geoms, ['butt'], context=ctx)
+        self.assertLess(off_plain[0][1], 0.0)
+        # Flag on: the arc classifier extends it (a positive end offset) -- the
+        # opposite sign, because the tip floats in the corner void short of the
+        # arc and must reach the centerline + wall.
+        off_arc = jt.corner_offsets(lines, geoms, ['butt'], context=ctx,
+                                    bend_joints=joints, bend_context=True)
+        self.assertGreater(off_arc[0][1], 0.0)
+
+    def test_joint_spec_emits_arc_cutter(self):
+        lines = [self._new_line()]
+        geoms = [_rect(100.0)]
+        ctx = self._ctx()
+        joints = self._joints()
+        spec = jt.joint_spec(lines, geoms, ['cope'], context=ctx,
+                             bend_joints=joints, bend_context=True)
+        arc_occs = [o for o in spec['occs']
+                    if o.get('cutter') and o['cutter'].get('type') == 'arc']
+        self.assertEqual(len(arc_occs), 1)
+        self.assertEqual(arc_occs[0]['cutter']['jid'], 7)
+        self.assertIn(arc_occs[0]['bend_state'], ('S1', 'S2', 'S3', 'S4'))
+
+    def test_joint_spec_flag_off_is_body_cope(self):
+        # With the flag off the SAME corner must emit the historical cope/butt
+        # (a body tool), never an arc cutter -- byte-identical to today.
+        lines = [self._new_line()]
+        geoms = [_rect(100.0)]
+        ctx = self._ctx()
+        spec = jt.joint_spec(lines, geoms, ['cope'], context=ctx)
+        self.assertFalse(any(o.get('cutter') and
+                             o['cutter'].get('type') == 'arc'
+                             for o in spec['occs']))
+
+
 if __name__ == '__main__':
     unittest.main()

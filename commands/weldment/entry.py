@@ -931,7 +931,9 @@ def _joint_offsets(inputs, lines, geom, clr_by_line=None, ref=None,
                                  through_by_line=through, bases=bases,
                                  saddle_by_line=saddle,
                                  cope_depth_by_line=cope_depth_by_line,
-                                 context=context, anchor_by_line=anchor_by_line)
+                                 context=context, anchor_by_line=anchor_by_line,
+                                 bend_joints=_bend_joints(),
+                                 bend_context=config.BEND_CONTEXT_CUTS)
     except Exception:
         futil.handle_error(f'{CMD_NAME} joint offsets')
         return [(0.0, 0.0) for _ in lines]
@@ -2682,6 +2684,28 @@ def _recover_context(root, saved_lines=None):
     return _recover_existing_members(root)
 
 
+def _bend_joints():
+    """The design registry's Joint records, for the bend-context state engine.
+
+    Candidate #4: :func:`lib.joints.corner_offsets` / :func:`lib.joints.joint_spec`
+    rebuild a swept bend's centerline arc from its ``'bend'`` joint record to
+    classify where a NEW member's tip meets it.  Returns [] when the
+    BEND_CONTEXT_CUTS flag is off (the arc path is then inert and the ordinary
+    cope/butt logic runs unchanged), or when there is no design / the registry is
+    empty or unreadable (a design built before the spine).
+    """
+    if not getattr(config, 'BEND_CONTEXT_CUTS', False):
+        return []
+    design = _design()
+    if design is None:
+        return []
+    try:
+        return list(load_registry(design).joints)
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} bend joints load')
+        return []
+
+
 # How far (cm) a recovered context leg may be extended to a bend's virtual
 # corner vertex.  A swept bend trims its legs to the die tangent points, so the
 # recovered centreline ends stop short of the vertex the user actually drew;
@@ -3187,7 +3211,9 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
                              saddle_by_line=saddle,
                              cope_depth_by_line=cope_depth_by_line,
                              bases=bases, context=ctx,
-                             anchor_by_line=anchor_by_line)
+                             anchor_by_line=anchor_by_line,
+                             bend_joints=_bend_joints(),
+                             bend_context=config.BEND_CONTEXT_CUTS)
         occs = spec['occs']
         if spec_out is not None:
             spec_out.extend(occs)
@@ -3246,15 +3272,23 @@ def _apply_corner_cuts(root, lines, joints, objs, feat_idx, f_start,
             # is inherently local; the joint box is used only to CLASSIFY the
             # result -- a fragment wholly inside it is a cutoff (the plug pushed
             # into the tool's void), one that pokes out is the surviving run.
-            t = cut['tool']
-            if t < 0:
-                if ~t >= len(ctx) or ctx[~t].get('body') is None:
+            # An 'arc' cut (candidate #4) is the same boolean against the swept
+            # bend's ARC body instead of a straight member -- the arc hangs off
+            # its joint record (see arc_body_for_joint), never a member.
+            if cut['type'] == 'arc':
+                tool_body = arc_body_for_joint(root, cut['jid'])
+                if tool_body is None:
                     continue
-                tool_body = ctx[~t]['body']
             else:
-                if t >= len(objs) or objs[t] is None:
-                    continue
-                tool_body = body_of.get(t)
+                t = cut['tool']
+                if t < 0:
+                    if ~t >= len(ctx) or ctx[~t].get('body') is None:
+                        continue
+                    tool_body = ctx[~t]['body']
+                else:
+                    if t >= len(objs) or objs[t] is None:
+                        continue
+                    tool_body = body_of.get(t)
             if tool_body is None:
                 continue
             removes, run = cope_body_cut(root, body, tool_body, region)

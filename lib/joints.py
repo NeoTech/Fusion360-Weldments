@@ -541,7 +541,8 @@ def _corner_partner(members, idx, role, joint_by_line, through_by_line, n=None):
 
 def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                    through_by_line=None, bases=None, saddle_by_line=None,
-                   cope_depth_by_line=None, context=None, anchor_by_line=None):
+                   cope_depth_by_line=None, context=None, anchor_by_line=None,
+                   bend_joints=None, bend_context=False):
     """Compute ``(offset_start, offset_end)`` in cm for every line.
 
     ``geoms[i]`` is the section geometry of line ``i`` (from
@@ -572,6 +573,15 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
     an existing member's END is a corner (the existing member runs through);
     meeting its interior is a T-junction (cope/butt tool).
 
+    ``bend_joints`` / ``bend_context`` (candidate #4): when ``bend_context`` is
+    on and ``bend_joints`` carries the design's Joint records, a corner rounded
+    by an EARLIER swept bend is classified with :func:`bend_context_state` and
+    the new member's length is set to meet the ARC rather than a leg's flat end
+    (S1 extends to the centerline + wall, S2 shortens to the centerline radius;
+    S0/S3/S4 need no length change).  Off by default: behaviour is then exactly
+    as before, since a context member carries no joint setting of its own and the
+    leg-based trim below is blind to the arc.
+
     ``anchor_by_line[i]`` (optional) is line ``i``'s local ``(u, v)`` mm section
     anchor -- the point that sits ON the shared reference line for the "Position"
     alignment grid (see :func:`profiles.grid_anchor`).  An off-centre member's
@@ -599,6 +609,17 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
     # treated as centred (anchor None -> the historical extent).
     A = list(anchor_by_line) + [None] * len(ctx) if anchor_by_line else None
     all_lines = list(lines) + ctx_lines
+    # Candidate #4: mid -> leg for every member, so a bend arc at a corner can
+    # be rebuilt from its joint record (context members by registry mid, the
+    # lines built this run by a synthetic ('sel', i) key).
+    legs_by_mid = {}
+    if bend_context and bend_joints:
+        for c in ctx:
+            mid = _ctx_mid(c)
+            if mid is not None:
+                legs_by_mid[mid] = c['line'] if isinstance(c, dict) else c
+        for i, ln in enumerate(lines):
+            legs_by_mid.setdefault(('sel', i), ln)
 
     def ci(i):
         return i if i >= 0 else n + (~i)
@@ -643,6 +664,28 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                 outward = (-outward[0], -outward[1], -outward[2])
             dir_of[(idx, role)] = outward
 
+        # Candidate #4: a corner an EARLIER swept bend rounded.  A new butt/
+        # cope member's tip meets the curved ARC, not a leg's flat end, so the
+        # leg-based trim below is wrong for it -- classify the tip and set the
+        # length from the arc instead (S1 extends to centerline + wall, S2
+        # shortens to the centerline radius; S3/S4 need no length change).
+        # S0 (nearest material is a straight leg) stays with the normal path.
+        arc_handled = set()
+        if bend_context and bend_joints:
+            for (idx, role) in members:
+                if not is_sel(idx) or jointv(idx, role) not in ('butt', 'cope'):
+                    continue
+                own = dir_of[(idx, role)]
+                r_cm = _perp_extent_cm(geomv(idx), basisv(idx), anchorv(idx),
+                                       own)
+                st = bend_context_classify(point, own, point, bend_joints,
+                                           legs_by_mid, r_cm)
+                if st is None or st['state'] == 'S0':
+                    continue
+                arc_handled.add((idx, role))
+                if st['delta_cm']:
+                    bump(idx, role, -st['delta_cm'])
+
         # The one butt member that runs through this corner (others back off).
         through_idx = _butt_through(members, joint_by_line, through_by_line,
                                     n=n)
@@ -664,7 +707,7 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
             o_k = next((k for k, (idx, role) in enumerate(members)
                         if k != t_k and jointv(idx, role) in ('butt', 'cope')),
                        None)
-            if o_k is not None:
+            if o_k is not None and members[o_k] not in arc_handled:
                 T = members[t_k][0]
                 O = members[o_k][0]
                 sinp = _sin_between(dir_of[members[t_k]], dir_of[members[o_k]])
@@ -715,6 +758,8 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
             jid = jointv(idx, role)
             if jid == 'none':
                 continue
+            if (idx, role) in arc_handled:
+                continue          # candidate #4: its length came from the arc
             # The partner leg this member joins with at the corner, chosen by the
             # joint type so a bystander leg merely sharing the vertex is ignored
             # (this is what stops an adjacent tube disabling a bend or miter).
@@ -1106,6 +1151,24 @@ def _leg_ends(leg):
     return _xyz(s), _xyz(e)
 
 
+def _vertex_outward(leg, V):
+    """Unit direction at the corner ``V`` pointing AWAY from it along ``leg``.
+
+    The leg end nearest ``V`` is the corner end; the outward direction runs from
+    ``V`` toward the far end.  Independent of any stored 'role' (a toolbox-bend
+    joint records None, and a context leg's drawn centreline may run start->end
+    either way), which is why :func:`bend_arc_geometry` uses this rather than
+    :func:`_leg_outward`.
+    """
+    s, e = _leg_ends(leg)
+    V = _xyz(V)
+    ds, de = _dist(V, s), _dist(V, e)
+    if min(ds, de) > 1e-4:
+        return None                      # V is not on this leg's endpoints
+    far = e if ds <= de else s
+    return line_direction_from(V, far)
+
+
 def _leg_outward(leg, role):
     """Outward unit direction at the vertex for any leg form (see _leg_ends)."""
     if isinstance(leg, dict) or hasattr(leg, 'worldGeometry'):
@@ -1129,7 +1192,11 @@ def bend_arc_geometry(V, leg_lines, clr_mm):
     """
     if clr_mm is None or clr_mm <= 0.0 or len(leg_lines) != 2:
         return None
-    dirs = [_leg_outward(leg, role) for (leg, role) in leg_lines]
+    # Outward from the VERTEX, not the stored role: a toolbox-bend joint records
+    # role=None and a context leg's drawn centreline may run start->end either
+    # way, so the end nearest V is the corner end and the far end gives the
+    # direction (see :func:`_vertex_outward`).
+    dirs = [_vertex_outward(leg, V) for (leg, _role) in leg_lines]
     if any(d is None for d in dirs):
         return None
     g = bend_path(_xyz(V), dirs[0], dirs[1], clr_mm * MM_TO_CM)
@@ -1186,6 +1253,63 @@ def bend_arc_zones_for_member(line, mid, joints, legs_by_mid=None):
             hi = _dot(_sub(V, s), d)
             zones.append((min(lo, hi), max(lo, hi)))
     return zones
+
+
+def _ctx_mid(c):
+    """The registry member id of a context entry (a dict with 'mid', else None)."""
+    return c.get('mid') if isinstance(c, dict) else None
+
+
+def bend_arc_at_vertex(V, joints, legs_by_mid, tol=0.05):
+    """The centerline arc of the bend joint rounding vertex ``V``, or None.
+
+    ``joints`` are Joint records (or their ``to_dict`` form) and ``legs_by_mid``
+    maps each leg's ``mid -> (leg, role)`` for the members available live.  A
+    ``'bend'`` joint whose vertex coincides with ``V`` (within ``tol`` cm) and
+    whose two legs both resolve yields :func:`bend_arc_geometry` (tagged with the
+    joint's ``jid``); otherwise None.  This is the single lookup the cutter layer
+    and the length layer share, so a cope's cut and its built length never
+    disagree about which arc (if any) the tip meets.
+    """
+    for j in joints or []:
+        kind = j.get('kind') if isinstance(j, dict) else j.kind
+        if kind != 'bend':
+            continue
+        jv = _xyz(j.get('vertex') if isinstance(j, dict) else j.vertex)
+        if jv is None or _dist(jv, _xyz(V)) > tol:
+            continue
+        refs = j.get('refs') if isinstance(j, dict) else j.refs
+        params = (j.get('params') if isinstance(j, dict) else j.params) or {}
+        if not refs or len(refs) < 2:
+            continue
+        pair = [(legs_by_mid[r['mid']], r.get('role'))
+                for r in refs if legs_by_mid and r.get('mid') in legs_by_mid]
+        if len(pair) != 2:
+            continue
+        g = bend_arc_geometry(jv, pair, params.get('clr_mm'))
+        if g is None:
+            continue
+        g['jid'] = j.get('jid') if isinstance(j, dict) else j.jid
+        return g
+    return None
+
+
+def bend_context_classify(tip, own, V, joints, legs_by_mid, r_cm, tol=0.05):
+    """Classify a new member's tip against a bend arc at corner ``V`` (or None).
+
+    Convenience over :func:`bend_arc_at_vertex` + :func:`bend_context_state`:
+    returns the state dict (``state``/``target``/``delta_cm``/``reason``) with
+    the arc's ``jid`` and ``arc`` attached, or None when no bend rounds ``V``
+    (the ordinary cope/butt path is then correct and must run untouched).  The
+    tip is classified at the drawn corner ``V`` running along ``own``.
+    """
+    g = bend_arc_at_vertex(V, joints, legs_by_mid, tol=tol)
+    if g is None:
+        return None
+    s = bend_context_state(_xyz(V), own, g, r_cm)
+    s['jid'] = g['jid']
+    s['arc'] = g
+    return s
 
 
 def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6):
@@ -1847,7 +1971,8 @@ def bend_path(V, u, v, radius_cm):
 def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
                through_by_line=None, saddle_by_line=None,
                cope_depth_by_line=None, bases=None, context=None,
-               anchor_by_line=None, tol=_CORNER_TOL):
+               anchor_by_line=None, tol=_CORNER_TOL, bend_joints=None,
+               bend_context=False):
     """Single source of truth for every joint among ``lines`` (+ ``context``).
 
     Same inputs as :func:`corner_offsets` (see its docstring for the index
@@ -1894,6 +2019,29 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
     offs = corner_offsets(lines, geoms, joint_by_line, clr_by_line,
                           through_by_line, bases, saddle_by_line,
                           cope_depth_by_line, context, anchor_by_line)
+    # Candidate #4: map every member (context by registry mid, selected by a
+    # synthetic key) to its leg so a bend arc at a corner can be rebuilt from
+    # its joint record.  Only consulted when bend_context is on.
+    legs_by_mid = {}
+    if bend_context and bend_joints:
+        for c in ctx:
+            mid = _ctx_mid(c)
+            if mid is not None:
+                legs_by_mid[mid] = c['line'] if isinstance(c, dict) else c
+        for i in range(n):
+            legs_by_mid.setdefault(('sel', i), L[i])
+
+    def arc_case(V, idx, role):
+        """The bend-arc state for selected member ``idx``'s tip at corner ``V``.
+
+        None unless bend_context is on and a bend joint rounds ``V``.
+        """
+        if not (bend_context and bend_joints):
+            return None
+        own = outward(idx, role)
+        r_cm = _perp_extent_cm(geomv(idx), basisv(idx), anchorv(idx), own)
+        return bend_context_classify(V, own, V, bend_joints, legs_by_mid, r_cm)
+
 
     def is_sel(i):
         return 0 <= i < n
@@ -1977,6 +2125,29 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
             elif jid in ('butt', 'cope'):
                 if idx == through_idx:
                     continue  # the through member is never cut
+                # Candidate #4: if a swept bend rounds THIS corner, the tip
+                # meets a curved arc, not a straight leg.  Classify the tip and
+                # cut against the arc BODY (the length delta is applied by
+                # corner_offsets, which runs the same classifier).  S0 (nearest
+                # material is a straight leg) falls through to the cope/butt
+                # path below unchanged.
+                st = arc_case(V, idx, role)
+                if st is not None and st['state'] != 'S0':
+                    perp = max(perp_extent(idx, role, V),
+                               perp_extent(pidx, prole, V))
+                    reach = _plug_reach(
+                        2.0 * perp,
+                        perp_extent(idx, role, V) + perp_extent(pidx, prole, V),
+                        _angle_between(own, neigh))
+                    box = _region_box(V, own, reach, perp, room)
+                    occs.append({'kind': 'cope_end', 'member': idx,
+                                 'role': role, 'vertex': V,
+                                 'partner': partner, 'setback': 0.0,
+                                 'cutter': {'type': 'arc', 'jid': st['jid'],
+                                            'region': box},
+                                 'bend_state': st['state'],
+                                 'legs': [(idx, role), partner]})
+                    continue
                 saddled = (jid == 'cope'
                            or flag_at(saddle_by_line, idx, role))
                 # A cope onto a BEND partner's curved arc cannot be cut by a
@@ -2036,13 +2207,21 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
         own = outward(idx, role)
         # A cope onto a BEND tool's curved arc cannot be cut by a straight box;
         # if the tip at P lands on the tool's arc zone, fall back to a butt.
+        # For a CONTEXT tool the selected-tool zone math is blind (a stored
+        # member carries no joint setting), so with bend_context on the zones
+        # come from the tool's bend joint records instead.
         on_arc = False
         if saddled and jid == 'cope':
             ts, te = line_endpoints(L[ci_index(pidx, n)])
-            if _point_in_arc_zones(
-                    P, ts, line_direction(L[ci_index(pidx, n)]),
-                    _bend_arc_zones(L, pidx, joint_by_line, clr_by_line,
-                                    all_lines, ctx_lines, n, tol), tol):
+            if pidx < 0 and bend_context and bend_joints:
+                zones = bend_arc_zones_for_member(
+                    L[ci_index(pidx, n)], _ctx_mid(ctx[~pidx]), bend_joints,
+                    legs_by_mid)
+            else:
+                zones = _bend_arc_zones(L, pidx, joint_by_line, clr_by_line,
+                                        all_lines, ctx_lines, n, tol)
+            if _point_in_arc_zones(P, ts, line_direction(L[ci_index(pidx, n)]),
+                                   zones, tol):
                 saddled = False
                 on_arc = True
         if not saddled:
