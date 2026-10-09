@@ -2263,6 +2263,29 @@ def arc_body_for_joint(root, jid, vertex=None):
     return best
 
 
+def arc_body_near(root, point):
+    """The swept-bend arc BODY whose bounding box is nearest ``point`` (cm), or
+    None.  Purely geometric (no stamp needed): the nearest Torus-faced body.
+    Used by the toolbox Cope to find the bend to saddle onto when the user
+    picked a straight leg (or the arc) of an existing bent member.
+    """
+    best, best_d = None, None
+    try:
+        bodies = root.bRepBodies
+        for i in range(bodies.count):
+            b = bodies.item(i)
+            if not _has_torus_face(b):
+                continue
+            d = _point_to_body_cm(point, b)
+            if d is None:
+                continue
+            if best is None or d < best_d:
+                best, best_d = b, d
+    except Exception:
+        futil.handle_error(f'{CMD_NAME} arc resolve')
+    return best
+
+
 
 def _stamp_bend_arcs(root, registry, arcs, verts):
     """Stamp each built bend arc body with the jid of its 'bend' joint record.

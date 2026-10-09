@@ -1926,6 +1926,12 @@ class TestArcBodyForJoint(unittest.TestCase):
         self.assertIsInstance(got, adsk_stub.FakeBody)
         self.assertTrue(entry._has_torus_face(got))
 
+    def test_arc_body_near_is_stamp_free(self):
+        # The toolbox Cope's lookup: nearest torus to a point, no jid at all.
+        root = self._root_with_arcs()
+        self.assertIs(entry.arc_body_near(root, (4.0, 26.0, 0.0)), self.a_nw)
+        self.assertIs(entry.arc_body_near(root, (30.0, 4.0, 0.0)), self.a_se)
+
 
 if __name__ == "__main__":
     unittest.main()
