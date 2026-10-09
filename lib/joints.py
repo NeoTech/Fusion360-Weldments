@@ -1329,7 +1329,7 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
     tangent points T1/T2, ``legs``) and ``r_cm`` the new member's tube
     half-extent (its section radius).  Returns::
 
-        {'state': 'S0'|'S1'|'S2'|'S3'|'S4', 'target': P|None,
+        {'state': 'S0'|'S1'|'S2'|'S3'|'S4'|'S5', 'target': P|None,
          'delta_cm': float, 'reason': str}
 
     States (plan/candidate4-bend-joints.md, user policy "Reach CL"):
@@ -1349,6 +1349,9 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
       S4  skew / out-of-plane: the axis never crosses the circle -- butt to
           the nearest point of the centerline arc pulled back by r (saddle
           cut vs the arc body is the execution layer's choice).
+      S5  inside approach (the mirror of S1): the member's BODY runs through
+          the arc and the tip overshoots out the far side -- shorten back to
+          the centerline minus the tube radius plus 2 mm, less ``depth_cm``.
 
     ``delta_cm`` is the SIGNED axial move along ``d`` from tip to target
     (negative = extend, positive = shorten); it is recomputed from the joint
@@ -1394,10 +1397,26 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
             return {'state': 'S0', 'target': tip, 'delta_cm': 0.0,
                     'reason': 'nearest bend material is a straight leg'}
         x = _crossings()
-        if x is None or x[1] <= tol:
+        if x is None:
             return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
                     'delta_cm': 0.0,
                     'reason': 'axis never crosses the centerline circle'}
+        if x[1] <= tol:
+            # Both crossings lie BEHIND the tip: the member's BODY runs through
+            # the arc (an INSIDE/concave approach -- the mirror of S1).  The tip
+            # overshoots out the far side, so SHORTEN it back to the same
+            # stopping face the outside case uses: r - 2mm SHORT of the near
+            # circle crossing (-x[1] back along the body), plus the Cope Depth
+            # walking it toward the centerline.  delta > 0 = shorten.
+            t_short = -x[1] - r_cm + 0.2 + depth_cm
+            if t_short <= tol:
+                return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
+                        'delta_cm': 0.0,
+                        'reason': 'axis never crosses the centerline circle'}
+            return {'state': 'S5',
+                    'target': _add(tip, _scale(d, -t_short)),
+                    'delta_cm': t_short,
+                    'reason': 'inside approach: shorten to centerline - tube radius'}
         # Reach the centerline SHORT of it by the member's own tube radius,
         # plus a 2 mm overlap floor and the user's Cope Depth (live policy:
         # "CL - r + 2mm so the offset determines how deep the cope sits").

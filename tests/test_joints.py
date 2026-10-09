@@ -864,6 +864,24 @@ class TestBendContextState(unittest.TestCase):
         self.assertAlmostEqual(jt._dist(s['target'], self.g['center']),
                                self.R, places=4)
 
+    def test_s5_inside_through_shortens(self):
+        # The mirror of S1: a member whose BODY runs through the arc (an
+        # inside/concave approach, live img2).  Its tip sits at the corner V
+        # growing AWAY from the center C, so both circle crossings lie BEHIND
+        # it -> S5, a POSITIVE delta (shorten) back to the stopping face.  The
+        # arc is nearer to V than either setback-trimmed leg, so the leg check
+        # does not fall through to S0.
+        r = 1.0
+        C = self.g['center']
+        grow = jt._norm(jt._sub(self.V, C))         # away from the arc centre
+        s = jt.bend_context_state(self.V, grow, self.g, r)
+        self.assertEqual(s['state'], 'S5')
+        self.assertGreater(s['delta_cm'], 0.0)      # shorten
+        # The stopping face is r - 2mm SHORT of the near circle crossing, i.e.
+        # |target - C| = R + (r - 0.2) -- the same face the outside case uses.
+        d = jt._dist(s['target'], C)
+        self.assertAlmostEqual(d, self.R + r - 0.2, places=2)
+
     def test_idempotent_delta(self):
         # delta is recomputed from geometry, never accumulated: same inputs,
         # same answer, twice.

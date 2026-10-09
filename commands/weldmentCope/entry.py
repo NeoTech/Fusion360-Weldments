@@ -187,20 +187,23 @@ def _cope_plan(w, subj_body, tool_body, depth_mm):
 
 
 def _bend_extend_cm(w, design, tip, own, r_cm, depth_cm):
-    """Axial move (cm) the coping member's tip needs to meet a bend centerline.
+    """Signed axial move (cm) a coping member's tip needs to meet a bend arc.
 
     Runs the SAME classifier the auto wizard uses (:func:`lib.joints
     .bend_context_state`) against the design registry's nearest ``'bend'``
     joint, so the toolbox cope and the wizard agree on the stopping face.
     ``own`` is the tip-growth direction (body -> tip -> arc).  Returns
-    ``(extend_cm, state)``: ``extend_cm`` > 0 means the tip floats short of
-    the arc and must be GROWN that far (S1); 0 means no length change is
-    needed (S0/S2/S3/S4 -- the plain saddle/boolean handles those).
+    ``(delta_cm, state, vertex)`` with the classifier's sign: NEGATIVE = the
+    tip floats short of the arc and must be GROWN (S1, outside approach);
+    POSITIVE = the tip overshoots through the arc and must be SHORTENED
+    (S5, inside approach); 0 = no length change (S0/S2/S3/S4).  ``vertex``
+    is the bend corner, so a through-member (both ends S5) can pick the
+    overshooting stub as the end farthest from it.
     """
     try:
         registry = w.load_registry(design)
     except Exception:
-        return 0.0, None
+        return 0.0, None, None
     best, best_d, legs = None, None, None
     for j in registry.joints:
         if j.kind != 'bend' or j.vertex is None or not j.refs:
@@ -219,13 +222,12 @@ def _bend_extend_cm(w, design, tip, own, r_cm, depth_cm):
         if best is None or d < best_d:
             best, best_d, legs = j, d, lm
     if best is None or best_d > 20.0:
-        return 0.0, None
+        return 0.0, None, None
     g = jt.bend_arc_at_vertex(best.vertex, [best], legs)
     if g is None:
-        return 0.0, None
+        return 0.0, None, None
     st = jt.bend_context_state(tip, own, g, r_cm, depth_cm=depth_cm)
-    delta = st['delta_cm']
-    return (-delta if delta < 0.0 else 0.0), st['state']
+    return st['delta_cm'], st['state'], tuple(best.vertex)
 
 
 def _bend_cope_plan(w, subj_body, tool_body, subj_cl, depth_mm):
@@ -243,36 +245,70 @@ def _bend_cope_plan(w, subj_body, tool_body, subj_cl, depth_mm):
         return 'Open a design first.', None
     root = design.rootComponent
     ss, se, sgeom, sbasis = subj_cl
-    # The tip is the coping member's end nearest the tool.
-    tip = se if w._point_to_body_cm(se, tool_body) <= \
-        w._point_to_body_cm(ss, tool_body) else ss
-    far = ss if tip == se else se
-    own = jt.line_direction_from(far, tip)          # toward the tool
-    r_cm = jt._perp_extent_cm(sgeom, sbasis, None, own)
     # The arc to cut against: the tool body if it IS the torus, else the arc
-    # nearest the tip (the user may have picked a straight leg of the bend).
+    # nearest the member (the user may have picked a straight leg of the bend).
     arc = (tool_body if w._has_torus_face(tool_body)
-           else w.arc_body_near(root, tip))
+           else w.arc_body_near(root, se))
     if arc is None:
         return 'Both selections must be straight weldment members.', None
-    # Candidate #4: grow the tip to the bend centerline when it floats short
-    # (S1), so the toolbox cope matches the auto wizard's stopping face.  The
-    # region is then centred on the EXTENDED tip, not the drawn one.
-    extend, state = _bend_extend_cm(w, design, tip, own, r_cm,
-                                    depth_mm * 0.1)
-    landing = tip
+    # Candidate #4: classify BOTH ends of the coping member against the bend
+    # arc and act on whichever needs it (per selected line).  An OUTSIDE
+    # approach (S1) leaves the tip short of the arc -> GROW it to the stopping
+    # face; an INSIDE/through approach (S5) has the member running through the
+    # arc with its far end poking out the other side -> SHORTEN that end back
+    # to the arc's inner wall.  The straight-leg path's prism machinery does
+    # the axial move; the arc boolean then saddles the (moved) tip.
+    r_cm = jt._perp_extent_cm(sgeom, sbasis, None,
+                              jt.line_direction_from(ss, se))
+    depth_cm = depth_mm * 0.1
+    tip, own, delta = se, jt.line_direction_from(ss, se), 0.0
+    # Classify BOTH ends (per selected line).  An S1 end floats short of the
+    # arc and is the one to GROW.  A through/inside member has BOTH ends read
+    # S5 (the arc annulus lies between them); the end to trim is the STUB --
+    # the one farthest from the bend corner, since the near end is anchored
+    # to its leg at the vertex and must not move.
+    cands = []
+    for end, other in ((se, ss), (ss, se)):
+        grow = jt.line_direction_from(other, end)
+        d, state, vtx = _bend_extend_cm(w, design, end, grow, r_cm, depth_cm)
+        if state in ('S1', 'S5'):
+            cands.append((state, d, end, grow, vtx))
+    if cands:
+        s1s = [c for c in cands if c[0] == 'S1']
+        state, delta, tip, own, _v = (
+            s1s[0] if s1s else
+            max(cands, key=lambda c: jt._dist(c[2], c[4])))
+    drawn = tip                                # the selected end, unmoved
+    # delta < 0 (S1): grow the tip along `own` by -delta.  delta > 0 (S5): the
+    # member runs THROUGH the arc and its far tip overshoots out the other side;
+    # the new end (stopping face) is `tip - shorten*own`, tangent to the arc's
+    # inner wall, and the overshooting stub is removed by an axial trim prism.
+    extend = -delta if delta < 0.0 else 0.0
+    shorten = delta if delta > 0.0 else 0.0
     if extend > 0.0:
         tip = jt._add(tip, jt._scale(own, extend))
-    # A joint box straddling the (extended) tip, wide enough to cover the arc
-    # tube so the boolean classifies the plug (inside) vs the run (outside)
-    # correctly.
-    room = 0.5 * jt._dist(ss, se) + extend
-    reach = 2.0 * r_cm + depth_mm * 0.1 + 2.0 + extend
     perp = r_cm + 2.0
-    region = jt._region_box(tip, own, reach, perp, room)
-    return None, {'subj_cl': subj_cl, 'tool_cl': None, 'landing': landing,
-                  'own': own, 'extend_cm': extend, 'bend_state': state,
-                  'trim_region': None, 'saddle_region': region,
+    room = 0.5 * jt._dist(ss, se) + extend + shorten
+    # The stopping face the member's end lands on after the axial move: grown
+    # forward for S1, pulled back for S5.  The saddle region centres on it so
+    # the arc boolean cuts the (moved) end, not the drawn one.
+    stop = jt._add(tip, jt._scale(own, -shorten))
+    saddle = jt._region_box(stop, own, 2.0 * r_cm + depth_cm + 2.0 + extend,
+                            perp, room)
+    trim = None
+    if shorten > 0.0:
+        # A box covering just the overshooting stub [stop, tip].  _region_box
+        # is symmetric about its centre, so centre it 0.5 cm PAST the drawn tip
+        # with axial half shorten + 0.5: the inner face lands exactly on the
+        # stopping face (stop = tip - shorten*own) and the outer face 1 cm past
+        # the tip (a no-op), so the kept run is never nibbled.
+        trim = jt._region_box(jt._add(tip, jt._scale(own, 0.5)), own,
+                              shorten + 0.5, perp, room)
+    return None, {'subj_cl': subj_cl, 'tool_cl': None, 'landing': stop,
+                  'drawn': drawn, 'own': own,
+                  'extend_cm': extend, 'shorten_cm': shorten,
+                  'bend_state': ('S5' if shorten else 'S1' if extend else None),
+                  'trim_region': trim, 'saddle_region': saddle,
                   'arc_tool': arc}
 
 
@@ -378,23 +414,36 @@ def _do_cut(w, root, subj_body, tool_body, depth_mm, preview):
     arc_tool = plan.get('arc_tool')
     try:
         if arc_tool is not None:
-            # Bend tool: grow the tip to the bend centerline first when it
-            # floats short (S1 -- the same extension the auto wizard applies),
-            # then a single boolean against the arc body saddles the coping
-            # member onto the curved surface.
+            # Bend tool.  An outside approach (S1) grows the short tip to the
+            # stopping face first; an inside/through approach (S5) trims the
+            # overshooting stub back with an axial prism.  Either way a single
+            # boolean against the arc body then saddles the (moved) end onto
+            # the curved surface.
             feats = []
+            track = []
             run = subj_body
             extend = plan.get('extend_cm', 0.0)
+            shorten = plan.get('shorten_cm', 0.0)
             if extend > 0.0:
-                grow_feat = _grow_tip(root, w, subj_body, landing,
+                grow_feat = _grow_tip(root, w, subj_body, plan['drawn'],
                                       plan['own'], extend)
                 if grow_feat is not None:
                     feats.append(grow_feat)
-            removes, run2 = w.cope_body_cut(root, subj_body, arc_tool,
+            if shorten > 0.0 and plan.get('trim_region') is not None:
+                box = w._box_cutter(root, plan['trim_region'], preview=preview)
+                if box is None or box[0] is None:
+                    return 'Could not build the cope cutter.', None
+                prism, track = box[0], box[1:]
+                comb1 = w._combine_cut(root, subj_body, [prism],
+                                       keep_tool=False)
+                feats.append(comb1)
+                run = w._survivor_after_cut(comb1, None,
+                                           plan['trim_region']) or subj_body
+            removes, run2 = w.cope_body_cut(root, run, arc_tool,
                                             saddle_region)
             run = run2 or run
             payload = {'subj_cl': subj_cl, 'tool_cl': None, 'landing': landing,
-                       'run': run or subj_body, 'track': [],
+                       'run': run or subj_body, 'track': track,
                        'feats': feats + removes}
             return None, payload
         # Step 1: pull the protruding tip back to the stopping face with a
@@ -495,18 +544,31 @@ def command_execute_preview(args: adsk.core.CommandEventArgs):
     tool_copy = cp_t.bodies.item(0)
     try:
         if plan.get('arc_tool') is not None:
-            # Grow the copy to the bend centerline first when it floats short
-            # (S1), matching what _do_cut will do to the real member.
+            # Move the copy to the stopping face first -- grow it when it
+            # floats short (S1) or trim the overshooting stub back (S5) --
+            # matching what _do_cut will do to the real member.
             extend = plan.get('extend_cm', 0.0)
+            shorten = plan.get('shorten_cm', 0.0)
+            run = subj_copy
             if extend > 0.0:
-                grow_feat = _grow_tip(root, w, subj_copy, plan['landing'],
+                grow_feat = _grow_tip(root, w, subj_copy, plan['drawn'],
                                       plan['own'], extend)
                 if grow_feat is not None:
                     _preview_objs.append(grow_feat)
-            removes, run = w.cope_body_cut(root, subj_copy, tool_copy,
-                                           plan['saddle_region'])
+            if shorten > 0.0 and plan.get('trim_region') is not None:
+                box = w._box_cutter(root, plan['trim_region'], preview=True)
+                if box is None or box[0] is None:
+                    return
+                _preview_objs.append(box)
+                comb1 = w._combine_cut(root, subj_copy, [box[0]],
+                                       keep_tool=False)
+                _preview_objs.append(comb1)
+                run = w._survivor_after_cut(comb1, None,
+                                            plan['trim_region']) or subj_copy
+            removes, run2 = w.cope_body_cut(root, run, tool_copy,
+                                            plan['saddle_region'])
             _preview_objs.append(removes)
-            run = run or subj_copy
+            run = run2 or run
         else:
             box = w._box_cutter(root, plan['trim_region'], preview=True)
             if box is None or box[0] is None:
