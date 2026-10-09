@@ -684,8 +684,9 @@ def corner_offsets(lines, geoms, joint_by_line, clr_by_line=None,
                 # outward made every outside-approach cope read the arc as
                 # BEHIND the tip (S4, delta 0) and silently skip the extension.
                 grow = (-own[0], -own[1], -own[2])
-                st = bend_context_classify(point, grow, point, bend_joints,
-                                           legs_by_mid, r_cm)
+                st = bend_context_classify(
+                    point, grow, point, bend_joints, legs_by_mid, r_cm,
+                    depth_cm=_depth_cm(cope_depth_by_line, idx))
                 if st is None or st['state'] == 'S0':
                     continue
                 arc_handled.add((idx, role))
@@ -1300,7 +1301,8 @@ def bend_arc_at_vertex(V, joints, legs_by_mid, tol=0.05):
     return None
 
 
-def bend_context_classify(tip, own, V, joints, legs_by_mid, r_cm, tol=0.05):
+def bend_context_classify(tip, own, V, joints, legs_by_mid, r_cm, tol=0.05,
+                          depth_cm=0.0):
     """Classify a new member's tip against a bend arc at corner ``V`` (or None).
 
     Convenience over :func:`bend_arc_at_vertex` + :func:`bend_context_state`:
@@ -1308,17 +1310,19 @@ def bend_context_classify(tip, own, V, joints, legs_by_mid, r_cm, tol=0.05):
     the arc's ``jid`` and ``arc`` attached, or None when no bend rounds ``V``
     (the ordinary cope/butt path is then correct and must run untouched).  The
     tip is classified at the drawn corner ``V`` running along ``own``.
+    ``depth_cm`` (optional) is the user's Cope Depth (cm) added to the S1
+    stopping face so the depth column controls how deep the saddle sits.
     """
     g = bend_arc_at_vertex(V, joints, legs_by_mid, tol=tol)
     if g is None:
         return None
-    s = bend_context_state(_xyz(V), own, g, r_cm)
+    s = bend_context_state(_xyz(V), own, g, r_cm, depth_cm=depth_cm)
     s['jid'] = g['jid']
     s['arc'] = g
     return s
 
 
-def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6):
+def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6, depth_cm=0.0):
     """Where a member tip ``tip`` (cm) running along unit ``d`` meets a bend.
 
     ``arc_geom`` is a :func:`bend_arc_geometry` result (centerline arc C/R,
@@ -1333,7 +1337,10 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6):
           existing cope/butt-vs-leg-body path handles it; delta 0.
       S1  corner gap: the tip is outside the arc's tube envelope and the
           axis crosses the centerline circle beyond the tip -- extend to the
-          first crossing of |l(t)-C| = R (the bend's imaginary centerline).
+          first crossing of |l(t)-C| = R (the bend's imaginary centerline)
+          plus the member's tube radius and 2 mm, plus ``depth_cm`` (the
+          user's Cope Depth: the stopping face -- and therefore how deep the
+          saddle sits on the arc -- is offset by it; live img4 policy).
       S2  overshoot: the tip is inside the centerline circle (R - r) on the
           concave side -- shorten to R from C (first crossing behind the tip).
       S3  on-arc: the tip is within the tube envelope -- no length change;
@@ -1390,17 +1397,19 @@ def bend_context_state(tip, d, arc_geom, r_cm, tol=1e-6):
             return {'state': 'S4', 'target': _arc_nearest(tip, arc_geom),
                     'delta_cm': 0.0,
                     'reason': 'axis never crosses the centerline circle'}
-        # Reach the centerline EXACTLY (user policy, live img4: a +2r wall
-        # margin punched the tip clean through the arc tube -- the chord of
-        # the torus along any line through it is ~2*r_bend, so CL+2r is the
-        # FAR surface -- and left a stub poking out the other side).  The
-        # end face sits on the CL circle, i.e. mid-wall of the arc tube, so
-        # its disc is inscribed in the torus bore and the arc-body boolean
-        # removes it wholly -- no overlap margin needed.
-        t_star = max(x[0], 0.0)                # first crossing of |l-C| = R
+        # Reach the centerline plus the member's own tube radius, a 2 mm
+        # boolean-overlap floor, and the user's Cope Depth (live img4 policy:
+        # "stop at centerline + radius of tube + 2mm so the offset determines
+        # how deep the cope sits").  A bare +2r margin punched the tip clean
+        # through the arc tube (the chord of the torus along any line is
+        # ~2*r_bend, so CL+2r is the FAR surface) and left a visible stub;
+        # CL + r + 2mm keeps the end face's centre one radius past the CL --
+        # tangent to the arc tube's far wall -- with 2 mm of guaranteed
+        # overlap for the boolean, and the depth column walks it in/out.
+        t_star = max(x[0], 0.0) + r_cm + 0.2 + depth_cm
         return {'state': 'S1', 'target': _add(tip, _scale(d, t_star)),
                 'delta_cm': -t_star,
-                'reason': 'corner gap: extend to the bend centerline'}
+                'reason': 'corner gap: extend to centerline + tube radius'}
 
     # S3: inside the tube envelope (R - r <= dist <= R + r) -> cope vs arc.
     if dist >= inner - tol:
@@ -2058,7 +2067,10 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
         own = outward(idx, role)
         grow = (-own[0], -own[1], -own[2])
         r_cm = _perp_extent_cm(geomv(idx), basisv(idx), anchorv(idx), own)
-        return bend_context_classify(V, grow, V, bend_joints, legs_by_mid, r_cm)
+        return bend_context_classify(V, grow, V, bend_joints, legs_by_mid,
+                                     r_cm,
+                                     depth_cm=_depth_cm(cope_depth_by_line,
+                                                       idx))
 
 
     def is_sel(i):
@@ -2153,8 +2165,13 @@ def joint_spec(lines, geoms, joint_by_line, clr_by_line=None,
                 if st is not None and st['state'] != 'S0':
                     perp = max(perp_extent(idx, role, V),
                                perp_extent(pidx, prole, V))
+                    # The tip may have been EXTENDED past V by corner_offsets
+                    # (S1: to CL + r + depth); the cutter box must straddle
+                    # the new tip too, not just the drawn corner -- otherwise
+                    # the extended stub is never cut and pokes through the
+                    # arc's far side.
                     reach = _plug_reach(
-                        2.0 * perp,
+                        2.0 * perp + abs(st['delta_cm']),
                         perp_extent(idx, role, V) + perp_extent(pidx, prole, V),
                         _angle_between(own, neigh))
                     box = _region_box(V, own, reach, perp, room)

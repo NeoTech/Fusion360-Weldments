@@ -796,22 +796,34 @@ class TestBendContextState(unittest.TestCase):
 
     def test_s1_corner_gap_extends(self):
         # A member drawn to the vertex V floats ~3.7 cm outside the centerline
-        # arc; aimed along the bisector it must EXTEND (negative delta) to
-        # reach the CL circle exactly (user policy "Reach CL": a +2r wall
-        # margin punched the tip through the torus and left a stub, live img4).
+        # arc; aimed along the bisector it must EXTEND (negative delta) to the
+        # first CL crossing plus the tube radius and a 2 mm floor (live img4
+        # policy "centerline + radius of tube + 2mm").
         r = 1.0
         s = jt.bend_context_state(self.V, (math.sqrt(.5), -math.sqrt(.5), 0),
                                   self.g, r)
         self.assertEqual(s['state'], 'S1')
         self.assertLess(s['delta_cm'], 0.0)          # extend
-        # first crossing of |l(t)-C|=R is |V-C|-R along the bisector
-        expect = (self.R / math.cos(math.pi / 4)) - self.R
+        # first crossing of |l(t)-C|=R is |V-C|-R along the bisector, + r + 2mm
+        expect = (self.R / math.cos(math.pi / 4)) - self.R + r + 0.2
         self.assertAlmostEqual(-s['delta_cm'], expect, places=4)
-        # The target lies ON the centerline circle: |target - C| == R.
+        # The target's centre sits r + 2mm PAST the CL circle (toward the arc
+        # centre): |target - C| = R - (r + 0.2) -- that is the cope depth.
         tgt = s['target']
         C = self.g['center']
         d = math.sqrt(sum((tgt[k] - C[k]) ** 2 for k in range(3)))
-        self.assertAlmostEqual(d, self.R, places=4)
+        self.assertAlmostEqual(d, self.R - r - 0.2, places=4)
+
+    def test_s1_depth_offsets_stopping_face(self):
+        # The Cope Depth column walks the S1 stopping face in/out: doubling
+        # depth_cm doubles the extension past the CL + r + 2mm default.
+        r = 1.0
+        base = jt.bend_context_state(self.V, (math.sqrt(.5), -math.sqrt(.5), 0),
+                                     self.g, r)
+        deep = jt.bend_context_state(self.V, (math.sqrt(.5), -math.sqrt(.5), 0),
+                                     self.g, r, depth_cm=1.5)
+        self.assertAlmostEqual(-deep['delta_cm'], -base['delta_cm'] + 1.5,
+                               places=6)
 
     def test_s0_tip_on_straight_leg(self):
         # A tip well along a leg's straight run (past its tangent point) is the
